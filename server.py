@@ -154,4 +154,4 @@ def get_planning_entity(entity_id: int) -> dict:
     return planning_get(f"/entity/{entity_id}.json", [])
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="sse")
