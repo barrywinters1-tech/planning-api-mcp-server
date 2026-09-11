@@ -72,7 +72,7 @@ def parse_command(project: Project, text: str) -> Patch:
     t = text.strip()
     low = t.lower()
     ops: list[PatchOp] = []
-    ID = r"(\"[^\"]+\"|'[^']+'|[A-Za-z][A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*|[A-Za-z][A-Za-z ]{2,40}?)"
+    ID = r"(\"[^\"]+\"|'[^']+'|[A-Za-z][A-Za-z0-9_.-]*\d[A-Za-z0-9_.-]*|[A-Za-z][A-Za-z0-9 _'/-]{2,40}?)"
 
     if low in ("help", "?"):
         return Patch(ops=[], message=HELP)
