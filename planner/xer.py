@@ -287,6 +287,21 @@ def read_xer(text: str, project_index: int = 0) -> Project:
             assigns.append(Assignment(activity_id=id_by_task[r["task_id"]], resource_id=res[r["rsrc_id"]].id,
                                       units=_f(r.get("target_qty")), cost=_f(r.get("target_cost"))))
 
+    # activity codes
+    code_types = {r["actv_code_type_id"]: r.get("actv_code_type", "") for r in t.get("ACTVTYPE", [])}
+    code_vals = {r["actv_code_id"]: (r.get("actv_code_type_id"), r.get("actv_code_name") or r.get("short_name", ""), r.get("color", ""))
+                 for r in t.get("ACTVCODE", [])}
+    code_lib: dict[str, dict[str, str]] = {}
+    act_map = {a.id: a for a in acts}
+    for r in t.get("TASKACTV", []):
+        if r.get("task_id") in id_by_task and r.get("actv_code_id") in code_vals:
+            type_id, val, color = code_vals[r["actv_code_id"]]
+            ctype = code_types.get(type_id, type_id or "Code")
+            if not ctype or not val:
+                continue
+            act_map[id_by_task[r["task_id"]]].codes[ctype] = val
+            code_lib.setdefault(ctype, {})[val] = _color_hex(color)
+
     default_cal = pr.get("clndr_id") or (next(iter(cals)) if cals else "std")
     proj = Project(
         id=pr.get("proj_short_name") or pid, name=name,
@@ -294,10 +309,28 @@ def read_xer(text: str, project_index: int = 0) -> Project:
         data_date=_dt(pr.get("last_recalc_date", "")),
         must_finish_by=_dt(pr.get("plan_end_date", "")),
         default_calendar_id=default_cal, calendars=cals, wbs=wbs, activities=acts, relationships=rels,
-        resources=[res[k] for k in res if k in used] or list(res.values()), assignments=assigns,
+        resources=[res[k] for k in res if k in used] or list(res.values()), assignments=assigns, code_types=code_lib,
     )
     proj.ensure_default_calendar()
     return proj
+
+
+def _color_hex(v: str) -> str:
+    """P6 stores colours as a decimal BGR integer."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return "#7a8aa6"
+    return "#{:02x}{:02x}{:02x}".format(n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF)
+
+
+def _color_int(h: str | None) -> int:
+    try:
+        h = (h or "").lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return r | (g << 8) | (b << 16)
+    except (ValueError, IndexError):
+        return 0
 
 
 def read_xer_file(path: str, project_index: int = 0) -> Project:
@@ -467,7 +500,30 @@ def write_xer(project: Project, currency: str = "GBP") -> str:
                        for i, x in enumerate(project.assignments)
                        if x.activity_id in task_ids and x.resource_id in rsrc_ids])
 
-    return "\n".join([header, currtype, calendar, proj_t, projwbs, rsrc, task, taskpred, taskrsrc, "%E", ""])
+    # activity codes: one ACTVTYPE per code type, ACTVCODE per value, TASKACTV per assignment
+    lib: dict[str, dict[str, str]] = {k: dict(v) for k, v in project.code_types.items()}
+    for a in project.activities:
+        for ct, val in a.codes.items():
+            lib.setdefault(ct, {}).setdefault(val, "#7a8aa6")
+    type_ids = {ct: i + 1 for i, ct in enumerate(lib)}
+    val_ids: dict[tuple[str, str], int] = {}
+    for ct, vals in lib.items():
+        for val in vals:
+            val_ids[(ct, val)] = len(val_ids) + 1
+    actvtype = _table("ACTVTYPE", ["actv_code_type_id", "actv_short_len", "seq_num", "actv_code_type", "proj_id", "wbs_id",
+                                   "actv_code_type_scope"],
+                      [{"actv_code_type_id": type_ids[ct], "actv_short_len": 20, "seq_num": i, "actv_code_type": ct[:40],
+                        "proj_id": pid, "wbs_id": "", "actv_code_type_scope": "AS_Project"} for i, ct in enumerate(lib)])
+    actvcode = _table("ACTVCODE", ["actv_code_id", "parent_actv_code_id", "actv_code_type_id", "actv_code_name", "short_name",
+                                   "seq_num", "color", "total_assign_cnt"],
+                      [{"actv_code_id": val_ids[(ct, val)], "parent_actv_code_id": "", "actv_code_type_id": type_ids[ct],
+                        "actv_code_name": val[:120], "short_name": val[:20], "seq_num": j, "color": _color_int(col),
+                        "total_assign_cnt": sum(1 for a in project.activities if a.codes.get(ct) == val)}
+                       for ct, vals in lib.items() for j, (val, col) in enumerate(vals.items())])
+    taskactv = _table("TASKACTV", ["task_id", "actv_code_type_id", "actv_code_id", "proj_id"],
+                      [{"task_id": task_ids[a.id], "actv_code_type_id": type_ids[ct], "actv_code_id": val_ids[(ct, val)], "proj_id": pid}
+                       for a in project.activities for ct, val in a.codes.items() if (ct, val) in val_ids])
+    return "\n".join([header, currtype, calendar, proj_t, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, "%E", ""])
 
 
 def write_xer_file(project: Project, path: str) -> None:

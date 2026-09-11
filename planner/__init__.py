@@ -12,6 +12,7 @@ from .model import (
     Relationship,
     Resource,
     Assignment,
+    Baseline,
     Status,
     WBSNode,
 )
@@ -20,6 +21,6 @@ from .dcma import health_check
 
 __all__ = [
     "Activity", "ActivityType", "Calendar", "Constraint", "LinkType", "Project",
-    "Relationship", "Resource", "Assignment", "Status", "WBSNode",
+    "Relationship", "Resource", "Assignment", "Baseline", "Status", "WBSNode",
     "schedule", "ScheduleError", "health_check",
 ]

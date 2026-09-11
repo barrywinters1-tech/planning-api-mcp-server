@@ -210,6 +210,27 @@ def schedule(project: Project) -> Project:
         else:
             a.critical = a.total_float_hours <= threshold + EPS
 
+    # hammocks (level of effort): start with the earliest SS predecessor, finish with the latest FF predecessor;
+    # with no such links they span the activities in their own WBS node
+    for a in project.activities:
+        if a.type != ActivityType.LOE or a.status == Status.COMPLETE:
+            continue
+        cal = project.calendar_for(a)
+        starts = [amap[r.predecessor_id].early_start for r in preds[a.id] if r.type == LinkType.SS and amap[r.predecessor_id].early_start]
+        ends = [amap[r.predecessor_id].early_finish for r in preds[a.id] if r.type == LinkType.FF and amap[r.predecessor_id].early_finish]
+        if not starts and not ends:
+            peers = [x for x in project.activities if x.wbs_id == a.wbs_id and x.id != a.id and x.type != ActivityType.LOE and x.early_start]
+            starts = [x.actual_start or x.early_start for x in peers]
+            ends = [x.actual_finish or x.early_finish for x in peers]
+        if starts:
+            a.early_start = a.late_start = min(starts)
+        if ends:
+            a.early_finish = a.late_finish = max(ends)
+        if a.early_start and a.early_finish:
+            a.duration_hours = round(cal.hours_between(a.early_start, a.early_finish), 2)
+            a.total_float_hours = a.free_float_hours = 0.0
+            a.critical = False
+
     # ALAP activities sit on their late dates
     for a in project.activities:
         if a.constraint == Constraint.AS_LATE_AS_POSSIBLE and a.status == Status.NOT_STARTED:

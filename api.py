@@ -10,10 +10,13 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from planner import Project, schedule, health_check, ScheduleError
-from planner import store
+from planner import store, history
+from planner.analysis import cost_curve, histogram, variance
+from planner.levelling import clear_baseline, level, set_baseline, unlevel, use_baseline
 from planner.commands import CommandError, HELP, parse_command
 from planner.generator import Brief, RATES, generate, parse_brief
 from planner.io import read_any, write_any
@@ -22,8 +25,9 @@ from planner.plan import Patch, PatchOp, apply_patch, draft_to_project, schedule
 from planner.repair import plan_repairs
 from planner.model import Assignment, Resource
 
-app = FastAPI(title="Planner", version="0.2")
+app = FastAPI(title="Planner", version="0.3")
 WEB = Path(__file__).parent / "web"
+app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 
 def _view(project: Project, report=None, extra: Optional[dict] = None) -> dict:
@@ -34,7 +38,8 @@ def _view(project: Project, report=None, extra: Optional[dict] = None) -> dict:
         except ScheduleError as e:
             report = None
             extra = {**(extra or {}), "schedule_error": str(e)}
-    out = {"project": project.model_dump(mode="json"), "report": report.model_dump(mode="json") if report else None}
+    out = {"project": project.model_dump(mode="json"), "report": report.model_dump(mode="json") if report else None,
+           "history": history.depth(project.id)}
     if extra:
         out.update(extra)
     return out
@@ -95,10 +100,14 @@ def put_project(pid: str, body: ProjectIn):
     project = body.project
     project.id = pid
     try:
-        schedule(project)
+        if project.levelled:
+            level(project)
+        else:
+            schedule(project)
         report = health_check(project)
     except ScheduleError as e:
         raise HTTPException(422, str(e))
+    history.snapshot(pid)
     store.save(project)
     return _view(project, report)
 
@@ -123,6 +132,7 @@ class PatchIn(BaseModel):
 @app.post("/api/projects/{pid}/patch")
 def patch_project(pid: str, body: PatchIn):
     project = _load(pid)
+    history.snapshot(pid)
     log = apply_patch(project, body.patch)
     view = _view(project, extra={"log": log})
     store.save(project)
@@ -211,6 +221,7 @@ def command(pid: str, body: CommandIn):
         raise HTTPException(422, str(e))
     if not patch.ops:
         return {"message": patch.message, "log": [], "project": None}
+    history.snapshot(pid)
     log = _run_patch(project, patch)
     view = _view(project, extra={"log": log, "message": patch.message, "still_open": patch.still_open})
     store.save(project)
@@ -226,6 +237,7 @@ def repair(pid: str):
     except ScheduleError as e:
         raise HTTPException(422, str(e))
     patch = plan_repairs(project, rep)
+    history.snapshot(pid)
     log = apply_patch(project, patch)
     view = _view(project, extra={"log": log, "message": patch.message, "still_open": patch.still_open,
                                  "ops": [o.model_dump(mode="json", exclude_none=True) for o in patch.ops]})
@@ -269,3 +281,126 @@ def digest(pid: str):
     except ScheduleError as e:
         return {"digest": f"schedule error: {e}"}
     return {"digest": schedule_digest(project, report)}
+
+
+# ---------------------------------------------------------------- history, levelling, baselines, analysis
+@app.post("/api/projects/{pid}/undo")
+def undo(pid: str):
+    p = history.undo(pid)
+    if p is None:
+        raise HTTPException(409, "nothing to undo")
+    return _view(p)
+
+
+@app.post("/api/projects/{pid}/redo")
+def redo(pid: str):
+    p = history.redo(pid)
+    if p is None:
+        raise HTTPException(409, "nothing to redo")
+    return _view(p)
+
+
+@app.post("/api/projects/{pid}/level")
+def level_project(pid: str):
+    project = _load(pid)
+    history.snapshot(pid)
+    try:
+        level(project)
+    except ScheduleError as e:
+        raise HTTPException(422, str(e))
+    report = health_check(project)
+    store.save(project)
+    moved = sum(1 for a in project.activities if a.level_delay_hours > 0)
+    return _view(project, report, extra={"message": f"Levelled: {moved} activities delayed to stay within resource limits."})
+
+
+@app.post("/api/projects/{pid}/unlevel")
+def unlevel_project(pid: str):
+    project = _load(pid)
+    history.snapshot(pid)
+    unlevel(project)
+    view = _view(project)
+    store.save(project)
+    return view
+
+
+class BaselineIn(BaseModel):
+    name: str = "Baseline"
+
+
+@app.post("/api/projects/{pid}/baseline")
+def baseline_set(pid: str, body: BaselineIn):
+    project = _load(pid)
+    history.snapshot(pid)
+    set_baseline(project, body.name)
+    view = _view(project)
+    store.save(project)
+    return view
+
+
+@app.post("/api/projects/{pid}/baseline/use")
+def baseline_use(pid: str, body: BaselineIn):
+    project = _load(pid)
+    if not use_baseline(project, body.name):
+        raise HTTPException(404, "no such baseline")
+    history.snapshot(pid)
+    view = _view(project)
+    store.save(project)
+    return view
+
+
+@app.delete("/api/projects/{pid}/baseline")
+def baseline_clear(pid: str):
+    project = _load(pid)
+    history.snapshot(pid)
+    clear_baseline(project)
+    view = _view(project)
+    store.save(project)
+    return view
+
+
+@app.get("/api/projects/{pid}/histogram")
+def get_histogram(pid: str, resource: Optional[str] = None):
+    project = _load(pid)
+    schedule(project) if not project.levelled else level(project)
+    return histogram(project, resource)
+
+
+@app.get("/api/projects/{pid}/costs")
+def get_costs(pid: str):
+    project = _load(pid)
+    schedule(project) if not project.levelled else level(project)
+    return cost_curve(project)
+
+
+@app.get("/api/projects/{pid}/variance")
+def get_variance(pid: str):
+    project = _load(pid)
+    schedule(project) if not project.levelled else level(project)
+    return variance(project)
+
+
+class NewIn(BaseModel):
+    name: str = "New project"
+    start: str
+    project_id: Optional[str] = None
+
+
+@app.post("/api/projects")
+def new_project(body: NewIn):
+    from datetime import datetime
+    from planner.plan import _ensure_calendars
+    from planner.model import Activity, ActivityType, WBSNode
+    pid = _unique((body.project_id or "".join(ch if ch.isalnum() else "-" for ch in body.name)[:12]).upper() or "PROJ")
+    start = datetime.strptime(body.start, "%Y-%m-%d").replace(hour=8)
+    p = Project(id=pid, name=body.name, start=start, data_date=start)
+    _ensure_calendars(p)
+    p.wbs = [WBSNode(id="1", code="1", name="Works", seq=0)]
+    p.activities = [Activity(id="A1000", name="Start", type=ActivityType.START_MILESTONE, wbs_id="1"),
+                    Activity(id="A1010", name="New activity", duration_hours=40, wbs_id="1"),
+                    Activity(id="A1020", name="Finish", type=ActivityType.FINISH_MILESTONE, wbs_id="1")]
+    from planner.model import Relationship
+    p.relationships = [Relationship(predecessor_id="A1000", successor_id="A1010"), Relationship(predecessor_id="A1010", successor_id="A1020")]
+    view = _view(p)
+    store.save(p)
+    return view

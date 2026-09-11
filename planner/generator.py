@@ -494,6 +494,9 @@ def generate(brief: Brief) -> DraftPlan:
     if b.deadline:
         questions.append("Is the completion date contractual (LADs) or a target?")
     pid = re.sub(r"[^A-Za-z0-9]+", "-", (b.location or b.building_type)).strip("-").upper()[:8] or "PROJ"
+    for a in x.acts:
+        wname = next((w.name for w in x.wbs if w.code == a.wbs_code), "")
+        a.codes = {"Phase": wname, "Trade": a.trade or "None"}
     return DraftPlan(project_id=f"{pid}-{b.start_date:%y%m}", project_name=b.name, start_date=b.start_date.isoformat(),
                      must_finish_by=b.deadline.isoformat() if b.deadline else None, wbs=x.wbs, activities=x.acts,
                      constraints=constraints, assumptions=x.assumptions, questions_for_client=questions,

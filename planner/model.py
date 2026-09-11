@@ -166,15 +166,24 @@ class Resource(BaseModel):
     name: str
     type: str = "labour"  # labour | material | equipment
     unit: str = "h"
-    rate: float = 0.0
-    max_units_per_day: Optional[float] = None
+    rate: float = 0.0                              # cost per unit (per hour for labour)
+    max_units_per_day: Optional[float] = None      # people (or units) available per day; None = unlimited
+    colour: Optional[str] = None
 
 
 class Assignment(BaseModel):
     activity_id: str
     resource_id: str
-    units: float = 0.0  # total quantity (hours for labour)
-    cost: float = 0.0
+    units: float = 0.0        # total quantity (hours for labour)
+    cost: float = 0.0         # planned cost; 0 = derive from units x rate
+    actual_cost: float = 0.0
+
+
+class Baseline(BaseModel):
+    name: str
+    saved_at: datetime
+    dates: dict[str, dict] = Field(default_factory=dict)  # activity id -> {start, finish, duration_hours}
+    finish: Optional[datetime] = None
 
 
 class Activity(BaseModel):
@@ -204,6 +213,10 @@ class Activity(BaseModel):
     free_float_hours: Optional[float] = None
     critical: bool = False
     notes: str = ""
+    # classification and levelling
+    codes: dict[str, str] = Field(default_factory=dict)   # code type -> value, e.g. {"Trade": "Bricklayers"}
+    priority: int = 500                                   # levelling priority, lower = first (P6 convention)
+    level_delay_hours: float = 0.0                        # set by resource levelling
 
     @property
     def is_milestone(self) -> bool:
@@ -233,6 +246,9 @@ class Project(BaseModel):
     assignments: list[Assignment] = Field(default_factory=list)
     description: str = ""
     assumptions: list[str] = Field(default_factory=list)
+    code_types: dict[str, dict[str, str]] = Field(default_factory=dict)  # type -> {value: colour}
+    baselines: list[Baseline] = Field(default_factory=list)
+    levelled: bool = False
     # computed
     finish: Optional[datetime] = None
     scheduled_at: Optional[datetime] = None

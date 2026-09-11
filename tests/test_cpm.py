@@ -138,3 +138,27 @@ def test_health_check_flags_open_ends():
     assert not byk["logic"].passed
     assert byk["cp_test"].passed
     assert rep.score < 100
+
+
+def test_hammock_spans_linked_activities():
+    p = proj()
+    p.activities = [
+        Activity(id="A", name="A", duration_hours=16),
+        Activity(id="B", name="B", duration_hours=24),
+        Activity(id="H", name="Hammock", type=ActivityType.LOE),
+        Activity(id="S", name="Supervision", type=ActivityType.LOE, wbs_id="X"),
+        Activity(id="C", name="C", duration_hours=8, wbs_id="X"),
+    ]
+    p.relationships = [
+        Relationship(predecessor_id="A", successor_id="B"),
+        Relationship(predecessor_id="A", successor_id="H", type=LinkType.SS),
+        Relationship(predecessor_id="B", successor_id="H", type=LinkType.FF),
+        Relationship(predecessor_id="B", successor_id="C"),
+    ]
+    schedule(p)
+    a, b, h, s, c = p.activities
+    assert h.early_start == a.early_start and h.early_finish == b.early_finish
+    assert h.duration_hours == 40 and not h.critical
+    assert s.early_start == c.early_start and s.early_finish == c.early_finish  # spans its WBS node
+    rep = health_check(p)
+    assert "H" not in {i for ch in rep.checks for i in ch.items}  # LOE ignored by logic checks

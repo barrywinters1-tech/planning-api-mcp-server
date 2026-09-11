@@ -31,6 +31,9 @@ def load(pid: str) -> Project:
 
 def delete(pid: str) -> bool:
     p = _path(pid)
+    for extra in (p.with_suffix(".undo.json"), p.with_suffix(".redo.json")):
+        if extra.exists():
+            extra.unlink()
     if p.exists():
         p.unlink()
         return True
@@ -42,6 +45,8 @@ def list_projects() -> list[dict]:
     if not DATA_DIR.exists():
         return out
     for f in sorted(DATA_DIR.glob("*.json")):
+        if f.name.endswith((".undo.json", ".redo.json")):
+            continue
         try:
             pr = Project.model_validate_json(f.read_text(encoding="utf-8"))
         except Exception:

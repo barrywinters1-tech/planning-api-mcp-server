@@ -18,7 +18,10 @@ Pure code. No AI service, no API key, nothing leaves your machine.
 | P6 | `planner/xer.py`, `planner/pmxml.py` | XER read and write (including the `clndr_data` blob); P6 XML read |
 | Asta / MS Project | `planner/mspxml.py` | MSPDI XML read and write: outline WBS, calendars, links, constraints, progress, baseline, resources |
 | Anything else | `planner/mpxj_bridge.py` | Optional. With `pip install mpxj JPype1` and Java 11+, reads Asta `.pp`, MS Project `.mpp`, P3, SureTrak and more through [MPXJ](https://www.mpxj.org) |
-| Web | `api.py`, `web/index.html` | Brief form, Gantt with critical path, float bars and links, activity table, inline editor, health panel with auto-repair, command box, import/export |
+| Levelling, baselines | `planner/levelling.py` | Serial-method resource levelling against `max_units_per_day`; named baselines |
+| Analysis | `planner/analysis.py` | Resource histograms, cost S-curve, earned value (BCWS, BCWP, ACWP, SPI, CPI), baseline variance |
+| History | `planner/history.py` | Undo / redo as snapshots next to the project file |
+| Web | `api.py`, `web/` | Ribbon UI: spreadsheet with inline editing and keyboard navigation, Gantt with drag-to-move, drag-to-resize, drag-to-link, link selection, context menu, indent/outdent, insert/delete summaries and activities, undo/redo, zoom, baseline bars, float bars, progress line, colour-by code or resource, group and sort and filter, calendar / resource / code editors, resource histogram and cost bands pinned under the chart, time–location (line of balance) view, DCMA health with auto-repair, command bar, print, import/export |
 | MCP | `mcp_server.py` | Optional. Exposes the same engine as tools for an MCP client. The engine itself never calls a model |
 | UK planning data | `server.py` | The original planning.data.gov.uk MCP server, unchanged |
 
@@ -83,6 +86,12 @@ Tools: `generate_programme`, `run_command`, `repair_schedule`, `create_project_f
 5. **Schedule and check.** CPM, then DCMA. Auto-repair if you want it.
 
 Tune `RATES` in `planner/generator.py` to your own outputs. Everything is deterministic: same brief, same programme.
+
+## What it covers of Asta Powerproject
+
+Done: bar chart with spreadsheet, hierarchy (summaries, indent/outdent, expand/collapse), links with lags and all four types, constraints (flags), milestones, hammocks, calendars with exceptions, per-activity calendars, resources with limits and rates, resource histogram, levelling, baselines and variance, progress with data date and progress line, cost and earned value, activity codes with colour-coding, group / sort / filter, undo/redo, time–location chart, print, XER / P6 XML / MSPDI interop, `.pp` through the MPXJ bridge.
+
+Not yet: multi-project and sub-projects, task splitting, multiple named views and print profiles, Site Progress mobile, risk analysis, code libraries shared across projects, cash-flow with payment terms, timesheets.
 
 ## Tests
 

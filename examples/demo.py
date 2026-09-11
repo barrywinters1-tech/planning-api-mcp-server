@@ -66,6 +66,9 @@ def build() -> DraftPlan:
         A(id="A1720", name="Snagging and clean", wbs_code="6", duration_days=5, predecessors=fs("A1710"), trade="Site manager"),
         A(id="A1730", name="Practical completion", wbs_code="6", type="finish_milestone", duration_days=0, predecessors=fs("A1720")),
     ]
+    wbs_names = {"1": "Enabling works", "2": "Substructure", "3": "Superstructure and envelope", "4": "Internal fit-out", "5": "External works", "6": "Commissioning and handover"}
+    for a in acts:
+        a.codes = {"Trade": a.trade or "None", "Phase": wbs_names[a.wbs_code]}
     return DraftPlan(
         project_id="HOUSE-01", project_name="Two-storey detached house, Harrogate", start_date="2026-03-02", must_finish_by="2026-10-30",
         wbs=[W(code="1", name="Enabling works"), W(code="2", name="Substructure"), W(code="3", name="Superstructure and envelope"),

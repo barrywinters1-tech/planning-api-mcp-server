@@ -154,7 +154,13 @@
    "total_float_hours": 200.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "None",
+    "Phase": "Enabling works"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1010",
@@ -179,7 +185,13 @@
    "total_float_hours": 200.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "Enabling works"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1020",
@@ -204,7 +216,13 @@
    "total_float_hours": 248.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Utilities contractor",
+    "Phase": "Enabling works"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1030",
@@ -229,7 +247,13 @@
    "total_float_hours": 200.0,
    "free_float_hours": 8.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "Enabling works"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1100",
@@ -254,7 +278,13 @@
    "total_float_hours": 192.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": "Constraint: Planning condition 4 (construction management plan) discharged 13 March"
+   "notes": "Constraint: Planning condition 4 (construction management plan) discharged 13 March",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1110",
@@ -279,7 +309,13 @@
    "total_float_hours": 192.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Site manager",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1120",
@@ -304,7 +340,13 @@
    "total_float_hours": 192.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1130",
@@ -329,7 +371,13 @@
    "total_float_hours": 288.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "None",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1140",
@@ -354,7 +402,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Bricklayers",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1150",
@@ -379,7 +433,13 @@
    "total_float_hours": 248.0,
    "free_float_hours": 64.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1160",
@@ -404,7 +464,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1170",
@@ -429,7 +495,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "None",
+    "Phase": "Substructure"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1200",
@@ -454,7 +526,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Scaffolders",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1210",
@@ -479,7 +557,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Bricklayers",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1220",
@@ -504,7 +588,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Carpenters",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1230",
@@ -529,7 +619,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Scaffolders",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1240",
@@ -554,7 +650,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Bricklayers",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1250",
@@ -579,7 +681,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Carpenters",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1260",
@@ -604,7 +712,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Roofers",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1270",
@@ -629,7 +743,13 @@
    "total_float_hours": 496.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Roofers",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1280",
@@ -654,7 +774,13 @@
    "total_float_hours": 256.0,
    "free_float_hours": 72.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Window fitters",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1290",
@@ -679,7 +805,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "None",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1300",
@@ -704,7 +836,13 @@
    "total_float_hours": 496.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Scaffolders",
+    "Phase": "Superstructure and envelope"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1400",
@@ -729,7 +867,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Carpenters",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1410",
@@ -754,7 +898,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Electricians",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1420",
@@ -779,7 +929,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Plumbers",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1430",
@@ -804,7 +960,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Dryliners",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1440",
@@ -829,7 +991,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Plasterers",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1450",
@@ -854,7 +1022,13 @@
    "total_float_hours": 272.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "None",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1460",
@@ -879,7 +1053,13 @@
    "total_float_hours": 208.0,
    "free_float_hours": 24.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Screeders",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1470",
@@ -904,7 +1084,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Carpenters",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1480",
@@ -929,7 +1115,13 @@
    "total_float_hours": 272.0,
    "free_float_hours": 8.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Electricians",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1490",
@@ -954,7 +1146,13 @@
    "total_float_hours": 224.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Plumbers",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1500",
@@ -979,7 +1177,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Kitchen fitters",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1510",
@@ -1004,7 +1208,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Tilers",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1520",
@@ -1029,7 +1239,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Decorators",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1530",
@@ -1054,7 +1270,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Floor layers",
+    "Phase": "Internal fit-out"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1600",
@@ -1079,7 +1301,13 @@
    "total_float_hours": 496.0,
    "free_float_hours": 0.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "External works"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1610",
@@ -1104,7 +1332,13 @@
    "total_float_hours": 496.0,
    "free_float_hours": 312.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Groundworks gang",
+    "Phase": "External works"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1700",
@@ -1129,7 +1363,13 @@
    "total_float_hours": 328.0,
    "free_float_hours": 144.0,
    "critical": false,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Electricians",
+    "Phase": "Commissioning and handover"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1710",
@@ -1154,7 +1394,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Site manager",
+    "Phase": "Commissioning and handover"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1720",
@@ -1179,7 +1425,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 0.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "Site manager",
+    "Phase": "Commissioning and handover"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   },
   {
    "id": "A1730",
@@ -1204,7 +1456,13 @@
    "total_float_hours": 184.0,
    "free_float_hours": 184.0,
    "critical": true,
-   "notes": ""
+   "notes": "",
+   "codes": {
+    "Trade": "None",
+    "Phase": "Commissioning and handover"
+   },
+   "priority": 500,
+   "level_delay_hours": 0.0
   }
  ],
  "relationships": [
@@ -1545,136 +1803,153 @@
    "name": "Groundworks gang",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 4.0,
+   "colour": null
   },
   {
    "id": "UTILITIES_CONTRACTOR",
    "name": "Utilities contractor",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "SITE_MANAGER",
    "name": "Site manager",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "BRICKLAYERS",
    "name": "Bricklayers",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 6.0,
+   "colour": null
   },
   {
    "id": "SCAFFOLDERS",
    "name": "Scaffolders",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "CARPENTERS",
    "name": "Carpenters",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 3.0,
+   "colour": null
   },
   {
    "id": "ROOFERS",
    "name": "Roofers",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 3.0,
+   "colour": null
   },
   {
    "id": "WINDOW_FITTERS",
    "name": "Window fitters",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "ELECTRICIANS",
    "name": "Electricians",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 2.0,
+   "colour": null
   },
   {
    "id": "PLUMBERS",
    "name": "Plumbers",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 2.0,
+   "colour": null
   },
   {
    "id": "DRYLINERS",
    "name": "Dryliners",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "PLASTERERS",
    "name": "Plasterers",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 4.0,
+   "colour": null
   },
   {
    "id": "SCREEDERS",
    "name": "Screeders",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "KITCHEN_FITTERS",
    "name": "Kitchen fitters",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "TILERS",
    "name": "Tilers",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   },
   {
    "id": "DECORATORS",
    "name": "Decorators",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": 3.0,
+   "colour": null
   },
   {
    "id": "FLOOR_LAYERS",
    "name": "Floor layers",
    "type": "labour",
    "unit": "h",
-   "rate": 0.0,
-   "max_units_per_day": null
+   "rate": 32.0,
+   "max_units_per_day": null,
+   "colour": null
   }
  ],
  "assignments": [
@@ -1682,223 +1957,260 @@
    "activity_id": "A1010",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 120.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1020",
    "resource_id": "UTILITIES_CONTRACTOR",
    "units": 80.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1030",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 96.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1100",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1110",
    "resource_id": "SITE_MANAGER",
    "units": 8.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1120",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 64.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1140",
    "resource_id": "BRICKLAYERS",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1150",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1160",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 160.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1200",
    "resource_id": "SCAFFOLDERS",
    "units": 16.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1210",
    "resource_id": "BRICKLAYERS",
    "units": 720.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1220",
    "resource_id": "CARPENTERS",
    "units": 96.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1230",
    "resource_id": "SCAFFOLDERS",
    "units": 16.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1240",
    "resource_id": "BRICKLAYERS",
    "units": 720.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1250",
    "resource_id": "CARPENTERS",
    "units": 120.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1260",
    "resource_id": "ROOFERS",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1270",
    "resource_id": "ROOFERS",
    "units": 32.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1280",
    "resource_id": "WINDOW_FITTERS",
    "units": 32.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1300",
    "resource_id": "SCAFFOLDERS",
    "units": 16.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1400",
    "resource_id": "CARPENTERS",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1410",
    "resource_id": "ELECTRICIANS",
    "units": 96.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1420",
    "resource_id": "PLUMBERS",
    "units": 96.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1430",
    "resource_id": "DRYLINERS",
    "units": 32.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1440",
    "resource_id": "PLASTERERS",
    "units": 384.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1460",
    "resource_id": "SCREEDERS",
    "units": 16.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1470",
    "resource_id": "CARPENTERS",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1480",
    "resource_id": "ELECTRICIANS",
    "units": 80.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1490",
    "resource_id": "PLUMBERS",
    "units": 96.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1500",
    "resource_id": "KITCHEN_FITTERS",
    "units": 40.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1510",
    "resource_id": "TILERS",
    "units": 40.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1520",
    "resource_id": "DECORATORS",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1530",
    "resource_id": "FLOOR_LAYERS",
    "units": 24.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1600",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 144.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1610",
    "resource_id": "GROUNDWORKS_GANG",
    "units": 192.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1700",
    "resource_id": "ELECTRICIANS",
    "units": 24.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1710",
    "resource_id": "SITE_MANAGER",
    "units": 8.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   },
   {
    "activity_id": "A1720",
    "resource_id": "SITE_MANAGER",
    "units": 40.0,
-   "cost": 0.0
+   "cost": 0.0,
+   "actual_cost": 0.0
   }
  ],
  "description": "Two-storey detached house in Harrogate, traditional masonry construction.",
@@ -1908,6 +2220,38 @@
   "Bank holidays taken from the UK 2026 list",
   "Client supplies kitchen on 10 days' notice"
  ],
+ "code_types": {
+  "Trade": {
+   "None": "#4e79a7",
+   "Groundworks gang": "#f28e2b",
+   "Utilities contractor": "#59a14f",
+   "Site manager": "#e15759",
+   "Bricklayers": "#76b7b2",
+   "Scaffolders": "#edc948",
+   "Carpenters": "#b07aa1",
+   "Roofers": "#ff9da7",
+   "Window fitters": "#9c755f",
+   "Electricians": "#bab0ac",
+   "Plumbers": "#1f77b4",
+   "Dryliners": "#2ca02c",
+   "Plasterers": "#d62728",
+   "Screeders": "#9467bd",
+   "Kitchen fitters": "#8c564b",
+   "Tilers": "#e377c2",
+   "Decorators": "#17becf",
+   "Floor layers": "#bcbd22"
+  },
+  "Phase": {
+   "Enabling works": "#4e79a7",
+   "Substructure": "#f28e2b",
+   "Superstructure and envelope": "#59a14f",
+   "Internal fit-out": "#e15759",
+   "External works": "#76b7b2",
+   "Commissioning and handover": "#edc948"
+  }
+ },
+ "baselines": [],
+ "levelled": false,
  "finish": "2026-09-29T16:00:00",
- "scheduled_at": "2026-09-11T21:16:37.126670"
+ "scheduled_at": "2026-09-11T21:50:20.657988"
 }

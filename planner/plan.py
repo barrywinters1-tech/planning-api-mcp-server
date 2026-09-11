@@ -53,6 +53,7 @@ class PlanActivity(BaseModel):
     calendar: Literal["standard", "six_day", "seven_day"] = "standard"
     predecessors: list[PlanLink] = Field(default_factory=list)
     trade: str = Field(default="", description="Gang / trade / resource responsible, e.g. 'Groundworks gang'")
+    codes: dict[str, str] = Field(default_factory=dict, description="Activity code values, e.g. {'Trade': 'Bricklayers', 'Zone': 'A'}")
     crew_size: float = Field(default=0, description="People on the gang, 0 if unknown")
     rationale: str = Field(default="", description="One line on why this duration and logic")
 
@@ -173,15 +174,25 @@ def draft_to_project(draft: DraftPlan, description: str = "") -> Project:
         act = Activity(id=a.id.strip(), name=a.name.strip(), wbs_id=a.wbs_code if a.wbs_code in known_wbs else None,
                        calendar_id=a.calendar, type=ActivityType(a.type),
                        duration_hours=0.0 if a.type != "task" else cal.days_to_hours(max(0.0, a.duration_days)),
-                       notes=a.rationale)
+                       notes=a.rationale, codes=dict(a.codes))
         project.activities.append(act)
         if a.trade:
             rid = re.sub(r"[^A-Za-z0-9]+", "_", a.trade).strip("_").upper()[:20]
             if rid not in trades:
-                trades[rid] = Resource(id=rid, name=a.trade, type="labour")
+                trades[rid] = Resource(id=rid, name=a.trade, type="labour", max_units_per_day=a.crew_size or None, rate=32.0)
+            elif a.crew_size and (trades[rid].max_units_per_day or 0) < a.crew_size:
+                trades[rid].max_units_per_day = a.crew_size
             project.assignments.append(Assignment(activity_id=act.id, resource_id=rid,
                                                   units=act.duration_hours * (a.crew_size or 1)))
     project.resources = list(trades.values())
+    # code libraries with a stable colour per value
+    palette = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2", "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac",
+               "#1f77b4", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#17becf", "#bcbd22"]
+    for act in project.activities:
+        for ctype, val in act.codes.items():
+            vals = project.code_types.setdefault(ctype, {})
+            if val not in vals:
+                vals[val] = palette[len(vals) % len(palette)]
     ids = {a.id for a in project.activities}
     for a in draft.activities:
         pcal = project.calendars[a.calendar]
