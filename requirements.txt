@@ -1,2 +1,9 @@
-mcp[cli]
+mcp[cli]<2
 requests
+anthropic>=1.5
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic>=2
+pytest
+httpx

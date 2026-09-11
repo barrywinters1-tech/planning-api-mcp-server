@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Planner</title>
+<style>
+:root{
+  --bg:#f6f7f9;--panel:#fff;--ink:#16181d;--muted:#5f6670;--line:#e2e5ea;--accent:#1f5eff;--accent-ink:#fff;
+  --crit:#d92d20;--bar:#7a8aa6;--bar-ink:#fff;--ms:#16181d;--ok:#12805c;--warn:#b54708;--sel:#e8efff;--grid:#eef0f3;--today:#7c3aed;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1115;--panel:#171a21;--ink:#e8eaf0;--muted:#98a0ad;--line:#2a2f3a;--accent:#5b8cff;--crit:#f26a5e;--bar:#8b9bb8;
+  --ms:#e8eaf0;--ok:#3ccf91;--warn:#f5a524;--sel:#1f2a44;--grid:#1c2029;--today:#a78bfa;}}
+:root[data-theme="dark"]{--bg:#0f1115;--panel:#171a21;--ink:#e8eaf0;--muted:#98a0ad;--line:#2a2f3a;--accent:#5b8cff;--crit:#f26a5e;--bar:#8b9bb8;--ms:#e8eaf0;--ok:#3ccf91;--warn:#f5a524;--sel:#1f2a44;--grid:#1c2029;--today:#a78bfa;}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select,textarea{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+input,select,textarea{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+textarea{width:100%;resize:vertical}
+.app{display:grid;grid-template-rows:auto 1fr;height:100%}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+header h1{font-size:16px;margin:0 8px 0 0}
+header .spacer{flex:1}
+.main{display:grid;grid-template-columns:340px 1fr;min-height:0}
+@media (max-width:900px){.main{grid-template-columns:1fr;grid-template-rows:auto 1fr}}
+aside{border-right:1px solid var(--line);background:var(--panel);padding:14px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+aside h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0}
+.status{font-size:13px;color:var(--muted);min-height:1.4em}
+.status.err{color:var(--crit)}
+.content{display:flex;flex-direction:column;min-height:0}
+.tabs{display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--line);background:var(--panel)}
+.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 12px;color:var(--muted)}
+.tabs button.on{color:var(--ink);border-bottom-color:var(--accent)}
+.tab{display:none;flex:1;min-height:0;overflow:auto}
+.tab.on{display:block}
+.summary{display:flex;gap:16px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted)}
+.summary b{color:var(--ink);font-weight:600}
+.gantt-wrap{display:grid;grid-template-columns:360px 1fr;min-height:0;height:100%}
+.gantt-left{overflow:hidden;border-right:1px solid var(--line);background:var(--panel)}
+.gantt-right{overflow:auto}
+.gl-head,.gl-row{display:grid;grid-template-columns:70px 1fr 50px 60px;gap:6px;padding:0 10px;height:28px;align-items:center;white-space:nowrap;overflow:hidden;font-size:13px}
+.gl-head{height:44px;color:var(--muted);border-bottom:1px solid var(--line);font-size:12px}
+.gl-row{border-bottom:1px solid var(--grid);cursor:pointer}
+.gl-row.wbs{font-weight:600;background:var(--grid)}
+.gl-row.sel{background:var(--sel)}
+.gl-row .id{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.gl-row .nm{overflow:hidden;text-overflow:ellipsis}
+.gl-row .tf{text-align:right;font-family:var(--mono);font-size:12px}
+.gl-row .tf.neg{color:var(--crit)}
+svg text{font-family:inherit}
+.tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);padding:6px 8px;border-radius:6px;font-size:12px;display:none;z-index:10;max-width:320px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:500}
+td input{width:100%;padding:3px 6px}
+td.num,th.num{text-align:right;font-family:var(--mono);font-size:12px}
+.crit{color:var(--crit)}
+.health{padding:16px;display:grid;grid-template-columns:200px 1fr;gap:16px}
+@media (max-width:700px){.health{grid-template-columns:1fr}}
+.score{font-size:48px;font-weight:700;line-height:1}
+.check{padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:var(--panel)}
+.check .t{display:flex;justify-content:space-between;gap:8px}
+.check .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;background:var(--ok)}
+.check.fail .dot{background:var(--crit)}
+.check.na .dot{background:var(--muted)}
+.check .d{color:var(--muted);font-size:13px;margin-top:4px}
+.check .items{font-family:var(--mono);font-size:12px;margin-top:6px;word-break:break-word}
+.notes{padding:16px;max-width:820px}
+.notes ul{padding-left:20px}
+.detail{padding:12px;border-top:1px solid var(--line);background:var(--panel);display:none;font-size:13px}
+.detail.on{display:block}
+.detail .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.detail label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}
+.chat{position:fixed;right:16px;bottom:16px;width:min(420px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.15);display:flex;flex-direction:column;max-height:60vh}
+.chat header{border:none;padding:10px 14px;background:transparent}
+.chat .log{overflow:auto;padding:0 14px;font-size:13px;flex:1}
+.chat .msg{margin:8px 0;padding:8px 10px;border-radius:10px;background:var(--grid)}
+.chat .msg.me{background:var(--sel)}
+.chat .msg pre{margin:6px 0 0;font-size:11px;white-space:pre-wrap;color:var(--muted)}
+.chat form{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
+.chat form input{flex:1}
+.chat.min .log,.chat.min form{display:none}
+.hint{font-size:12px;color:var(--muted)}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:var(--grid);font-size:12px;color:var(--muted)}
+kbd{font-family:var(--mono);font-size:12px;background:var(--grid);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="app">
+<header>
+  <h1>AI Planner</h1>
+  <select id="projSel" title="Open project"><option value="">— open a project —</option></select>
+  <button id="btnReload" title="Recalculate">Recalculate</button>
+  <label class="hint">Import <input type="file" id="fileIn" accept=".xer,.xml,.json" style="display:none"><button type="button" onclick="document.getElementById('fileIn').click()">XER / MSP XML</button></label>
+  <span class="hint">Export</span>
+  <button data-x="xer">P6 XER</button><button data-x="xml">MS Project / Asta XML</button><button data-x="json">JSON</button>
+  <span class="spacer"></span>
+  <button id="btnDelete" title="Delete this project">Delete</button>
+</header>
+<div class="main">
+  <aside>
+    <h2>Describe the project</h2>
+    <textarea id="brief" rows="12" placeholder="e.g. New-build 24-unit three-storey apartment block in Leeds, RC frame on CFA piles, brick and render envelope, gas-free with ASHPs. Start on site 6 April 2026, client wants handover before Christmas 2027. Site is a cleared brownfield plot with a live 11kV cable to divert."></textarea>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="primary" id="btnPlan">Plan it</button>
+      <label class="hint"><input type="checkbox" id="review" checked> self-review against DCMA</label>
+      <select id="effort" title="Model effort"><option value="high" selected>high</option><option value="xhigh">xhigh</option><option value="medium">medium</option></select>
+    </div>
+    <div class="status" id="planStatus"></div>
+    <p class="hint">The AI drafts the WBS, activities, durations and logic. The CPM engine computes every date. The DCMA 14-point check then tells the AI what to fix. Needs <kbd>ANTHROPIC_API_KEY</kbd> on the server.</p>
+    <h2>Without an API key</h2>
+    <p class="hint">Point Claude Desktop or Claude Code at <kbd>mcp_server.py</kbd> and Claude builds the schedule through the same engine. Or import an XER / MS Project XML to get the Gantt and health check.</p>
+  </aside>
+  <div class="content">
+    <div class="summary" id="summary"><span>No project open.</span></div>
+    <div class="tabs">
+      <button data-t="gantt" class="on">Gantt</button>
+      <button data-t="table">Activities</button>
+      <button data-t="health">Health</button>
+      <button data-t="notes">Notes</button>
+    </div>
+    <div class="tab on" id="tab-gantt">
+      <div class="gantt-wrap">
+        <div class="gantt-left" id="gl"></div>
+        <div class="gantt-right" id="gr"></div>
+      </div>
+    </div>
+    <div class="tab" id="tab-table"><table id="tbl"></table></div>
+    <div class="tab" id="tab-health"><div class="health" id="healthBox"></div></div>
+    <div class="tab" id="tab-notes"><div class="notes" id="notesBox"></div></div>
+    <div class="detail" id="detail"></div>
+  </div>
+</div>
+</div>
+<div class="tip" id="tip"></div>
+<div class="chat" id="chat">
+  <header><b>Ask the planner</b><span class="spacer"></span><button id="chatMin">–</button></header>
+  <div class="log" id="chatLog"><div class="msg">Open a project, then tell me what to change: <i>“add two weeks to piling”</i>, <i>“the client wants handover by 1 Nov”</i>, <i>“fix the failing checks”</i>, <i>“mark site set-up 50% complete as of 20 April”</i>.</div></div>
+  <form id="chatForm"><input id="chatIn" placeholder="What should change?" autocomplete="off"><button class="primary">Send</button></form>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { pid: null, project: null, report: null, sel: null, extra: {} };
+const fmtD = s => s ? new Date(s).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'2-digit'}) : '';
+const hpd = a => { const c = state.project.calendars[a.calendar_id || state.project.default_calendar_id]; return c ? c.hours_per_day : 8; };
+const days = (a, h) => h == null ? '' : (Math.round(h / hpd(a) * 10) / 10);
+const predsText = a => state.project.relationships.filter(r => r.successor_id === a.id)
+  .map(r => r.predecessor_id + (r.type === 'FS' ? '' : r.type) + (r.lag_hours ? (r.lag_hours > 0 ? '+' : '') + days(a, r.lag_hours) + 'd' : '')).join(', ');
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
+  return r.json();
+}
+function setStatus(t, err) { const el = $('#planStatus'); el.textContent = t; el.className = 'status' + (err ? ' err' : ''); }
+
+async function loadList() {
+  const list = await api('/api/projects');
+  const sel = $('#projSel'); const cur = sel.value;
+  sel.innerHTML = '<option value="">— open a project —</option>' + list.map(p => `<option value="${p.id}">${p.name} (${p.activities})</option>`).join('');
+  sel.value = state.pid || cur || '';
+}
+async function open(pid) {
+  if (!pid) return;
+  const v = await api('/api/projects/' + encodeURIComponent(pid));
+  show(v); state.pid = pid; $('#projSel').value = pid; try { localStorage.setItem('pid', pid); } catch {}
+}
+function show(v) {
+  state.project = v.project; state.report = v.report; state.pid = v.project.id;
+  state.extra = { log: v.log, draft: v.draft, review: v.review, patch: v.patch, schedule_error: v.schedule_error };
+  renderSummary(); renderGantt(); renderTable(); renderHealth(); renderNotes(); renderDetail();
+}
+function renderSummary() {
+  const p = state.project, r = state.report;
+  const crit = p.activities.filter(a => a.critical).length;
+  $('#summary').innerHTML = [
+    `<span><b>${p.name}</b> <span class="pill">${p.id}</span></span>`,
+    `<span>Start <b>${fmtD(p.start)}</b></span>`,
+    `<span>Finish <b>${fmtD(p.finish)}</b></span>`,
+    p.must_finish_by ? `<span>Must finish by <b>${fmtD(p.must_finish_by)}</b></span>` : '',
+    `<span>Data date <b>${fmtD(p.data_date || p.start)}</b></span>`,
+    `<span><b>${p.activities.length}</b> activities, <b>${p.relationships.length}</b> links, <b class="${crit ? 'crit' : ''}">${crit}</b> critical</span>`,
+    r ? `<span>Health <b style="color:${r.score >= 90 ? 'var(--ok)' : r.score >= 70 ? 'var(--warn)' : 'var(--crit)'}">${r.score}/100</b></span>` : '',
+    state.extra.schedule_error ? `<span class="crit">${state.extra.schedule_error}</span>` : ''
+  ].join('');
+}
+
+// ---------------- Gantt ----------------
+function rows() {
+  const p = state.project, out = [];
+  const byW = {}; p.activities.forEach(a => (byW[a.wbs_id || ''] = byW[a.wbs_id || ''] || []).push(a));
+  const kids = {}; p.wbs.forEach(w => (kids[w.parent_id || ''] = kids[w.parent_id || ''] || []).push(w));
+  const walk = (parent, depth) => {
+    (kids[parent] || []).sort((a, b) => a.seq - b.seq).forEach(w => {
+      const acts = collect(w.id);
+      const s = acts.length ? acts.map(a => a.actual_start || a.early_start).filter(Boolean).sort()[0] : null;
+      const f = acts.length ? acts.map(a => a.actual_finish || a.early_finish).filter(Boolean).sort().slice(-1)[0] : null;
+      out.push({ wbs: w, depth, start: s, finish: f });
+      (byW[w.id] || []).forEach(a => out.push({ act: a, depth: depth + 1 }));
+      walk(w.id, depth + 1);
+    });
+  };
+  const collect = wid => { const acc = [...(byW[wid] || [])]; (kids[wid] || []).forEach(k => acc.push(...collect(k.id))); return acc; };
+  walk('', 0);
+  (byW[''] || []).forEach(a => out.push({ act: a, depth: 0 }));
+  return out;
+}
+function renderGantt() {
+  const p = state.project, rs = rows();
+  const gl = $('#gl'), gr = $('#gr');
+  gl.innerHTML = `<div class="gl-head"><span>ID</span><span>Activity</span><span>Dur</span><span style="text-align:right">Float</span></div>` +
+    rs.map(r => r.wbs
+      ? `<div class="gl-row wbs" style="padding-left:${10 + r.depth * 12}px"><span class="id">${r.wbs.code || ''}</span><span class="nm">${r.wbs.name}</span><span></span><span></span></div>`
+      : `<div class="gl-row ${state.sel === r.act.id ? 'sel' : ''}" data-id="${r.act.id}" style="padding-left:${10 + r.depth * 12}px"><span class="id">${r.act.id}</span><span class="nm ${r.act.critical ? 'crit' : ''}">${r.act.name}</span><span class="tf">${r.act.type === 'task' ? days(r.act, r.act.duration_hours) + 'd' : '◆'}</span><span class="tf ${r.act.total_float_hours < 0 ? 'neg' : ''}">${r.act.total_float_hours == null ? '' : days(r.act, r.act.total_float_hours) + 'd'}</span></div>`
+    ).join('');
+  gl.querySelectorAll('[data-id]').forEach(el => el.onclick = () => select(el.dataset.id));
+
+  const dates = p.activities.flatMap(a => [a.actual_start || a.early_start, a.actual_finish || a.early_finish, a.late_finish]).filter(Boolean).map(d => new Date(d));
+  if (!dates.length) { gr.innerHTML = ''; return; }
+  let t0 = new Date(Math.min(new Date(p.start), ...dates)), t1 = new Date(Math.max(...dates));
+  t0 = new Date(t0.getFullYear(), t0.getMonth(), t0.getDate() - t0.getDay() + 1); // Monday
+  t1 = new Date(t1.getFullYear(), t1.getMonth(), t1.getDate() + 10);
+  const spanDays = (t1 - t0) / 864e5, pxDay = Math.max(3, Math.min(24, 1200 / spanDays));
+  const W = Math.ceil(spanDays * pxDay) + 40, RH = 28, H0 = 44, H = H0 + rs.length * RH + 10;
+  const x = d => 20 + (new Date(d) - t0) / 864e5 * pxDay;
+  let s = `<svg width="${W}" height="${H}" font-size="11">`;
+  // month + week grid
+  for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7)) {
+    s += `<line x1="${x(d)}" y1="${H0}" x2="${x(d)}" y2="${H}" stroke="var(--grid)"/>`;
+    if (pxDay >= 6) s += `<text x="${x(d) + 2}" y="${H0 - 6}" fill="var(--muted)">${d.getDate()}</text>`;
+  }
+  for (let d = new Date(t0.getFullYear(), t0.getMonth(), 1); d < t1; d.setMonth(d.getMonth() + 1)) {
+    s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--line)"/>`;
+    s += `<text x="${x(d) + 4}" y="14" fill="var(--ink)" font-weight="600">${d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })}</text>`;
+  }
+  const dd = new Date(p.data_date || p.start);
+  s += `<line x1="${x(dd)}" y1="${H0}" x2="${x(dd)}" y2="${H}" stroke="var(--today)" stroke-dasharray="4 3"/>`;
+  if (p.must_finish_by) s += `<line x1="${x(p.must_finish_by)}" y1="${H0}" x2="${x(p.must_finish_by)}" y2="${H}" stroke="var(--crit)" stroke-dasharray="2 3"/>`;
+  const yOf = {}; rs.forEach((r, i) => { if (r.act) yOf[r.act.id] = H0 + i * RH; });
+  // links
+  p.relationships.forEach(r => {
+    const a = p.activities.find(q => q.id === r.predecessor_id), b = p.activities.find(q => q.id === r.successor_id);
+    if (!a || !b || yOf[a.id] == null || yOf[b.id] == null) return;
+    const ax = x(r.type[0] === 'S' ? (a.actual_start || a.early_start) : (a.actual_finish || a.early_finish));
+    const bx = x(r.type[1] === 'S' ? (b.actual_start || b.early_start) : (b.actual_finish || b.early_finish));
+    const ay = yOf[a.id] + RH / 2, by = yOf[b.id] + RH / 2, crit = a.critical && b.critical;
+    const mid = r.type === 'FS' ? Math.max(ax + 6, bx - 6) : ax + 6;
+    s += `<polyline points="${ax},${ay} ${mid},${ay} ${mid},${by} ${bx},${by}" fill="none" stroke="${crit ? 'var(--crit)' : 'var(--muted)'}" stroke-width="1" opacity=".6"/>`;
+    s += `<polygon points="${bx},${by} ${bx - 5},${by - 3} ${bx - 5},${by + 3}" fill="${crit ? 'var(--crit)' : 'var(--muted)'}" opacity=".7"/>`;
+  });
+  rs.forEach((r, i) => {
+    const y = H0 + i * RH;
+    if (r.wbs) {
+      s += `<rect x="0" y="${y}" width="${W}" height="${RH}" fill="var(--grid)" opacity=".5"/>`;
+      if (r.start && r.finish) s += `<rect x="${x(r.start)}" y="${y + 10}" width="${Math.max(2, x(r.finish) - x(r.start))}" height="6" fill="var(--ink)" opacity=".7"/>`;
+      return;
+    }
+    const a = r.act, st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish;
+    if (!st) return;
+    const sel = state.sel === a.id;
+    if (sel) s += `<rect x="0" y="${y}" width="${W}" height="${RH}" fill="var(--sel)"/>`;
+    const g = `data-id="${a.id}" style="cursor:pointer"`;
+    if (a.type !== 'task' || a.duration_hours === 0) {
+      const cx = x(a.type === 'finish_milestone' ? fi : st), cy = y + RH / 2;
+      s += `<polygon ${g} points="${cx},${cy - 7} ${cx + 7},${cy} ${cx},${cy + 7} ${cx - 7},${cy}" fill="${a.critical ? 'var(--crit)' : 'var(--ms)'}"/>`;
+      s += `<text x="${cx + 10}" y="${cy + 4}" fill="var(--muted)">${a.name}</text>`;
+    } else {
+      const bx = x(st), bw = Math.max(2, x(fi) - bx);
+      if (a.late_start && a.late_finish && a.total_float_hours > 0)
+        s += `<rect x="${bx + bw}" y="${y + 12}" width="${Math.max(0, x(a.late_finish) - (bx + bw))}" height="4" fill="var(--muted)" opacity=".35"/>`;
+      s += `<rect ${g} x="${bx}" y="${y + 7}" width="${bw}" height="14" rx="3" fill="${a.critical ? 'var(--crit)' : 'var(--bar)'}"/>`;
+      if (a.percent_complete > 0) s += `<rect x="${bx}" y="${y + 11}" width="${bw * Math.min(100, a.percent_complete) / 100}" height="6" fill="var(--ink)" opacity=".6"/>`;
+      s += `<text x="${bx + bw + 6}" y="${y + 18}" fill="var(--muted)">${a.name}</text>`;
+    }
+  });
+  s += '</svg>';
+  gr.innerHTML = s;
+  gr.querySelectorAll('[data-id]').forEach(el => {
+    el.onclick = () => select(el.dataset.id);
+    el.onmousemove = e => { const a = p.activities.find(q => q.id === el.dataset.id); tip(e, `<b>${a.id} ${a.name}</b><br>${fmtD(a.actual_start || a.early_start)} → ${fmtD(a.actual_finish || a.early_finish)}<br>Dur ${days(a, a.duration_hours)}d · TF ${days(a, a.total_float_hours)}d · FF ${days(a, a.free_float_hours)}d${a.constraint !== 'none' ? '<br>' + a.constraint.replaceAll('_', ' ') + ' ' + fmtD(a.constraint_date) : ''}${a.notes ? '<br><i>' + a.notes + '</i>' : ''}`); };
+    el.onmouseleave = () => $('#tip').style.display = 'none';
+  });
+}
+function tip(e, html) { const t = $('#tip'); t.innerHTML = html; t.style.display = 'block'; t.style.left = (e.clientX + 12) + 'px'; t.style.top = (e.clientY + 12) + 'px'; }
+function select(id) { state.sel = state.sel === id ? null : id; renderGantt(); renderDetail(); }
+
+// ---------------- Table ----------------
+function renderTable() {
+  const p = state.project;
+  $('#tbl').innerHTML = `<tr><th>ID</th><th>Activity</th><th>WBS</th><th>Type</th><th class="num">Dur (d)</th><th>Start</th><th>Finish</th><th class="num">TF (d)</th><th>Predecessors</th><th>Constraint</th><th>Status</th></tr>` +
+    p.activities.map(a => `<tr data-id="${a.id}" class="${a.critical ? 'crit' : ''}"><td style="font-family:var(--mono)">${a.id}</td><td>${a.name}</td><td>${a.wbs_id || ''}</td><td>${a.type.replace('_', ' ')}</td><td class="num">${days(a, a.duration_hours)}</td><td>${fmtD(a.actual_start || a.early_start)}</td><td>${fmtD(a.actual_finish || a.early_finish)}</td><td class="num ${a.total_float_hours < 0 ? 'crit' : ''}">${days(a, a.total_float_hours)}</td><td style="font-family:var(--mono);font-size:12px">${predsText(a)}</td><td>${a.constraint === 'none' ? '' : a.constraint.replaceAll('_', ' ') + ' ' + fmtD(a.constraint_date)}</td><td>${a.status === 'not_started' ? '' : a.status.replace('_', ' ') + ' ' + a.percent_complete + '%'}</td></tr>`).join('');
+  $('#tbl').querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => { select(tr.dataset.id); showTab('gantt'); });
+}
+
+// ---------------- Detail editor ----------------
+function renderDetail() {
+  const d = $('#detail'); const a = state.project && state.project.activities.find(q => q.id === state.sel);
+  if (!a) { d.className = 'detail'; return; }
+  d.className = 'detail on';
+  const cals = Object.values(state.project.calendars).map(c => `<option value="${c.id}" ${a.calendar_id === c.id ? 'selected' : ''}>${c.name}</option>`).join('');
+  const cons = ['none', 'start_on_or_after', 'start_on_or_before', 'finish_on_or_after', 'finish_on_or_before', 'must_start_on', 'must_finish_on', 'as_late_as_possible'].map(c => `<option ${a.constraint === c ? 'selected' : ''}>${c}</option>`).join('');
+  d.innerHTML = `<div class="grid">
+    <label>ID<input value="${a.id}" disabled></label>
+    <label>Name<input id="dName" value="${a.name.replace(/"/g, '&quot;')}"></label>
+    <label>Type<select id="dType"><option ${a.type === 'task' ? 'selected' : ''}>task</option><option ${a.type === 'start_milestone' ? 'selected' : ''}>start_milestone</option><option ${a.type === 'finish_milestone' ? 'selected' : ''}>finish_milestone</option></select></label>
+    <label>Duration (days)<input id="dDur" type="number" step="0.5" value="${days(a, a.duration_hours)}"></label>
+    <label>Calendar<select id="dCal">${cals}</select></label>
+    <label>Predecessors <span class="hint">A1010, A1020SS+2d</span><input id="dPred" value="${predsText(a)}"></label>
+    <label>Constraint<select id="dCon">${cons}</select></label>
+    <label>Constraint date<input id="dConD" type="date" value="${a.constraint_date ? a.constraint_date.slice(0, 10) : ''}"></label>
+    <label>% complete<input id="dPct" type="number" min="0" max="100" value="${a.percent_complete}"></label>
+    <label>Actual start<input id="dAS" type="date" value="${a.actual_start ? a.actual_start.slice(0, 10) : ''}"></label>
+    <label>Actual finish<input id="dAF" type="date" value="${a.actual_finish ? a.actual_finish.slice(0, 10) : ''}"></label>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="primary" id="dSave">Save & recalculate</button><button id="dDel">Delete activity</button><span class="hint">ES ${fmtD(a.early_start)} · EF ${fmtD(a.early_finish)} · LS ${fmtD(a.late_start)} · LF ${fmtD(a.late_finish)}</span><span class="hint" style="margin-left:auto">${a.notes || ''}</span></div>`;
+  $('#dSave').onclick = () => saveDetail(a);
+  $('#dDel').onclick = () => { if (!confirm('Delete ' + a.id + '?')) return; const p = state.project; p.activities = p.activities.filter(q => q.id !== a.id); p.relationships = p.relationships.filter(r => r.predecessor_id !== a.id && r.successor_id !== a.id); state.sel = null; putProject(); };
+}
+function saveDetail(a) {
+  const p = state.project;
+  a.name = $('#dName').value; a.type = $('#dType').value; a.calendar_id = $('#dCal').value;
+  a.duration_hours = a.type === 'task' ? (+$('#dDur').value || 0) * hpd(a) : 0;
+  a.constraint = $('#dCon').value; a.constraint_date = a.constraint === 'none' ? null : ($('#dConD').value ? $('#dConD').value + (a.constraint.includes('finish') ? 'T16:00:00' : 'T08:00:00') : null);
+  if (a.constraint !== 'none' && !a.constraint_date) a.constraint = 'none';
+  a.percent_complete = +$('#dPct').value || 0;
+  a.actual_start = $('#dAS').value ? $('#dAS').value + 'T08:00:00' : null;
+  a.actual_finish = $('#dAF').value ? $('#dAF').value + 'T16:00:00' : null;
+  a.status = a.actual_finish ? 'complete' : (a.actual_start || a.percent_complete > 0) ? 'in_progress' : 'not_started';
+  if (a.status === 'in_progress') { a.remaining_hours = a.duration_hours * (1 - a.percent_complete / 100); if (!a.actual_start) a.actual_start = p.data_date || p.start; }
+  if (a.status === 'complete') { a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start) a.actual_start = a.actual_finish; }
+  if (a.status === 'not_started') a.remaining_hours = null;
+  p.relationships = p.relationships.filter(r => r.successor_id !== a.id);
+  $('#dPred').value.split(',').map(s => s.trim()).filter(Boolean).forEach(tok => {
+    const m = tok.match(/^([A-Za-z0-9_.-]+?)(FS|SS|FF|SF)?([+-]\d+(?:\.\d+)?)?d?$/i);
+    if (!m || !p.activities.find(q => q.id === m[1])) return;
+    const pred = p.activities.find(q => q.id === m[1]);
+    p.relationships.push({ predecessor_id: m[1], successor_id: a.id, type: (m[2] || 'FS').toUpperCase(), lag_hours: (+(m[3] || 0)) * hpd(pred) });
+  });
+  putProject();
+}
+async function putProject() {
+  try { const v = await api('/api/projects/' + encodeURIComponent(state.pid), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: state.project }) }); show(v); setStatus('Saved and recalculated.'); }
+  catch (e) { setStatus(e.message, true); alert(e.message); }
+}
+
+// ---------------- Health ----------------
+function renderHealth() {
+  const r = state.report, box = $('#healthBox');
+  if (!r) { box.innerHTML = '<p class="hint">No health report (schedule did not calculate).</p>'; return; }
+  const col = r.score >= 90 ? 'var(--ok)' : r.score >= 70 ? 'var(--warn)' : 'var(--crit)';
+  box.innerHTML = `<div><div class="score" style="color:${col}">${r.score}</div><div class="hint">DCMA 14-point + planner checks</div><p class="hint">${r.summary}</p><button class="primary" id="btnFix">Ask the planner to fix</button></div><div>` +
+    r.checks.map(c => `<div class="check ${!c.applicable ? 'na' : c.passed ? '' : 'fail'}"><div class="t"><span><span class="dot"></span>${c.title}</span><span class="hint">${c.value != null ? c.value : ''} ${c.threshold ? '· ' + c.threshold : ''}</span></div><div class="d">${c.detail}</div>${c.items && c.items.length ? `<div class="items">${c.items.slice(0, 60).map(i => `<a href="#" data-i="${i}">${i}</a>`).join(', ')}${c.items.length > 60 ? ' …' : ''}</div>` : ''}</div>`).join('') + '</div>';
+  box.querySelectorAll('a[data-i]').forEach(a => a.onclick = e => { e.preventDefault(); const id = a.dataset.i.split('->')[0]; select(id); showTab('gantt'); });
+  $('#btnFix').onclick = () => sendChat('Fix the failing health checks. Do not delete scope.');
+}
+function renderNotes() {
+  const p = state.project, x = state.extra;
+  $('#notesBox').innerHTML = (x.draft ? `<h3>Planner's summary</h3><p>${x.draft.summary}</p>` : '') +
+    (p.description ? `<h3>Brief</h3><p style="white-space:pre-wrap">${p.description}</p>` : '') +
+    `<h3>Assumptions</h3><ul>${(p.assumptions || []).map(a => `<li>${a}</li>`).join('') || '<li class="hint">none recorded</li>'}</ul>` +
+    (x.draft && x.draft.questions_for_client.length ? `<h3>Questions for the client</h3><ul>${x.draft.questions_for_client.map(q => `<li>${q}</li>`).join('')}</ul>` : '') +
+    (x.review ? `<h3>Self-review</h3><p>${x.review.message}</p>${x.review.still_open.length ? '<p class="hint">Left open: ' + x.review.still_open.join('; ') + '</p>' : ''}` : '') +
+    (x.log ? `<h3>Log</h3><pre class="hint">${x.log.join('\n')}</pre>` : '') +
+    `<h3>Calendars</h3><ul>${Object.values(p.calendars).map(c => `<li><b>${c.name}</b> (${c.id}): ${c.hours_per_day}h/day, ${c.working_days.length} days/week, ${Object.keys(c.exceptions).length} exceptions</li>`).join('')}</ul>` +
+    `<h3>Resources</h3><ul>${p.resources.map(r => `<li>${r.name} <span class="pill">${r.type}</span></li>`).join('') || '<li class="hint">none</li>'}</ul>`;
+}
+
+// ---------------- Jobs ----------------
+async function waitJob(id, onTick) {
+  for (;;) {
+    const j = await api('/api/jobs/' + id);
+    if (j.status === 'done') return j.result;
+    if (j.status === 'error') throw new Error(j.error);
+    onTick && onTick(j);
+    await new Promise(r => setTimeout(r, 1500));
+  }
+}
+$('#btnPlan').onclick = async () => {
+  const description = $('#brief').value.trim();
+  if (description.length < 20) return setStatus('Write a proper brief first.', true);
+  $('#btnPlan').disabled = true; const t0 = Date.now();
+  try {
+    const { job_id } = await api('/api/plan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ description, review: $('#review').checked, effort: $('#effort').value }) });
+    const v = await waitJob(job_id, () => setStatus(`Planning… ${Math.round((Date.now() - t0) / 1000)}s. Drafting WBS and logic, then scheduling, then self-review.`));
+    show(v); await loadList(); $('#projSel').value = v.project.id; try { localStorage.setItem('pid', v.project.id); } catch {}
+    setStatus(`Done in ${Math.round((Date.now() - t0) / 1000)}s: ${v.project.activities.length} activities, health ${v.report ? v.report.score : '-'}/100.`);
+    addMsg(`Drafted <b>${v.project.name}</b>: ${v.project.activities.length} activities finishing ${fmtD(v.project.finish)}. ${v.draft ? v.draft.summary : ''}${v.review ? '<br><br><b>Self-review:</b> ' + v.review.message : ''}`, v.log);
+    showTab('gantt');
+  } catch (e) { setStatus(e.message, true); }
+  $('#btnPlan').disabled = false;
+};
+
+// ---------------- Chat ----------------
+function addMsg(html, log, me) { const el = document.createElement('div'); el.className = 'msg' + (me ? ' me' : ''); el.innerHTML = html + (log && log.length ? `<pre>${log.join('\n')}</pre>` : ''); $('#chatLog').appendChild(el); $('#chatLog').scrollTop = 1e9; }
+async function sendChat(text) {
+  if (!state.pid) return addMsg('Open or plan a project first.');
+  addMsg(text, null, true); const t0 = Date.now();
+  const busy = document.createElement('div'); busy.className = 'msg'; busy.textContent = 'Thinking…'; $('#chatLog').appendChild(busy);
+  try {
+    const { job_id } = await api('/api/projects/' + encodeURIComponent(state.pid) + '/edit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instruction: text, effort: $('#effort').value }) });
+    const v = await waitJob(job_id, () => busy.textContent = `Thinking… ${Math.round((Date.now() - t0) / 1000)}s`);
+    busy.remove(); show(v);
+    addMsg(`${v.patch.message}<br><span class="hint">Finish now ${fmtD(v.project.finish)} · health ${v.report ? v.report.score : '-'}/100${v.patch.still_open.length ? '<br>Left open: ' + v.patch.still_open.join('; ') : ''}</span>`, v.log);
+  } catch (e) { busy.remove(); addMsg('<span class="crit">' + e.message + '</span>'); }
+}
+$('#chatForm').onsubmit = e => { e.preventDefault(); const t = $('#chatIn').value.trim(); if (!t) return; $('#chatIn').value = ''; sendChat(t); };
+$('#chatMin').onclick = () => $('#chat').classList.toggle('min');
+
+// ---------------- misc wiring ----------------
+function showTab(t) { document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.id === 'tab-' + t)); }
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.t));
+$('#projSel').onchange = e => open(e.target.value);
+$('#btnReload').onclick = async () => { if (state.pid) show(await api('/api/projects/' + encodeURIComponent(state.pid) + '/schedule', { method: 'POST' })); };
+$('#btnDelete').onclick = async () => { if (!state.pid || !confirm('Delete project ' + state.pid + '?')) return; await api('/api/projects/' + encodeURIComponent(state.pid), { method: 'DELETE' }); state.pid = null; state.project = null; $('#summary').innerHTML = '<span>No project open.</span>'; $('#gl').innerHTML = $('#gr').innerHTML = $('#tbl').innerHTML = $('#healthBox').innerHTML = $('#notesBox').innerHTML = ''; $('#detail').className = 'detail'; loadList(); };
+document.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { if (state.pid) location.href = '/api/projects/' + encodeURIComponent(state.pid) + '/export.' + b.dataset.x; });
+$('#fileIn').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  try { const v = await api('/api/import', { method: 'POST', body: fd }); show(v); await loadList(); $('#projSel').value = v.project.id; setStatus(`Imported ${f.name}: ${v.project.activities.length} activities.`); }
+  catch (err) { setStatus(err.message, true); alert(err.message); }
+  e.target.value = '';
+};
+(async () => { await loadList(); let last = null; try { last = localStorage.getItem('pid'); } catch {} if (last) open(last).catch(() => {}); })();
+</script>
+</body>
+</html>
