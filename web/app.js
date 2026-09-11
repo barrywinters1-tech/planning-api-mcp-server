@@ -178,6 +178,7 @@ function render() {
   const x = d => GX + (new Date(d) - t0) / DAY * px; S.x = x;
   // header
   $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px">` + S.cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${k}">${ALL_COLS[k].t}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
+  $$('#hdr .c[data-col]').forEach(el => { const h = document.createElement('span'); h.className = 'colgrip'; el.appendChild(h); h.onmousedown = e => { e.stopPropagation(); e.preventDefault(); const k = el.dataset.col, x0 = e.clientX, w0 = ALL_COLS[k].w; const mv = ev => { ALL_COLS[k].w = Math.max(30, w0 + ev.clientX - x0); el.style.width = ALL_COLS[k].w + 'px'; }; const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); try { localStorage.setItem('colw', JSON.stringify(Object.fromEntries(Object.entries(ALL_COLS).map(([k, c]) => [k, c.w])))); } catch { } render(); }; document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); }; });
   $$('#hdr .c[data-col]').forEach(el => el.onclick = () => { const k = el.dataset.col; S.view.sort = S.view.sort === k ? '' : (['start', 'finish', 'tf', 'id', 'name'].includes(k) ? (k === 'tf' ? 'float' : k) : S.view.sort); $('#vSort').value = S.view.sort; render(); });
   // rows
   const bandH = 0;
@@ -308,7 +309,7 @@ function renderTimeLocation(gw, W, t0, t1) {
   const LH = 44, lw = 180;
   let locs, locOf;
   if (src === 'WBS') { locs = p.wbs.filter(w => !w.parent_id).sort((a, b) => a.seq - b.seq).map(w => w.name); locOf = a => { let w = wbsById(a.wbs_id); while (w && w.parent_id) w = wbsById(w.parent_id); return w ? w.name : null; }; }
-  else { locs = Object.keys(p.code_types[src] || {}).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })); locOf = a => (a.codes || {})[src] || null; }
+  else { locOf = a => (a.codes || {})[src] || null; const first = {}; p.activities.forEach(a => { const l = locOf(a), st = a.actual_start || a.early_start; if (l && st && (!first[l] || st < first[l])) first[l] = st; }); locs = Object.keys(p.code_types[src] || {}).filter(l => first[l]).sort((a, b) => first[a].localeCompare(first[b])); }
   const yOf = Object.fromEntries(locs.map((l, i) => [l, i * LH]));
   const H = Math.max(1, locs.length) * LH;
   const acts = p.activities.filter(a => locOf(a) != null && (a.actual_start || a.early_start) && !(S.view.critical && !a.critical));
@@ -329,8 +330,8 @@ function renderTimeLocation(gw, W, t0, t1) {
     else sv += `<polygon class="hit bar" data-id="${a.id}" points="${s0},${y0 + 4} ${f0},${y0 + 4} ${f0},${y0 + LH - 4} ${s0},${y0 + LH - 4}" fill="${col}" opacity=".18"/><line class="hit bar" data-id="${a.id}" x1="${s0}" y1="${y0 + LH - 4}" x2="${f0}" y2="${y0 + 4}" stroke="${crit ? 'var(--crit)' : col}" stroke-width="2.5"/>`;
     (byTrade[trade(a)] = byTrade[trade(a)] || []).push({ a, y0, s0, f0 });
   });
-  Object.entries(byTrade).forEach(([t, items]) => { if (items.length < 2) return; items.sort((u, v) => u.y0 - v.y0); for (let i = 0; i < items.length - 1; i++) { const u = items[i], v = items[i + 1]; if (v.y0 === u.y0) continue; sv += `<line x1="${u.f0}" y1="${u.y0 + 4}" x2="${v.s0}" y2="${v.y0 + LH - 4}" stroke="${colour(u.a)}" stroke-dasharray="3 3" opacity=".7"/>`; } });
-  acts.forEach(a => { const y0 = yOf[locOf(a)], s0 = x(a.actual_start || a.early_start); sv += `<text x="${s0 + 3}" y="${y0 + 13}" fill="var(--muted)" font-size="10">${esc(a.name.length > 28 ? a.name.slice(0, 27) + '…' : a.name)}</text>`; });
+  Object.entries(byTrade).forEach(([t, items]) => { if (items.length < 2) return; items.sort((u, v) => u.s0 - v.s0); for (let i = 0; i < items.length - 1; i++) { const u = items[i], v = items[i + 1]; if (v.y0 === u.y0 || v.s0 < u.f0 - 1 || v.s0 - u.f0 > 60 * S.view.pxDay) continue; sv += `<line x1="${u.f0}" y1="${u.y0 + 4}" x2="${v.s0}" y2="${v.y0 + LH - 4}" stroke="${colour(u.a)}" stroke-dasharray="3 3" opacity=".7"/>`; } });
+  acts.forEach(a => { const y0 = yOf[locOf(a)], s0 = x(a.actual_start || a.early_start), f0 = x(a.actual_finish || a.early_finish); if (f0 - s0 < 56 && a.type === 'task') return; sv += `<text x="${s0 + 3}" y="${y0 + 13}" fill="var(--muted)" font-size="10">${esc(a.name.length > Math.max(6, (f0 - s0) / 6) ? a.name.slice(0, Math.max(5, (f0 - s0) / 6)) + '…' : a.name)}</text>`; });
   const leg = Object.keys(byTrade).sort().map(t => `<span><span class="swatch" style="background:${(p.code_types.Trade || {})[t] || hashColour(t)}"></span>${esc(t)}</span>`).join(' ');
   $('#rows').innerHTML = locs.map((l, i) => `<div class="row" style="height:${LH}px"><div class="cells" style="width:${gw}px;height:${LH}px"><div class="c" style="width:${gw}px;font-weight:600">${esc(l)}</div></div></div>`).join('') +
     (locs.length ? '' : `<div class="row"><div class="cells" style="width:${gw}px"><div class="c hint">No locations: choose a code type with values, or add WBS summaries.</div></div></div>`) +
@@ -433,7 +434,7 @@ function wireChart() {
   });
   svg.querySelectorAll('.handle').forEach(h => h.onmousedown = e => { if (e.button !== 0) return; e.stopPropagation(); selectRow(h.dataset.id, e); startDrag(e, 'resize', h.dataset.id, h.previousElementSibling && h.previousElementSibling.classList.contains('bar') ? h.previousElementSibling : svg.querySelector(`.bar[data-id="${CSS.escape(h.dataset.id)}"]`)); });
   svg.querySelectorAll('.linkdot').forEach(d => d.onmousedown = e => { if (e.button !== 0) return; e.stopPropagation(); startDrag(e, 'link', d.dataset.id, d); });
-  svg.querySelectorAll('.link').forEach(l => l.onmousedown = e => { e.stopPropagation(); S.selLink = { p: l.dataset.p, s: l.dataset.s }; S.sel = new Set(); paintSelection(); });
+  svg.querySelectorAll('.link').forEach(l => { l.onmousedown = e => { e.stopPropagation(); S.selLink = { p: l.dataset.p, s: l.dataset.s }; S.sel = new Set(); paintSelection(); }; l.ondblclick = e => { e.stopPropagation(); linkDialog(l.dataset.p, l.dataset.s); }; });
 }
 function startDrag(e, kind, id, el) {
   const a = byId(id); const sheet = $('#sheet'); const rect = sheet.getBoundingClientRect();
@@ -548,11 +549,25 @@ function linkSelected() { const acts = selectedRowsInOrder().filter(r => r.act).
 function unlinkSelected() { const ids = new Set(selectedActs().map(a => a.id)); if (ids.size < 2 && !S.selLink) return toast('Select two or more linked activities'); mutate(p => { if (S.selLink) { const l = S.selLink; p.relationships = p.relationships.filter(r => !(r.predecessor_id === l.p && r.successor_id === l.s)); S.selLink = null; } else p.relationships = p.relationships.filter(r => !(ids.has(r.predecessor_id) && ids.has(r.successor_id))); }, 'Unlinked'); }
 function toggleMilestone() { const acts = selectedActs(); if (!acts.length) return; mutate(p => acts.forEach(a => { if (a.type === 'task') { a.type = p.relationships.some(r => r.successor_id === a.id) ? 'finish_milestone' : 'start_milestone'; a.duration_hours = 0; } else { a.type = 'task'; a.duration_hours = 8 * hpd(a) / 8 * 5; } }), 'Toggled milestone'); }
 
+function copySelected() { const acts = selectedRowsInOrder().filter(r => r.act).map(r => r.act); if (!acts.length) return; S.clip = JSON.parse(JSON.stringify({ acts, links: S.project.relationships.filter(r => acts.some(a => a.id === r.predecessor_id) && acts.some(a => a.id === r.successor_id)), assigns: S.project.assignments.filter(x => acts.some(a => a.id === x.activity_id)) })); toast(`${acts.length} copied`); }
+function pasteClip() {
+  if (!S.clip) return toast('Nothing copied');
+  mutate(p => {
+    const r = S.rowsCache.find(r => rowKey(r) === S.active); let idx = r && r.act ? p.activities.indexOf(r.act) + 1 : p.activities.length;
+    const wbs = r ? (r.act ? r.act.wbs_id : r.wbs ? r.wbs.id : null) : null; const map = {};
+    const nums = p.activities.map(a => parseInt((a.id.match(/\d+/) || ['0'])[0])); let n = Math.max(1000, ...nums);
+    S.clip.acts.forEach(src => { n += 10; while (byId('A' + n)) n += 10; const a = { ...src, id: 'A' + n, wbs_id: wbs, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, constraint: 'none', constraint_date: null, level_delay_hours: 0, codes: { ...(src.codes || {}) } }; map[src.id] = a.id; p.activities.splice(idx++, 0, a); });
+    S.clip.links.forEach(l => p.relationships.push({ predecessor_id: map[l.predecessor_id], successor_id: map[l.successor_id], type: l.type, lag_hours: l.lag_hours }));
+    S.clip.assigns.forEach(x => p.assignments.push({ ...x, activity_id: map[x.activity_id] }));
+    S.sel = new Set(Object.values(map)); S.active = Object.values(map)[0];
+  }, `${S.clip.acts.length} pasted`);
+}
 // ---------- context menu ----------
 function contextMenu(x, y) {
   const acts = selectedActs(); const one = acts.length === 1 ? acts[0] : null; const m = $('#ctx');
   const items = [
     ['Insert activity below', insertActivity], ['Insert summary below', insertSummary], ['Delete', deleteSelected], null,
+    ['Copy', copySelected], ['Paste below', pasteClip], null,
     ['Indent', () => indent(1)], ['Outdent', () => indent(-1)], ['Move up', () => moveRow(-1)], ['Move down', () => moveRow(1)], null,
     ['Link selected (FS)', linkSelected], ['Unlink selected', unlinkSelected], null,
     one ? ['Edit…', () => activityDialog(one.id)] : null,
@@ -613,6 +628,14 @@ function activityDialog(id) {
       else { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; }
     }, `${a.id} updated`);
   }, 'Save');
+}
+function linkDialog(pid, sid) {
+  const r = S.project.relationships.find(r => r.predecessor_id === pid && r.successor_id === sid); if (!r) return;
+  const a = byId(pid);
+  modal(`Link ${pid} → ${sid}`, `<div class="grid"><label>Type<select name="t">${['FS', 'SS', 'FF', 'SF'].map(t => `<option ${r.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label><label>Lag (days)<input name="lag" type="number" step="0.5" value="${fmt1(daysOf(a, r.lag_hours))}"></label></div><p class="hint">${esc(a.name)} → ${esc(byId(sid).name)}. Delete removes the link.</p><button type="button" id="lDel">Delete link</button>`, m => {
+    mutate(p => { r.type = m.querySelector('[name=t]').value; r.lag_hours = (+m.querySelector('[name=lag]').value || 0) * hpd(a); }, 'Link updated');
+  }, 'Save');
+  $('#lDel').onclick = () => { $('#mCancel').click(); mutate(p => { p.relationships = p.relationships.filter(x => x !== r); S.selLink = null; }, 'Link removed'); };
 }
 function progressDialog() {
   const acts = selectedActs(); if (!acts.length) return toast('Select activities first');
@@ -680,6 +703,18 @@ function codesDialog() {
     body.querySelectorAll('[data-delv]').forEach(b => b.onclick = () => { const [t, v] = b.dataset.delv.split('|'); delete p.code_types[t][v]; p.activities.forEach(a => { if ((a.codes || {})[t] === v) delete a.codes[t]; }); body.innerHTML = draw(); wire(); });
     body.querySelectorAll('[data-addv]').forEach(b => b.onclick = () => { const t = b.dataset.addv; const v = body.querySelector(`[data-newv="${CSS.escape(t)}"]`).value.trim(); if (!v) return; p.code_types[t][v] = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'); body.innerHTML = draw(); wire(); });
     body.querySelector('#addT').onclick = () => { const t = body.querySelector('[name=newt]').value.trim(); if (!t || p.code_types[t]) return; p.code_types[t] = {}; body.innerHTML = draw(); wire(); };
+  };
+  wire();
+}
+function viewsDialog() {
+  const load = () => { try { return JSON.parse(localStorage.getItem('views') || '{}'); } catch { return {}; } };
+  const views = load();
+  modal('Views', `<p class="hint">A view remembers columns, widths, zoom, chart type, toggles, colour, group, sort, filter and panel.</p><table>${Object.keys(views).map(n => `<tr><td>${esc(n)}</td><td><button type="button" data-apply="${esc(n)}">Apply</button> <button type="button" data-del="${esc(n)}">×</button></td></tr>`).join('') || '<tr><td class="hint" colspan="2">No saved views yet</td></tr>'}</table><p><input name="vn" placeholder="Name for the current view"> <button type="button" id="vSave">Save current</button></p>`, null);
+  const m = $('#modal');
+  const wire = () => {
+    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => { const v = load()[b.dataset.apply]; if (!v) return; S.cols = v.cols; Object.entries(v.widths || {}).forEach(([k, w]) => { if (ALL_COLS[k]) ALL_COLS[k].w = w; }); Object.assign(S.view, v.view); S.panel = v.panel; ['links', 'float', 'baseline', 'progress', 'critical'].forEach(k => { $('#v' + k[0].toUpperCase() + k.slice(1)).checked = !!S.view[k]; }); $('#vMode').value = S.view.mode; $('#vSort').value = S.view.sort; $('#vFilter').value = S.view.filter; $('#mCancel').click(); render(); refreshPanel(); });
+    m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const v = load(); delete v[b.dataset.del]; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); });
+    m.querySelector('#vSave').onclick = () => { const n = m.querySelector('[name=vn]').value.trim(); if (!n) return; const v = load(); v[n] = { cols: S.cols, widths: Object.fromEntries(S.cols.map(k => [k, ALL_COLS[k].w])), view: { ...S.view }, panel: S.panel }; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); toast('View saved'); };
   };
   wire();
 }
@@ -776,6 +811,8 @@ function wireToolbar() {
   $('#vColour').onchange = e => { S.view.colour = e.target.value; render(); }; $('#vGroup').onchange = e => { S.view.group = e.target.value; render(); }; $('#vSort').onchange = e => { S.view.sort = e.target.value; render(); };
   $('#vFilter').oninput = e => { S.view.filter = e.target.value; render(); };
   $('#btnColumns').onclick = columnsDialog;
+  $('#btnToday').onclick = () => { if (!S.project) return; const sheet = $('#sheet'); sheet.scrollLeft = Math.max(0, gridWidth() + S.x(S.project.data_date || S.project.start) - 300 - gridWidth()); };
+  $('#btnViews').onclick = viewsDialog;
   $('#vMode').onchange = e => { S.view.mode = e.target.value; $('#vTl').hidden = S.view.mode !== 'tl'; render(); };
   $('#vTl').onchange = e => { S.view.tlSource = e.target.value; render(); };
   $('#dataDate').onchange = e => mutate(p => { p.data_date = e.target.value + 'T08:00:00'; }, 'Data date moved');
@@ -804,6 +841,7 @@ function onKey(e) {
   else if (k === ' ' && wbsById(S.active)) { e.preventDefault(); toggleCollapse(S.active); }
   else if (e.altKey && k === 'ArrowUp') { e.preventDefault(); moveRow(-1); } else if (e.altKey && k === 'ArrowDown') { e.preventDefault(); moveRow(1); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'l') { e.preventDefault(); linkSelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'u') { e.preventDefault(); unlinkSelected(); }
+  else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'c') { e.preventDefault(); copySelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'v') { e.preventDefault(); pasteClip(); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'a') { e.preventDefault(); S.sel = new Set(S.rowsCache.map(rowKey)); paintSelection(); }
   else if (k === 'Escape') { S.sel = new Set(); S.selLink = null; paintSelection(); }
   else if (k === '+' || k === '=') zoom(1.25); else if (k === '-') zoom(0.8);
@@ -812,7 +850,7 @@ function onKey(e) {
 
 // ---------- init ----------
 (async () => {
-  try { const c = JSON.parse(localStorage.getItem('cols') || 'null'); if (Array.isArray(c) && c.length) S.cols = c.filter(k => ALL_COLS[k]); } catch { }
+  try { const c = JSON.parse(localStorage.getItem('cols') || 'null'); if (Array.isArray(c) && c.length) S.cols = c.filter(k => ALL_COLS[k]); const w = JSON.parse(localStorage.getItem('colw') || 'null'); if (w) Object.entries(w).forEach(([k, v]) => { if (ALL_COLS[k] && v > 20) ALL_COLS[k].w = v; }); } catch { }
   wireToolbar();
   await loadList();
   let last = null; try { last = localStorage.getItem('pid'); } catch { }

@@ -110,3 +110,5 @@ svg text{font-family:inherit;font-size:11px}
 .bandrow{position:sticky;bottom:0;z-index:3;display:flex;background:var(--panel);border-top:1px solid var(--line);height:150px}
 .bandrow .cells{position:sticky;left:0;z-index:4;flex-direction:column;align-items:flex-start;padding:6px 8px;font-size:12px;height:150px;border-bottom:none}
 .bandrow svg{display:block}
+.colgrip{position:absolute;right:0;top:0;width:6px;height:100%;cursor:col-resize}
+.hdr-grid .c{position:relative}
