@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from planner import schedule, health_check, Constraint, Status
-from planner.ai_planner import (DraftPlan, PlanActivity, PlanLink, PlanWBS, PlanConstraint, Patch, PatchOp,
+from planner.plan import (DraftPlan, PlanActivity, PlanLink, PlanWBS, PlanConstraint, Patch, PatchOp,
                                 draft_to_project, apply_patch, schedule_digest)
 
 

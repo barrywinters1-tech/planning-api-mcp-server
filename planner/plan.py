@@ -1,18 +1,16 @@
-"""The AI planner: description -> draft plan -> scheduled project -> self-review -> patched project.
+"""Structured plan shapes and deterministic operations on a Project.
 
-Everything the model produces is a structured object (a DraftPlan or a Patch).
-Applying it to the schedule is deterministic code, so the CPM engine, not the
-model, decides the dates.
+`DraftPlan` is the neutral description of a programme (WBS, activities in working
+days, links, constraints). `draft_to_project` turns it into a scheduled model.
+`Patch` / `apply_patch` are small, auditable edit operations used by the command
+language, the DCMA repairer and the MCP tools. No AI anywhere in here.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 from datetime import date, datetime, time, timedelta
 from typing import Literal, Optional
 
-import anthropic
 from pydantic import BaseModel, Field
 
 from .cpm import ScheduleError, schedule
@@ -20,8 +18,22 @@ from .dcma import HealthReport, health_check
 from .model import (Activity, ActivityType, Assignment, Calendar, Constraint, LinkType, Project,
                     Relationship, Resource, Status, WBSNode)
 
-MODEL = os.environ.get("PLANNER_MODEL", "claude-opus-5")
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+PLANNING_RULES = """Rules the generator and the repairer follow (the same rules an experienced planner works to):
+- Read the brief. Where it is silent, make the assumption an experienced planner would make and record it. Never invent client decisions; record those as questions.
+- Structure the work breakdown by phase then by element (enabling works, substructure, superstructure/frame, envelope, fit-out, MEP, external works, commissioning, handover). Two or three levels, no more.
+- One start milestone at the top, one finish milestone at the bottom. Every other activity has at least one predecessor and one successor. No open ends, no dangling logic.
+- Prefer finish-to-start links. Use start-to-start with lag for trades that follow each other floor-by-floor or zone-by-zone. Never use negative lag. Keep positive lags rare and short.
+- Durations in working days. Size them from realistic gang outputs and quantities. Split anything longer than about 40 working days into stages or zones so progress can be measured.
+- Include the boring but real items: mobilisation, temporary works, inspections and approvals, curing and drying times (model these as lag or as a zero-resource activity), commissioning, snagging, client handover.
+- Respect sequencing physics: you cannot build the frame before the foundations, cannot close the envelope before the frame, cannot commission before power-on, cannot fit ceilings before first-fix services above them.
+- Use constraints sparingly and only for genuine external dates (planning conditions, possession, statutory connections, client deadline). Prefer soft constraints (start-on-or-after, finish-on-or-before) over must-start/finish.
+- Calendars: 'standard' is Monday to Friday 8h. Use 'six_day' only for trades the brief says work Saturdays. 'seven_day' only for curing or continuous processes.
+- Activity ids: A1000, A1010, A1020 ... in order.
+- British English. Concise names a site manager would recognise ("Excavate pile caps", not "Perform excavation of pile cap areas").
+"""
+
+
 
 # ------------------------------------------------------------------------------------
 # structured shapes the model fills in
@@ -105,45 +117,8 @@ class Patch(BaseModel):
 
 
 # ------------------------------------------------------------------------------------
-# prompts
-# ------------------------------------------------------------------------------------
-PLANNER_SYSTEM = """You are a senior construction planner with twenty years on UK building and civils projects, fluent in Primavera P6 and Asta Powerproject. You produce tender and construction programmes that survive a DCMA 14-point check and a client review.
-
-How you plan:
-- Read the brief. Where it is silent, make the assumption an experienced planner would make and record it. Never invent client decisions; record those as questions.
-- Structure the work breakdown by phase then by element (enabling works, substructure, superstructure/frame, envelope, fit-out, MEP, external works, commissioning, handover). Two or three levels, no more.
-- One start milestone at the top, one finish milestone at the bottom. Every other activity has at least one predecessor and one successor. No open ends, no dangling logic.
-- Prefer finish-to-start links. Use start-to-start with lag for trades that follow each other floor-by-floor or zone-by-zone. Never use negative lag. Keep positive lags rare and short.
-- Durations in working days. Size them from realistic gang outputs and quantities. Split anything longer than about 40 working days into stages or zones so progress can be measured.
-- Include the boring but real items: mobilisation, temporary works, inspections and approvals, curing and drying times (model these as lag or as a zero-resource activity), commissioning, snagging, client handover.
-- Respect sequencing physics: you cannot build the frame before the foundations, cannot close the envelope before the frame, cannot commission before power-on, cannot fit ceilings before first-fix services above them.
-- Use constraints sparingly and only for genuine external dates (planning conditions, possession, statutory connections, client deadline). Prefer soft constraints (start-on-or-after, finish-on-or-before) over must-start/finish.
-- Calendars: 'standard' is Monday to Friday 8h. Use 'six_day' only for trades the brief says work Saturdays. 'seven_day' only for curing or continuous processes.
-- Activity ids: A1000, A1010, A1020 ... in order.
-- British English. Concise names a site manager would recognise ("Excavate pile caps", not "Perform excavation of pile cap areas").
-"""
-
-REVIEWER_SYSTEM = """You are the same senior planner, now reviewing a schedule that has been run through a critical-path engine and a DCMA 14-point check. Your job is to fix what is wrong with the fewest, safest changes, expressed as patch operations.
-
-Rules:
-- Fix every failing check you can with logic, duration or constraint changes. Do not delete scope to make a check pass.
-- Missing logic: add the FS link an experienced planner would add. Dangling SS-only or FF-only activities need a matching finish or start link.
-- Negative float: first remove or soften the constraint that causes it; only then compress durations, and say so.
-- High duration: split into stages (add_activity + links) or accept it with a reason in still_open if it is genuinely one continuous process.
-- Do not add lags to hide missing logic. Do not use negative lags.
-- If the person's instruction is the reason for the change (e.g. "add two weeks to piling"), do exactly that and report the effect.
-- Keep ids stable. New activities continue the A#### sequence.
-- Everything you leave alone goes in still_open with a one-line reason.
-"""
-
-
-# ------------------------------------------------------------------------------------
 # helpers
 # ------------------------------------------------------------------------------------
-def _client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(timeout=900.0, max_retries=2)
-
-
 def _parse_date(s: Optional[str], hour: int = 8) -> Optional[datetime]:
     if not s:
         return None
@@ -154,35 +129,6 @@ def _parse_date(s: Optional[str], hour: int = 8) -> Optional[datetime]:
         except ValueError:
             continue
     return None
-
-
-def _structured(system: str, user: str, output_format: type[BaseModel], effort: str = "high",
-                max_tokens: int = 64000, on_text=None) -> BaseModel:
-    client = _client()
-    with client.beta.messages.stream(
-        model=MODEL,
-        max_tokens=max_tokens,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user}],
-        output_format=output_format,
-        output_config={"effort": effort},
-        betas=[FALLBACK_BETA],
-        fallbacks="default",
-    ) as stream:
-        for text in stream.text_stream:
-            if on_text:
-                on_text(text)
-        msg = stream.get_final_message()
-    if msg.stop_reason == "refusal":
-        cat = getattr(getattr(msg, "stop_details", None), "category", None)
-        raise RuntimeError(f"The model declined this request ({cat}).")
-    for block in msg.content:
-        if block.type == "text":
-            parsed = getattr(block, "parsed_output", None)
-            if parsed is not None:
-                return parsed
-            return output_format.model_validate(json.loads(block.text))
-    raise RuntimeError("No text block in the model's response")
 
 
 STANDARD_CALENDARS = {
@@ -441,66 +387,6 @@ def schedule_digest(project: Project, report: Optional[HealthReport] = None, max
     return "\n".join(lines)
 
 
-# ------------------------------------------------------------------------------------
-# public entry points
-# ------------------------------------------------------------------------------------
-class PlanResult(BaseModel):
-    project: Project
-    report: HealthReport
-    draft: Optional[DraftPlan] = None
-    review: Optional[Patch] = None
-    log: list[str] = Field(default_factory=list)
-
-
 def run_schedule(project: Project) -> HealthReport:
     schedule(project)
     return health_check(project)
-
-
-def plan_from_description(description: str, today: Optional[date] = None, review: bool = True,
-                          effort: str = "high", on_text=None) -> PlanResult:
-    today = today or date.today()
-    user = (f"Today is {today:%A %d %B %Y}.\n\nClient brief:\n\"\"\"\n{description.strip()}\n\"\"\"\n\n"
-            "Produce the full programme as a DraftPlan. Be complete: a tender programme for this brief would normally "
-            "have between 40 and 150 activities depending on scale. Every activity except the start milestone needs "
-            "at least one predecessor; every activity except the finish milestone needs at least one successor.")
-    draft = _structured(PLANNER_SYSTEM, user, DraftPlan, effort=effort, on_text=on_text)
-    project = draft_to_project(draft, description)
-    log: list[str] = [f"draft: {len(project.activities)} activities, {len(project.relationships)} links"]
-    try:
-        report = run_schedule(project)
-    except ScheduleError as e:
-        log.append(f"schedule error: {e}")
-        patch = review_project(project, None, f"The schedule failed to calculate: {e}. Fix the logic loop.", effort=effort)
-        log += apply_patch(project, patch)
-        report = run_schedule(project)
-    patch = None
-    if review and report.failing():
-        patch = review_project(project, report, effort=effort)
-        log += apply_patch(project, patch)
-        try:
-            report = run_schedule(project)
-        except ScheduleError as e:
-            log.append(f"review introduced a loop: {e}; reverting review")
-            project = draft_to_project(draft, description)
-            report = run_schedule(project)
-    return PlanResult(project=project, report=report, draft=draft, review=patch, log=log)
-
-
-def review_project(project: Project, report: Optional[HealthReport], instruction: str = "", effort: str = "high") -> Patch:
-    digest = schedule_digest(project, report)
-    ask = instruction or "Review the failing checks and return the patch that fixes them."
-    user = f"Current schedule:\n\n{digest}\n\nInstruction: {ask}\n\nReturn a Patch."
-    return _structured(REVIEWER_SYSTEM, user, Patch, effort=effort, max_tokens=32000)
-
-
-def edit_with_instruction(project: Project, instruction: str, effort: str = "high") -> tuple[Patch, list[str], HealthReport]:
-    """Natural-language change request -> patch -> rescheduled project."""
-    try:
-        report = run_schedule(project)
-    except ScheduleError:
-        report = None
-    patch = review_project(project, report, instruction=instruction, effort=effort)
-    log = apply_patch(project, patch)
-    report = run_schedule(project)
-    return patch, log, report

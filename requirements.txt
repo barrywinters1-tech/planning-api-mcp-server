@@ -1,9 +1,11 @@
 mcp[cli]<2
 requests
-anthropic>=1.5
 fastapi
 uvicorn[standard]
 python-multipart
 pydantic>=2
 pytest
 httpx
+# optional: reads Asta Powerproject .pp, MS Project .mpp, P3, SureTrak etc. via MPXJ (needs Java 11+)
+# mpxj
+# JPype1

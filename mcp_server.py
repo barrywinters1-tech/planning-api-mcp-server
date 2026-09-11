@@ -1,12 +1,12 @@
-"""MCP server: lets Claude (Desktop, Code, or any MCP client) act as the planner.
+"""MCP server: exposes the scheduling engine as tools for any MCP client.
 
-Run with stdio for Claude Desktop / Claude Code:
+Optional. The product itself makes no model calls; this just lets an MCP client
+(Claude Desktop, Claude Code, or anything else) drive the same pure-code engine.
+
+Run with stdio:
     python mcp_server.py
 Or over HTTP:
     MCP_TRANSPORT=streamable-http python mcp_server.py
-
-The AI on the other end builds the schedule with these tools; the CPM engine
-here computes the dates and the DCMA check keeps it honest.
 """
 from __future__ import annotations
 
@@ -18,9 +18,12 @@ from mcp.server.fastmcp import FastMCP
 
 from planner import Project, schedule, health_check, ScheduleError
 from planner import store
-from planner.ai_planner import (Patch, PatchOp, PLANNER_SYSTEM, apply_patch, _ensure_calendars, schedule_digest,
-                                draft_to_project, DraftPlan)
+from planner.plan import (Patch, PatchOp, PLANNING_RULES, apply_patch, _ensure_calendars, schedule_digest,
+                          draft_to_project, DraftPlan)
+from planner.commands import CommandError, parse_command
+from planner.generator import Brief, generate, parse_brief
 from planner.io import read_any, write_any
+from planner.repair import plan_repairs
 
 mcp = FastMCP(
     "AI Construction Planner",
@@ -58,7 +61,48 @@ def _calc(project: Project) -> dict:
 @mcp.tool()
 def planning_guidelines() -> str:
     """The planning rules an experienced planner follows. Read before drafting a programme."""
-    return PLANNER_SYSTEM
+    return PLANNING_RULES
+
+
+@mcp.tool()
+def generate_programme(brief_text: str = "", brief: Optional[Brief] = None) -> dict:
+    """Generate a complete programme from a plain-English brief (or a structured Brief) using production
+    rates and sequencing rules. No AI involved. Returns the project id, dates and the health report."""
+    b = brief or parse_brief(brief_text)
+    p = draft_to_project(generate(b), brief_text)
+    if any(x["id"] == p.id for x in store.list_projects()):
+        p.id = f"{p.id}-2"
+    return {"project_id": p.id, "brief": b.model_dump(mode="json"), **_calc(p)}
+
+
+@mcp.tool()
+def run_command(project_id: str, text: str) -> dict:
+    """Apply one schedule command, e.g. 'add 2 weeks to A1240', 'link A1010 -> A1020 SS+2d',
+    'finish by 1 Nov 2026', 'progress A1010 50% as of 20 Apr 2026', 'fix'. 'help' lists them."""
+    p = _load(project_id)
+    try:
+        patch = parse_command(p, text)
+    except CommandError as e:
+        return {"error": str(e)}
+    if any(o.op == "note" and o.reason == "__repair__" for o in patch.ops):
+        return repair_schedule(project_id)
+    log = apply_patch(p, Patch(ops=[o for o in patch.ops if o.op != "note"], message=""))
+    return {"message": patch.message, "log": log, **_calc(p)}
+
+
+@mcp.tool()
+def repair_schedule(project_id: str) -> dict:
+    """Run the deterministic DCMA repairer: closes open ends, removes leads, softens hard constraints,
+    splits over-long activities, closes dangling logic. Reports what it would not decide for you."""
+    p = _load(project_id)
+    try:
+        schedule(p)
+    except ScheduleError as e:
+        return {"error": str(e)}
+    rep = health_check(p)
+    patch = plan_repairs(p, rep)
+    log = apply_patch(p, patch)
+    return {"message": patch.message, "still_open": patch.still_open, "log": log, **_calc(p)}
 
 
 @mcp.tool()
@@ -166,7 +210,8 @@ def set_status_date(project_id: str, data_date: str) -> dict:
 
 @mcp.tool()
 def import_schedule(path: str) -> dict:
-    """Import a Primavera XER or MS Project XML (what Asta Powerproject exports) file from disk."""
+    """Import from disk: Primavera XER, P6 XML, MS Project XML, and with the MPXJ bridge installed
+    (pip install mpxj JPype1 + Java) Asta Powerproject .pp, MS Project .mpp and more."""
     data = open(path, "rb").read()
     p = read_any(os.path.basename(path), data)
     if any(x["id"] == p.id for x in store.list_projects()):

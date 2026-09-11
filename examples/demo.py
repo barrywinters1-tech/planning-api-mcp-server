@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from planner import schedule, health_check
-from planner.ai_planner import DraftPlan, PlanActivity as A, PlanLink as L, PlanWBS as W, PlanConstraint, draft_to_project
+from planner.plan import DraftPlan, PlanActivity as A, PlanLink as L, PlanWBS as W, PlanConstraint, draft_to_project
 from planner.xer import write_xer_file
 from planner.mspxml import write_mspdi_file
 

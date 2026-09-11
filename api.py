@@ -1,16 +1,10 @@
-"""HTTP API + web UI for the AI planner.
+"""HTTP API + web UI. Pure code: generator, CPM, DCMA, repairer, command language, file interop.
 
     uvicorn api:app --reload --port 8080
-
-Long AI calls run as background jobs; the UI polls /api/jobs/{id}.
 """
 from __future__ import annotations
 
-import os
-import threading
-import traceback
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,33 +14,16 @@ from pydantic import BaseModel
 
 from planner import Project, schedule, health_check, ScheduleError
 from planner import store
-from planner.ai_planner import (Patch, apply_patch, edit_with_instruction, plan_from_description, schedule_digest)
+from planner.commands import CommandError, HELP, parse_command
+from planner.generator import Brief, RATES, generate, parse_brief
 from planner.io import read_any, write_any
+from planner import mpxj_bridge
+from planner.plan import Patch, PatchOp, apply_patch, draft_to_project, schedule_digest
+from planner.repair import plan_repairs
+from planner.model import Assignment, Resource
 
-app = FastAPI(title="AI Planner", version="0.1")
+app = FastAPI(title="Planner", version="0.2")
 WEB = Path(__file__).parent / "web"
-
-_jobs: dict[str, dict[str, Any]] = {}
-_lock = threading.Lock()
-
-
-def _run_job(job_id: str, fn, *args):
-    try:
-        result = fn(*args)
-        with _lock:
-            _jobs[job_id].update(status="done", result=result, finished=datetime.now().isoformat())
-    except Exception as e:  # noqa: BLE001 - surface anything to the UI
-        with _lock:
-            _jobs[job_id].update(status="error", error=str(e), trace=traceback.format_exc(),
-                                 finished=datetime.now().isoformat())
-
-
-def _start_job(kind: str, fn, *args) -> dict:
-    job_id = uuid.uuid4().hex[:12]
-    with _lock:
-        _jobs[job_id] = {"id": job_id, "kind": kind, "status": "running", "started": datetime.now().isoformat()}
-    threading.Thread(target=_run_job, args=(job_id, fn, *args), daemon=True).start()
-    return {"job_id": job_id}
 
 
 def _view(project: Project, report=None, extra: Optional[dict] = None) -> dict:
@@ -63,6 +40,25 @@ def _view(project: Project, report=None, extra: Optional[dict] = None) -> dict:
     return out
 
 
+def _load(pid: str) -> Project:
+    try:
+        return store.load(pid)
+    except KeyError:
+        raise HTTPException(404, "no such project")
+
+
+def _exists(pid: str) -> bool:
+    try:
+        store.load(pid)
+        return True
+    except KeyError:
+        return False
+
+
+def _unique(pid: str) -> str:
+    return pid if not _exists(pid) else f"{pid}-{uuid.uuid4().hex[:4]}"
+
+
 # ---------------------------------------------------------------- pages
 @app.get("/")
 def index():
@@ -74,6 +70,11 @@ def favicon():
     return Response(status_code=204)
 
 
+@app.get("/api/capabilities")
+def capabilities():
+    return {"mpxj_bridge": mpxj_bridge.available(), "mpxj_reason": mpxj_bridge.why_unavailable(), "rates": RATES, "help": HELP}
+
+
 # ---------------------------------------------------------------- projects
 @app.get("/api/projects")
 def list_projects():
@@ -82,10 +83,7 @@ def list_projects():
 
 @app.get("/api/projects/{pid}")
 def get_project(pid: str):
-    try:
-        return _view(store.load(pid))
-    except KeyError:
-        raise HTTPException(404, "no such project")
+    return _view(_load(pid))
 
 
 class ProjectIn(BaseModel):
@@ -112,10 +110,7 @@ def delete_project(pid: str):
 
 @app.post("/api/projects/{pid}/schedule")
 def reschedule(pid: str):
-    try:
-        project = store.load(pid)
-    except KeyError:
-        raise HTTPException(404, "no such project")
+    project = _load(pid)
     view = _view(project)
     store.save(project)
     return view
@@ -127,79 +122,115 @@ class PatchIn(BaseModel):
 
 @app.post("/api/projects/{pid}/patch")
 def patch_project(pid: str, body: PatchIn):
-    try:
-        project = store.load(pid)
-    except KeyError:
-        raise HTTPException(404, "no such project")
+    project = _load(pid)
     log = apply_patch(project, body.patch)
     view = _view(project, extra={"log": log})
     store.save(project)
     return view
 
 
-# ---------------------------------------------------------------- AI jobs
-class PlanIn(BaseModel):
-    description: str
-    review: bool = True
-    effort: str = "high"
+# ---------------------------------------------------------------- generator
+class BriefIn(BaseModel):
+    text: Optional[str] = None
+    brief: Optional[Brief] = None
 
 
-def _plan(description: str, review: bool, effort: str) -> dict:
-    result = plan_from_description(description, review=review, effort=effort)
-    project = result.project
-    if store_exists(project.id):
-        project.id = f"{project.id}-{uuid.uuid4().hex[:4]}"
-    store.save(project)
-    return {**_view(project, result.report), "log": result.log,
-            "draft": {"summary": result.draft.summary, "assumptions": result.draft.assumptions,
-                      "questions_for_client": result.draft.questions_for_client} if result.draft else None,
-            "review": result.review.model_dump(mode="json") if result.review else None}
+@app.post("/api/brief/parse")
+def brief_parse(body: BriefIn):
+    if not body.text:
+        raise HTTPException(422, "text required")
+    return parse_brief(body.text).model_dump(mode="json")
 
 
-def store_exists(pid: str) -> bool:
+@app.post("/api/generate")
+def generate_project(body: BriefIn):
+    if body.brief is None and not body.text:
+        raise HTTPException(422, "Give a brief (form) or text.")
+    brief = body.brief or parse_brief(body.text or "")
+    if body.brief is not None and body.text:
+        brief.source_text = body.text
+    draft = generate(brief)
+    project = draft_to_project(draft, brief.source_text)
+    project.id = _unique(project.id)
     try:
-        store.load(pid)
-        return True
-    except KeyError:
-        return False
-
-
-@app.post("/api/plan")
-def plan(body: PlanIn):
-    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        # the SDK can also pick up an `ant auth login` profile, so only warn
-        pass
-    if len(body.description.strip()) < 20:
-        raise HTTPException(422, "Describe the project in at least a sentence or two.")
-    return _start_job("plan", _plan, body.description, body.review, body.effort)
-
-
-class EditIn(BaseModel):
-    instruction: str
-    effort: str = "high"
-
-
-def _edit(pid: str, instruction: str, effort: str) -> dict:
-    project = store.load(pid)
-    patch, log, report = edit_with_instruction(project, instruction, effort=effort)
+        schedule(project)
+        report = health_check(project)
+    except ScheduleError as e:
+        raise HTTPException(500, f"generator produced a loop: {e}")
     store.save(project)
-    return {**_view(project, report), "log": log, "patch": patch.model_dump(mode="json")}
+    return {**_view(project, report), "brief": brief.model_dump(mode="json"),
+            "draft": {"summary": draft.summary, "assumptions": draft.assumptions, "questions_for_client": draft.questions_for_client}}
 
 
-@app.post("/api/projects/{pid}/edit")
-def edit(pid: str, body: EditIn):
-    if not store_exists(pid):
-        raise HTTPException(404, "no such project")
-    return _start_job("edit", _edit, pid, body.instruction, body.effort)
+# ---------------------------------------------------------------- commands and repair
+class CommandIn(BaseModel):
+    text: str
 
 
-@app.get("/api/jobs/{job_id}")
-def job(job_id: str):
-    with _lock:
-        j = _jobs.get(job_id)
-    if not j:
-        raise HTTPException(404, "no such job")
-    return j
+def _run_patch(project: Project, patch: Patch) -> list[str]:
+    """Apply a patch, handling the command language's special notes."""
+    log: list[str] = []
+    real: list[PatchOp] = []
+    for op in patch.ops:
+        if op.op == "note" and op.reason.startswith("__data_date__"):
+            from datetime import datetime
+            project.data_date = datetime.strptime(op.reason[len("__data_date__"):], "%Y-%m-%d").replace(hour=8)
+            log.append(f"data date -> {project.data_date:%Y-%m-%d}")
+        elif op.op == "note" and op.reason.startswith("__assign__"):
+            _, aid, trade = op.reason.split("__")[2:5]
+            rid = "".join(ch if ch.isalnum() else "_" for ch in trade).strip("_").upper()[:20]
+            if not any(r.id == rid for r in project.resources):
+                project.resources.append(Resource(id=rid, name=trade))
+            project.assignments = [x for x in project.assignments if x.activity_id != aid]
+            project.assignments.append(Assignment(activity_id=aid, resource_id=rid, units=project.activity(aid).duration_hours))
+            log.append(f"{aid} assigned {trade}")
+        elif op.op == "note" and op.reason == "__repair__":
+            try:
+                schedule(project)
+                rep = health_check(project)
+            except ScheduleError as e:
+                log.append(f"cannot repair: {e}")
+                continue
+            rp = plan_repairs(project, rep)
+            log += apply_patch(project, rp)
+            patch.message = rp.message
+            patch.still_open = rp.still_open
+        else:
+            real.append(op)
+    if real:
+        log += apply_patch(project, Patch(ops=real, message=""))
+    return log
+
+
+@app.post("/api/projects/{pid}/command")
+def command(pid: str, body: CommandIn):
+    project = _load(pid)
+    try:
+        patch = parse_command(project, body.text)
+    except CommandError as e:
+        raise HTTPException(422, str(e))
+    if not patch.ops:
+        return {"message": patch.message, "log": [], "project": None}
+    log = _run_patch(project, patch)
+    view = _view(project, extra={"log": log, "message": patch.message, "still_open": patch.still_open})
+    store.save(project)
+    return view
+
+
+@app.post("/api/projects/{pid}/repair")
+def repair(pid: str):
+    project = _load(pid)
+    try:
+        schedule(project)
+        rep = health_check(project)
+    except ScheduleError as e:
+        raise HTTPException(422, str(e))
+    patch = plan_repairs(project, rep)
+    log = apply_patch(project, patch)
+    view = _view(project, extra={"log": log, "message": patch.message, "still_open": patch.still_open,
+                                 "ops": [o.model_dump(mode="json", exclude_none=True) for o in patch.ops]})
+    store.save(project)
+    return view
 
 
 # ---------------------------------------------------------------- import / export
@@ -210,8 +241,9 @@ async def import_file(file: UploadFile = File(...)):
         project = read_any(file.filename or "", data)
     except ValueError as e:
         raise HTTPException(422, str(e))
-    if store_exists(project.id):
-        project.id = f"{project.id}-{uuid.uuid4().hex[:4]}"
+    except RuntimeError as e:
+        raise HTTPException(501, str(e))
+    project.id = _unique(project.id)
     view = _view(project)
     store.save(project)
     return view
@@ -219,10 +251,7 @@ async def import_file(file: UploadFile = File(...)):
 
 @app.get("/api/projects/{pid}/export.{fmt}")
 def export(pid: str, fmt: str):
-    try:
-        project = store.load(pid)
-    except KeyError:
-        raise HTTPException(404, "no such project")
+    project = _load(pid)
     try:
         content, media, filename = write_any(project, fmt)
     except ValueError as e:
@@ -233,10 +262,7 @@ def export(pid: str, fmt: str):
 
 @app.get("/api/projects/{pid}/digest")
 def digest(pid: str):
-    try:
-        project = store.load(pid)
-    except KeyError:
-        raise HTTPException(404, "no such project")
+    project = _load(pid)
     try:
         schedule(project)
         report = health_check(project)

@@ -1,8 +1,8 @@
-# AI Planner
+# Planner
 
-Describe a project. The AI drafts the programme like an experienced planner would. The critical-path engine computes every date. A DCMA 14-point check tells the AI what it got wrong and it fixes it. Export to Primavera P6 (XER) or Asta Powerproject / MS Project (XML).
+Describe a project. The generator drafts the programme from production rates and sequencing rules. The critical-path engine computes every date. A DCMA 14-point check flags what a reviewer would, and a deterministic repairer fixes what a planner would fix without asking. Export to Primavera P6 (XER) or Asta Powerproject / MS Project (XML).
 
-Built to replace the tedious half of P6 and Asta, not to reproduce their UI.
+Pure code. No AI service, no API key, nothing leaves your machine.
 
 ## What it does
 
@@ -11,63 +11,78 @@ Built to replace the tedious half of P6 and Asta, not to reproduce their UI.
 | Model | `planner/model.py` | Project, WBS, activities, calendars (working days, hours, exceptions), links FS/SS/FF/SF with lag, constraints, resources, progress |
 | Engine | `planner/cpm.py` | Forward and backward pass, per-activity calendars, lag on the predecessor calendar (P6 default), constraints, retained-logic progress against a data date, total and free float, critical or longest path, loop detection |
 | Health | `planner/dcma.py` | DCMA 14-point assessment (logic, leads, lags, FS share, hard constraints, high float, negative float, high duration, invalid dates, resources, missed tasks, critical path test, CPLI, BEI) plus open-ends and dangling-logic checks |
-| P6 | `planner/xer.py` | XER read and write: PROJECT, CALENDAR (including the `clndr_data` blob), PROJWBS, TASK, TASKPRED, RSRC, TASKRSRC |
-| Asta / MS Project | `planner/mspxml.py` | MSPDI XML read and write: outline WBS, calendars, links, constraints, progress, baseline, resources, assignments |
-| AI | `planner/ai_planner.py` | Brief to `DraftPlan`, schedule, self-review to `Patch`, natural-language edits to `Patch`. All model output is structured; dates come only from the engine |
-| Web | `api.py`, `web/index.html` | Gantt with critical path, float bars, links, data date; activity table; inline editor; health panel; chat to change the plan; import/export |
-| MCP | `mcp_server.py` | Tools so Claude Desktop or Claude Code can be the planner without an API key on this server |
+| Generator | `planner/generator.py` | `parse_brief` pulls type, storeys, area, units, frame, foundations, envelope, dates and site flags out of plain English with keyword rules. `generate` builds WBS, activities, durations (from the `RATES` table), trade flow and milestones |
+| Repairer | `planner/repair.py` | Turns failing checks into patch operations: closes open ends, removes leads, softens hard constraints, splits over-long activities, closes dangling logic. Negative float is explained, not silently compressed |
+| Commands | `planner/commands.py` | `add 2 weeks to A1240`, `link A1010 -> A1020 SS+2d`, `finish by 1 Nov 2026`, `progress A1010 50% as of 20 Apr 2026`, `fix` … type `help` |
+| Patches | `planner/plan.py` | `DraftPlan` (neutral programme description) and `Patch` / `apply_patch` (small auditable edits) used by everything above |
+| P6 | `planner/xer.py`, `planner/pmxml.py` | XER read and write (including the `clndr_data` blob); P6 XML read |
+| Asta / MS Project | `planner/mspxml.py` | MSPDI XML read and write: outline WBS, calendars, links, constraints, progress, baseline, resources |
+| Anything else | `planner/mpxj_bridge.py` | Optional. With `pip install mpxj JPype1` and Java 11+, reads Asta `.pp`, MS Project `.mpp`, P3, SureTrak and more through [MPXJ](https://www.mpxj.org) |
+| Web | `api.py`, `web/index.html` | Brief form, Gantt with critical path, float bars and links, activity table, inline editor, health panel with auto-repair, command box, import/export |
+| MCP | `mcp_server.py` | Optional. Exposes the same engine as tools for an MCP client. The engine itself never calls a model |
 | UK planning data | `server.py` | The original planning.data.gov.uk MCP server, unchanged |
 
-## Asta and the `.pp` file
+## Files
 
-Asta's native `.pp` is a closed binary format with no public specification. Nothing outside Elecosoft reads it. The supported route is the one Asta itself provides: **File > Export > MS Project XML** (or Primavera XER) out of Powerproject, and **File > Import** back in. Both formats are read and written here. P6 reads and writes XER natively.
+| Source | Route | Read | Write |
+|---|---|---|---|
+| Primavera P6 | File > Export > XER | yes | yes |
+| Primavera P6 | File > Export > Primavera P6 XML | yes | no (use XER) |
+| Asta Powerproject | File > Export > MS Project XML | yes | yes |
+| Asta Powerproject | File > Export > Primavera XER | yes | yes |
+| Asta Powerproject | native `.pp` | with the MPXJ bridge | no |
+| MS Project | `.mpp` | with the MPXJ bridge | no (use XML) |
+| MS Project | XML | yes | yes |
+
+The readers are tested against real files from the MPXJ project's test suite (`tests/fixtures/`), cross-checked against MPXJ's own parse of the same files.
 
 ## Run it
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=...          # only needed for the in-app AI planner
 python examples/demo.py --serve       # optional: a 43-activity house programme to play with
 uvicorn api:app --port 8080
 ```
 
-Open http://localhost:8080. Paste a brief, press **Plan it**. Or import an XER / XML you already have.
+Open http://localhost:8080. Paste a brief, press **Read brief into form**, check the parameters, press **Generate programme**. Or import a file you already have.
 
-Model defaults to `claude-opus-5`; override with `PLANNER_MODEL`. Project files live in `data/projects/` (override with `PLANNER_DATA_DIR`).
+For `.pp` and `.mpp`: `pip install mpxj JPype1` with a Java runtime installed; the import button then accepts them.
 
-### Claude as the planner over MCP
-
-```json
-{
-  "mcpServers": {
-    "planner": { "command": "python", "args": ["/path/to/mcp_server.py"] }
-  }
-}
-```
-
-Tools: `planning_guidelines`, `create_project_from_draft`, `add_wbs`, `add_activities`, `add_links`, `apply_patch_ops`, `calculate`, `get_schedule`, `set_status_date`, `import_schedule`, `export_schedule`. The client model drafts the plan, the engine here schedules it, `calculate` returns the failing checks for it to fix.
+Project files live in `data/projects/` (override with `PLANNER_DATA_DIR`).
 
 ### Python
 
 ```python
-from planner import schedule, health_check
-from planner.xer import read_xer_file, write_xer_file
+from planner.generator import parse_brief, generate
+from planner.plan import draft_to_project, run_schedule
+from planner.repair import plan_repairs
+from planner.plan import apply_patch
+from planner.xer import write_xer_file
 
-p = read_xer_file("tender.xer")
-schedule(p)
-print(p.finish, [a.id for a in p.activities if a.critical])
-print(health_check(p).summary)
-write_xer_file(p, "tender-rescheduled.xer")
+p = draft_to_project(generate(parse_brief("Two storey house, 180 sqm, start 4 May 2026, finish by end of 2026")))
+report = run_schedule(p)
+apply_patch(p, plan_repairs(p, report))
+run_schedule(p)
+write_xer_file(p, "house.xer")
 ```
 
-## How the AI plans
+### MCP (optional)
 
-1. **Draft.** The brief goes to the model with a senior-planner system prompt and it returns a `DraftPlan`: WBS, activities with working-day durations, trades, predecessors with link types and lags, constraints with reasons, assumptions, questions for the client.
-2. **Schedule.** Deterministic code turns that into a `Project` with UK bank-holiday calendars and runs the CPM.
-3. **Review.** The scheduled digest and the DCMA failures go back to the model. It returns a `Patch` of small operations (add link, set duration, split activity, soften constraint) with a reason for each. The patch is applied, the schedule recalculated. A patch that introduces a loop is reverted.
-4. **Edit.** "Add two weeks to piling", "client wants handover by 1 November", "mark site set-up 50% done as of 20 April" go through the same patch path.
+```json
+{ "mcpServers": { "planner": { "command": "python", "args": ["/path/to/mcp_server.py"] } } }
+```
 
-The model never sets a date. It sets durations and logic; the engine sets dates.
+Tools: `generate_programme`, `run_command`, `repair_schedule`, `create_project_from_draft`, `add_wbs`, `add_activities`, `add_links`, `apply_patch_ops`, `calculate`, `get_schedule`, `set_status_date`, `import_schedule`, `export_schedule`.
+
+## How the generator works
+
+1. **Parse.** Keyword rules read the brief: building type, storeys, GIA or units, frame, foundations, envelope, roof, fit-out level, basement / demolition / diversions / contamination, start, deadline, planning-condition date, six-day week.
+2. **Default.** Anything the brief leaves out gets the choice an experienced planner would make (a four-storey block gets an RC frame on piles; a warehouse gets a steel portal frame on a raft). Every default is written to the assumptions list.
+3. **Size.** Durations come from `RATES` (m² per gang-day and similar). Floor plates over 900 m² are zoned. One gang per trade moves floor to floor and zone to zone finish-to-start, so the logic is nearly all FS and DCMA-clean.
+4. **Sequence.** Enabling → substructure → frame per storey → roof and envelope → watertight → fit-out per floor (first fix, M&E, drylining, screed, drying, second fix, kitchens, decoration, finishes) → externals → power on → commissioning → building control → snagging → practical completion.
+5. **Schedule and check.** CPM, then DCMA. Auto-repair if you want it.
+
+Tune `RATES` in `planner/generator.py` to your own outputs. Everything is deterministic: same brief, same programme.
 
 ## Tests
 
@@ -75,13 +90,13 @@ The model never sets a date. It sets durations and logic; the engine sets dates.
 pytest -q
 ```
 
-17 tests: calendar arithmetic, CPM against hand-worked examples, constraints, negative float, progress, loop detection, XER and MSPDI round trips, `clndr_data` parsing, patch operations, and the plan/review orchestration with the model mocked.
+Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real files; the generator across building types; the repairer; the command language.
 
-## Known limits (v1)
+## Known limits
 
-- One shift per working day per calendar. P6 multi-shift calendars are collapsed to hours per day.
+- One shift per working day per calendar. P6 multi-shift calendars collapse to hours per day.
 - No resource levelling. Resources and assignments are carried through so P6 / Asta can level.
-- Progress uses retained logic only (no progress override).
-- Baselines are stored per activity and read from files, but not created in the UI yet.
+- Progress uses retained logic only.
 - `must_finish_by` has no MSPDI field, so it does not survive an XML round trip.
-- Asta-specific data (subheadings, code libraries, hammocks) is whatever Asta puts in its own XML export.
+- The brief parser is keyword-based. If it misreads something, correct the form before generating.
+- Generator rates are generic UK tender figures, not your firm's. Tune them.

@@ -93,36 +93,40 @@ class _Node:
         self.name, self.attrs, self.children = name, attrs, []
 
 
-def _parse_nodes(s: str, i: int = 0) -> tuple[list[_Node], int]:
-    nodes: list[_Node] = []
-    n = len(s)
-    while i < n:
-        c = s[i]
-        if c.isspace():
+_CAL_TOKEN = re.compile(r"0\|\|([^(]*)\(([^()]*)\)|\(|\)")
+
+
+def _parse_nodes(s: str) -> list[_Node]:
+    """Parse the clndr_data blob.
+
+    P6 writes every node wrapped in its own parentheses: ``(0||2()((0||0(s|08:00|f|12:00)())))``.
+    Some exporters (and our writer) drop the wrappers: ``0||2()( 0||0(s|08:00|f|12:00) )``.
+    A bare "(" not directly after a node is treated as a transparent wrapper.
+    """
+    root = _Node("root", "")
+    stack: list[_Node | None] = [root]
+    tokens = list(_CAL_TOKEN.finditer(s))
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i].group(0)
+        if tok == "(":
+            stack.append(None)
             i += 1
             continue
-        if c == ")":
-            return nodes, i + 1
-        if s.startswith("0||", i):
-            i += 3
-            j = i
-            while j < n and s[j] != "(":
-                j += 1
-            name = s[i:j].strip()
-            depth, k = 1, j + 1
-            while k < n and depth:
-                depth += 1 if s[k] == "(" else -1 if s[k] == ")" else 0
-                k += 1
-            node = _Node(name, s[j + 1:k - 1])
-            i = k
-            while i < n and s[i].isspace():
-                i += 1
-            if i < n and s[i] == "(":
-                node.children, i = _parse_nodes(s, i + 1)
-            nodes.append(node)
+        if tok == ")":
+            if len(stack) > 1:
+                stack.pop()
+            i += 1
+            continue
+        node = _Node(tokens[i].group(1).strip(), tokens[i].group(2))
+        parent = next(x for x in reversed(stack) if x is not None)
+        parent.children.append(node)
+        if i + 1 < len(tokens) and tokens[i + 1].group(0) == "(":
+            stack.append(node)
+            i += 2
         else:
             i += 1
-    return nodes, i
+    return root.children
 
 
 def _shift_hours(children: list[_Node]) -> float:
@@ -141,7 +145,7 @@ def _shift_hours(children: list[_Node]) -> float:
 def parse_clndr_data(blob: str, cal: Calendar) -> Calendar:
     if not blob:
         return cal
-    nodes, _ = _parse_nodes(blob.strip().lstrip("("))
+    nodes = _parse_nodes(blob)
     flat: list[_Node] = []
 
     def walk(ns):
@@ -233,6 +237,20 @@ def read_xer(text: str, project_index: int = 0) -> Project:
         code = r.get("task_code") or r["task_id"]
         id_by_task[r["task_id"]] = code
         status = STATUS_IN.get(r.get("status_code", ""), Status.NOT_STARTED)
+        target, remain = _f(r.get("target_drtn_hr_cnt")), _f(r.get("remain_drtn_hr_cnt"))
+        if status == Status.COMPLETE:
+            pct = 100.0
+        elif status == Status.NOT_STARTED:
+            pct = 0.0
+        elif r.get("complete_pct_type") == "CP_Phys":
+            pct = _f(r.get("phys_complete_pct"))
+        else:  # CP_Drtn is the P6 default: duration % complete
+            pct = round(100.0 * (target - remain) / target, 2) if target > 0 else _f(r.get("phys_complete_pct"))
+        act_start, act_end = _dt(r.get("act_start_date", "")), _dt(r.get("act_end_date", ""))
+        if status != Status.NOT_STARTED and act_start is None:
+            act_start = _dt(r.get("target_start_date", "")) or _dt(r.get("early_start_date", ""))
+        if status == Status.COMPLETE and act_end is None:
+            act_end = _dt(r.get("target_end_date", "")) or _dt(r.get("early_end_date", "")) or act_start
         a = Activity(
             id=code, name=r.get("task_name", ""),
             wbs_id=None if r.get("wbs_id") in root_ids else (r.get("wbs_id") or None),
@@ -242,9 +260,9 @@ def read_xer(text: str, project_index: int = 0) -> Project:
             constraint=CSTR_IN.get(r.get("cstr_type", ""), Constraint.NONE),
             constraint_date=_dt(r.get("cstr_date", "")),
             status=status,
-            actual_start=_dt(r.get("act_start_date", "")), actual_finish=_dt(r.get("act_end_date", "")),
-            remaining_hours=_f(r.get("remain_drtn_hr_cnt")) if status != Status.NOT_STARTED else None,
-            percent_complete=_f(r.get("phys_complete_pct")),
+            actual_start=act_start, actual_finish=act_end,
+            remaining_hours=remain if status != Status.NOT_STARTED else None,
+            percent_complete=pct,
             early_start=_dt(r.get("early_start_date", "")), early_finish=_dt(r.get("early_end_date", "")),
             late_start=_dt(r.get("late_start_date", "")), late_finish=_dt(r.get("late_end_date", "")),
             total_float_hours=_f(r.get("total_float_hr_cnt")) if r.get("total_float_hr_cnt") else None,
