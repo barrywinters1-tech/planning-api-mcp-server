@@ -109,3 +109,7 @@ Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real 
 - `must_finish_by` has no MSPDI field, so it does not survive an XML round trip.
 - The brief parser is keyword-based. If it misreads something, correct the form before generating.
 - Generator rates are generic UK tender figures, not your firm's. Tune them.
+
+## Browser build (no backend)
+
+`web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. It is validated by reproducing the Python-scheduled demo exactly and by cross-checking the generator, DCMA, levelling and file writers against the Python outputs (Python reads back the browser-written XER and MSPDI). The browser build imports its own JSON export; Primavera XER, P6 XML and Asta .pp import stay in the full local app.
