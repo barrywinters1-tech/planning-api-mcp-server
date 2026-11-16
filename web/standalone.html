@@ -681,7 +681,6 @@ function generate(brief) {
   const cal = b.six_day_week ? 'six_day' : 'standard';
   const nid = () => { n += 10; return 'A' + n; };
   const add = (name, w, days, preds = [], trade = '', atype = 'task', calendar = null, crew = 0) => { const aid = nid(); const links = (preds || []).map(x => typeof x === 'string' ? { predecessor_id: x, type: 'FS', lag_days: 0 } : { predecessor_id: x[0], type: x[1], lag_days: x[2] }); acts.push({ id: aid, name, wbs_code: w, type: atype, duration_days: atype !== 'task' ? 0 : gdays(days), calendar: calendar || cal, predecessors: links, trade, crew_size: crew, codes: {} }); return aid; };
-  const chain = (name, w, total, preds, trade, zones) => { if (zones <= 1) { const a = add(name, w, total, preds, trade); return [[a], a]; } const per = total / zones; const ids = []; for (let z = 0; z < zones; z++) { const pr = z === 0 ? preds : [ids[ids.length - 1]]; ids.push(add(`${name} - zone ${z + 1}`, w, per, pr, trade)); } return [ids, ids[ids.length - 1]]; };
   const gia = b.gross_internal_area_m2, storeys = b.storeys, footprint = gia / storeys;
   const zones = Math.max(1, Math.min(4, Math.ceil(footprint / R.zone_m2)));
   assumptions.push(`Gross internal area ${commas(gia)} m² over ${storeys} storey(s); footprint ${commas(footprint)} m²` + (zones > 1 ? ` split into ${zones} zones for trade flow` : ''));
@@ -733,16 +732,18 @@ function generate(brief) {
   if (b.fit_out !== 'shell') {
     for (let lvl = 0; lvl < storeys; lvl++) {
       const label = lvl === 0 ? 'ground floor' : `level ${lvl}`, area = footprint;
-      const stage = (key, name, rk, preds, trade) => { const p = preds.slice(); if (key in prevFloor) p.push(prevFloor[key]); const [ids, last] = chain(`${name} - ${label}`, I, area / R[rk], p, trade, zones); prevFloor[key] = last; return last; };
+      // One trade across the floor in zones, flowing like a production line: zone z waits for the
+      // previous trades' zone z, not their whole floor. preds items: an id (gates zone 1) or a zone list.
+      const stage = (key, name, rk, preds, trade) => { const total = area / R[rk], own = []; for (let z = 0; z < zones; z++) { let p; if (z === 0) { p = preds.map(q => typeof q === 'string' ? q : q[0]); if (key in prevFloor) p.push(prevFloor[key]); } else { p = [own[own.length - 1]].concat(preds.filter(q => typeof q !== 'string').map(q => q[z])); } own.push(add(`${name} - ${label}` + (zones > 1 ? ` - zone ${z + 1}` : ''), I, total / zones, p, trade)); } prevFloor[key] = own[own.length - 1]; return own; };
       const ffPred = lvl === storeys - 1 ? [watertight] : [frameIds[Math.min(lvl + 1, storeys - 1)], envIds[lvl]];
       const carp = stage('carp1', 'First fix carpentry and partitions', 'first_fix_m2_per_day', ffPred, 'Carpenters');
       const mep1 = stage('mep1', 'First fix mechanical and electrical', 'first_fix_m2_per_day', [carp], 'M&E contractor');
       const dry = stage('dry', 'Drylining, plastering and ceilings', 'drylining_m2_per_day', [carp, mep1].concat(lvl < storeys - 1 ? [watertight] : []), 'Dryliners');
       let base;
-      if (b.fit_out === 'full') { const scr = stage('screed', 'Screed', 'screed_m2_per_day', [dry], 'Screeders'); const dryOut = add(`Drying out - ${label}`, I, 5, [scr, dry], '', 'task', 'seven_day'); base = [dryOut]; } else base = [dry];
+      if (b.fit_out === 'full') { const scr = stage('screed', 'Screed', 'screed_m2_per_day', [dry], 'Screeders'); const dryOut = []; for (let z = 0; z < zones; z++) dryOut.push(add(`Drying out - ${label}` + (zones > 1 ? ` - zone ${z + 1}` : ''), I, 5, [scr[z], dry[z]], '', 'task', 'seven_day')); base = [dryOut]; } else base = [dry];
       const carp2 = stage('carp2', 'Second fix carpentry, doors and joinery', 'second_fix_m2_per_day', base, 'Carpenters');
       const mep2 = stage('mep2', 'Second fix mechanical and electrical', 'second_fix_m2_per_day', [carp2], 'M&E contractor');
-      if (b.fit_out === 'full') { let decPred; if (['house', 'houses', 'apartments'].includes(b.building_type)) { const kit = stage('kit', 'Kitchens, bathrooms and tiling', 'second_fix_m2_per_day', [carp2, mep2], 'Kitchen and bathroom fitters'); decPred = [kit, mep2]; } else decPred = [carp2, mep2]; const dec = stage('dec', 'Decoration', 'decoration_m2_per_day', decPred, 'Decorators'); const fin = stage('fin', 'Floor finishes', 'finishes_m2_per_day', [dec], 'Floor layers'); lastSecond.push(fin, mep2); } else lastSecond.push(carp2, mep2);
+      if (b.fit_out === 'full') { let decPred; if (['house', 'houses', 'apartments'].includes(b.building_type)) { const kit = stage('kit', 'Kitchens, bathrooms and tiling', 'second_fix_m2_per_day', [carp2, mep2], 'Kitchen and bathroom fitters'); decPred = [kit, mep2]; } else decPred = [carp2, mep2]; const dec = stage('dec', 'Decoration', 'decoration_m2_per_day', decPred, 'Decorators'); const fin = stage('fin', 'Floor finishes', 'finishes_m2_per_day', [dec], 'Floor layers'); lastSecond.push(fin[fin.length - 1], mep2[mep2.length - 1]); } else lastSecond.push(carp2[carp2.length - 1], mep2[mep2.length - 1]);
     }
   } else { assumptions.push('Shell and core only: no internal fit-out beyond first fix of landlord services'); lastSecond = [add('Landlord services and core fit-out', I, gia / R.first_fix_m2_per_day + 5, [watertight], 'M&E contractor', 'task', null, 4)]; }
   const X = W['External works']; let extIds = [];

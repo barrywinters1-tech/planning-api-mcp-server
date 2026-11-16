@@ -291,18 +291,6 @@ class _Builder:
                                       calendar=calendar or self.cal, predecessors=links, trade=trade, crew_size=crew))  # type: ignore[arg-type]
         return aid
 
-    def chain(self, name: str, wbs: str, total_days: float, preds, trade: str, zones: int, stagger: float = 2) -> tuple[list[str], str]:
-        """Split work into zones linked SS+stagger, return (zone ids, id of last)."""
-        if zones <= 1:
-            a = self.add(name, wbs, total_days, preds, trade)
-            return [a], a
-        per = total_days / zones
-        ids = []
-        for z in range(zones):
-            p = list(preds) if z == 0 else [ids[-1]]  # same gang moves zone to zone
-            ids.append(self.add(f"{name} - zone {z + 1}", wbs, per, p, trade))
-        return ids, ids[-1]
-
 
 def generate(brief: Brief) -> DraftPlan:
     b = _defaults(brief)
@@ -448,13 +436,26 @@ def generate(brief: Brief) -> DraftPlan:
             label = "ground floor" if lvl == 0 else f"level {lvl}"
             area = footprint
 
-            def stage(key: str, name: str, rate_key: str, preds, trade, crew=3, extra=0.0):
-                p = list(preds)
-                if key in prev_floor:
-                    p.append(prev_floor[key])  # one gang per trade: finish the floor below first
-                ids, last = x.chain(f"{name} - {label}", I, area / R[rate_key] + extra, p, trade, zones)
-                prev_floor[key] = last
-                return last
+            def stage(key: str, name: str, rate_key: str, preds, trade, crew=3, extra=0.0) -> list[str]:
+                """One trade across the floor, split into zones; returns the zone ids.
+
+                Zones flow like a production line: the gang works zone 1, 2, ... in turn, and
+                zone z only waits for the previous trades' zone z, not their whole floor.
+                `preds` items are either one activity id (gates zone 1, and so the floor) or
+                another stage's zone list (matched zone by zone)."""
+                total = area / R[rate_key] + extra
+                own: list[str] = []
+                for z in range(zones):
+                    if z == 0:
+                        p = [q if isinstance(q, str) else q[0] for q in preds]
+                        if key in prev_floor:
+                            p.append(prev_floor[key])  # one gang per trade: finish the floor below first
+                    else:
+                        p = [own[-1]] + [q[z] for q in preds if not isinstance(q, str)]
+                    own.append(x.add(f"{name} - {label}" + (f" - zone {z + 1}" if zones > 1 else ""), I,
+                                     total / zones, p, trade))
+                prev_floor[key] = own[-1]
+                return own
 
             ff_pred = [watertight] if lvl == storeys - 1 else [frame_ids[min(lvl + 1, storeys - 1)], env_ids[lvl]]
             carp = stage("carp1", "First fix carpentry and partitions", "first_fix_m2_per_day", ff_pred, "Carpenters")
@@ -464,7 +465,8 @@ def generate(brief: Brief) -> DraftPlan:
                         [carp, mep1] + ([watertight] if lvl < storeys - 1 else []), "Dryliners", crew=4)
             if b.fit_out == "full":
                 scr = stage("screed", "Screed", "screed_m2_per_day", [dry], "Screeders")
-                dry_out = x.add(f"Drying out - {label}", I, 5, [scr, dry], calendar="seven_day")
+                dry_out = [x.add(f"Drying out - {label}" + (f" - zone {z + 1}" if zones > 1 else ""), I, 5, [scr[z], dry[z]],
+                                 calendar="seven_day") for z in range(zones)]
                 base = [dry_out]
             else:
                 base = [dry]
@@ -478,9 +480,9 @@ def generate(brief: Brief) -> DraftPlan:
                     dec_pred = [carp2, mep2]
                 dec = stage("dec", "Decoration", "decoration_m2_per_day", dec_pred, "Decorators")
                 fin = stage("fin", "Floor finishes", "finishes_m2_per_day", [dec], "Floor layers")
-                last_second_fix += [fin, mep2]
+                last_second_fix += [fin[-1], mep2[-1]]
             else:
-                last_second_fix += [carp2, mep2]
+                last_second_fix += [carp2[-1], mep2[-1]]
     else:
         x.assumptions.append("Shell and core only: no internal fit-out beyond first fix of landlord services")
         core = x.add("Landlord services and core fit-out", I, gia / R["first_fix_m2_per_day"] + 5, [watertight], "M&E contractor", crew=4)
