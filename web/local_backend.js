@@ -70,7 +70,9 @@ async function importFile(file) {
   throw { status: 501, detail: 'This preview imports its own JSON export. For Primavera XER, P6 XML, MS Project XML and Asta .pp import, use the full local app.' };
 }
 async function download(pid, fmt) {
-  const p = load(pid); const parts = E.writeAny(p, fmt); const content = parts[0], mime = parts[1], filename = parts[2];
+  const p = load(pid);
+  if (fmt === 'bundle') { const bytes = E.writeBundle(p); const blob = new Blob([bytes], { type: 'application/zip' }); const fn = p.id + '-P6-Asta-MSProject.zip'; let dl = null; try { if (window.claude && window.claude.use) dl = await window.claude.use('downloads'); } catch (e) { dl = null; } if (dl) { try { await dl.save({ filename: fn, data: blob }); return; } catch (e) { if (e && e.code === 'declined') return; throw { detail: 'Download unavailable here (' + ((e && e.code) || 'error') + ').' }; } } const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fn; document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 100); return; }
+  const parts = E.writeAny(p, fmt); const content = parts[0], mime = parts[1], filename = parts[2];
   let dl = null; try { if (window.claude && window.claude.use) dl = await window.claude.use('downloads'); } catch (e) { dl = null; }
   if (dl) { let fn = filename; if (fmt === 'xer') fn = p.id + '.xer.txt'; else if (fmt === 'xml' || fmt === 'mspdi' || fmt === 'msproject') fn = p.id + '.xml.txt'; try { await dl.save({ filename: fn, data: content }); return; } catch (e) { if (e && e.code === 'declined') return; throw { detail: 'Download unavailable here (' + ((e && e.code) || 'error') + '). JSON export works; for .xer/.xml use the full local app.' }; } }
   const blob = new Blob([content], { type: mime }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 100);

@@ -799,3 +799,36 @@ function writeAny(p, fmt) {
 }
 Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData });
 })(typeof window !== 'undefined' ? window : globalThis);
+
+/* ---- part 6: export bundle (store-only ZIP of .xer + .xml + .json) ---- */
+(function (global) {
+const E = global.PlannerEngine;
+const CRC = (function () { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zipStore(files) {
+  const enc = new TextEncoder(); const u16 = n => [n & 255, (n >> 8) & 255]; const u32 = n => [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >> 24) & 255];
+  const parts = []; const central = []; let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name); const data = f.bytes; const crc = crc32(data); const sz = data.length;
+    const lfh = new Uint8Array([0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0)]);
+    parts.push(lfh, name, data);
+    central.push({ hdr: new Uint8Array([0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)]), name: name });
+    offset += lfh.length + name.length + sz;
+  }
+  let cdSize = 0; const cd = [];
+  for (const c of central) { cd.push(c.hdr, c.name); cdSize += c.hdr.length + c.name.length; }
+  const eocd = new Uint8Array([0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(central.length), ...u16(central.length), ...u32(cdSize), ...u32(offset), ...u16(0)]);
+  const all = parts.concat(cd, [eocd]); let total = 0; for (const a of all) total += a.length;
+  const out = new Uint8Array(total); let p = 0; for (const a of all) { out.set(a, p); p += a.length; } return out;
+}
+function writeBundle(p) {
+  const enc = new TextEncoder();
+  return zipStore([
+    { name: p.id + '.xer', bytes: enc.encode(E.writeXer(p)) },
+    { name: p.id + '.xml', bytes: enc.encode(E.writeMspdi(p)) },
+    { name: p.id + '.json', bytes: enc.encode(JSON.stringify(p, null, 1)) },
+    { name: 'README.txt', bytes: enc.encode('Programme export for construction scheduling software.\n\n' + p.id + '.xer  - Primavera P6 (File > Import > XER); also Asta Powerproject (File > Import).\n' + p.id + '.xml  - Microsoft Project (Open) and Asta Powerproject (File > Import, MS Project XML).\n' + p.id + '.json - this planner\'s own format (re-import here).\n') },
+  ]);
+}
+Object.assign(global.PlannerEngine, { writeBundle, zipStore, crc32 });
+})(typeof window !== 'undefined' ? window : globalThis);

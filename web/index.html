@@ -12,9 +12,10 @@
     <div class="rgroup">
       <select id="projSel" title="Open project"><option value="">— open —</option></select>
       <button id="btnNew" title="New blank project">New</button>
+      <button id="btnWizard" class="primary" title="Answer a few questions and get a full programme">Guided setup…</button>
       <button id="btnGenerate" title="Generate a programme from a brief">Generate…</button>
       <label class="btn" title="Import XER, P6 XML, MS Project XML, .pp, .mpp">Import<input type="file" id="fileIn" accept=".xer,.xml,.pmxml,.json,.pp,.mpp,.mpx" hidden></label>
-      <div class="menu"><button>Export ▾</button><div class="menu-items"><a data-x="xer">Primavera P6 (XER)</a><a data-x="xml">Asta / MS Project (XML)</a><a data-x="json">JSON</a></div></div>
+      <div class="menu"><button>Export ▾</button><div class="menu-items"><a data-x="bundle"><b>All three (P6 + Asta + MS Project) · .zip</b></a><a data-x="xer">Primavera P6 (XER)</a><a data-x="xml">Asta / MS Project (XML)</a><a data-x="json">JSON (re-import here)</a></div></div>
       <button id="btnPrint" title="Print (Ctrl+P)">Print</button>
       <span class="rlabel">File</span>
     </div>

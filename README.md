@@ -113,3 +113,9 @@ Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real 
 ## Browser build (no backend)
 
 `web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. It is validated by reproducing the Python-scheduled demo exactly and by cross-checking the generator, DCMA, levelling and file writers against the Python outputs (Python reads back the browser-written XER and MSPDI). The browser build imports its own JSON export; Primavera XER, P6 XML and Asta .pp import stay in the full local app.
+
+## Guided setup and one-click interoperability
+
+The browser build adds a **Guided setup** wizard: a seven-step interview (building type, size, structure, envelope, site conditions, dates) that assembles a brief and generates the full programme — the same deterministic generator, no AI service. The command bar drives edits in plain phrases (`add 2 weeks to piling`, `finish by 1 Nov 2026`, `fix`).
+
+**Export to all three leading tools in one file:** Export > *All three* writes a `.zip` containing `<id>.xer` (Primavera P6 and Asta Powerproject), `<id>.xml` (Microsoft Project and Asta Powerproject, MS Project XML) and `<id>.json`. The zip is a store-only archive written in-browser; its XER and MSPDI parse back through the Python readers unchanged. In the hosted preview the zip downloads with its real extension (the sandbox allows `.zip`); the individual `.xer`/`.xml` items download as `.txt` there, so the zip is the clean route to P6, Asta and MS Project.

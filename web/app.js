@@ -726,6 +726,48 @@ function newProjectDialog() {
     try { show(await post('/api/projects', { name: m.querySelector('[name=name]').value, start: m.querySelector('[name=start]').value })); await loadList(); } catch (e) { toast(e.message); }
   }, 'Create');
 }
+function wizard() {
+  const w = { name: '', building_type: 'generic', storeys: 2, units: 0, gia: 0, frame: '', foundations: '', envelope: '', roof: '', fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: '', deadline: '', planning_condition_date: '' };
+  let step = 0;
+  const sel = (n, v, opts) => `<select name="${n}">` + opts.map(o => { const val = Array.isArray(o) ? o[0] : o, lab = Array.isArray(o) ? o[1] : o; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('') + '</select>';
+  const chk = (n, v, lab) => `<label class="row"><input type="checkbox" name="${n}" ${v ? 'checked' : ''}> ${esc(lab)}</label>`;
+  const sizeLabel = () => ['house', 'houses', 'apartments'].includes(w.building_type) ? 'Number of units / dwellings' : 'Gross internal area (m²)';
+  const steps = [
+    { title: 'What are you building?', sub: "Pick the closest type. I'll choose sensible defaults you can change in the next steps.",
+      body: () => `<div class="grid"><label>Project name<input name="name" value="${esc(w.name)}" placeholder="e.g. Victoria Road apartments"></label><label>Type${sel('building_type', w.building_type, [['house', 'Single house'], ['houses', 'Housing (multiple)'], ['apartments', 'Apartment block'], ['office', 'Office'], ['warehouse', 'Warehouse / industrial'], ['school', 'School'], ['refurbishment', 'Refurbishment'], ['generic', 'Other / mixed']])}</label></div>` },
+    { title: 'How big is it?', sub: 'Leave area at 0 to let me estimate it from the type and storeys.',
+      body: () => `<div class="grid"><label>Storeys<input name="storeys" type="number" min="1" value="${w.storeys}"></label><label>${sizeLabel()}<input name="${['house','houses','apartments'].includes(w.building_type) ? 'units' : 'gia'}" type="number" min="0" value="${['house','houses','apartments'].includes(w.building_type) ? w.units : w.gia}"></label><label>Gross internal area (m²), 0 = auto<input name="gia" type="number" min="0" value="${w.gia}"></label></div>` },
+    { title: 'Structure', sub: 'Auto picks what a planner would choose for this building.',
+      body: () => `<div class="grid"><label>Frame${sel('frame', w.frame, [['', 'Auto'], ['masonry', 'Masonry (brick & block)'], ['rc', 'Reinforced concrete'], ['steel', 'Steel'], ['timber', 'Timber / CLT']])}</label><label>Foundations${sel('foundations', w.foundations, [['', 'Auto'], ['strip', 'Strip footings'], ['raft', 'Raft'], ['piled', 'Piled']])}</label></div>` },
+    { title: 'Envelope, roof and fit-out', sub: '',
+      body: () => `<div class="grid"><label>Envelope${sel('envelope', w.envelope, [['', 'Auto'], ['brick', 'Brick'], ['render', 'Render'], ['cladding', 'Cladding / rainscreen'], ['curtain_wall', 'Curtain wall']])}</label><label>Roof${sel('roof', w.roof, [['', 'Auto'], ['pitched', 'Pitched / tiled'], ['flat', 'Flat / membrane']])}</label><label>Fit-out${sel('fit_out', w.fit_out, [['full', 'Full fit-out'], ['basic', 'Basic / Cat A'], ['shell', 'Shell & core']])}</label></div>` },
+    { title: 'Site conditions', sub: 'Tick anything that applies. Each one adds the right activities.',
+      body: () => `<div class="days">${chk('demolition', w.demolition, 'Demolition / soft strip first')}${chk('contaminated_ground', w.contaminated_ground, 'Contaminated / brownfield ground')}${chk('service_diversion', w.service_diversion, 'Service diversions (cables, mains)')}${chk('basement', w.basement, 'Basement')}${chk('external_works', w.external_works, 'External works (roads, landscaping)')}${chk('six_day_week', w.six_day_week, 'Six-day working week')}</div>` },
+    { title: 'Dates', sub: 'All optional. Leave start blank to begin next Monday.',
+      body: () => `<div class="grid"><label>Start on site<input name="start_date" type="date" value="${w.start_date}"></label><label>Must finish by<input name="deadline" type="date" value="${w.deadline}"></label><label>Planning conditions discharged<input name="planning_condition_date" type="date" value="${w.planning_condition_date}"></label></div>` },
+    { title: 'Ready', sub: 'I will build the full programme, schedule it, and run the DCMA health check.',
+      body: () => { const parts = [`${w.storeys}-storey ${w.building_type}`, w.gia ? `${w.gia} m²` : (w.units ? `${w.units} units` : 'size auto'), 'frame: ' + (w.frame || 'auto'), 'foundations: ' + (w.foundations || 'auto'), w.fit_out + ' fit-out']; const flags = ['demolition', 'contaminated_ground', 'service_diversion', 'basement', 'six_day_week'].filter(k => w[k]).map(k => k.replace(/_/g, ' ')); return `<p>${esc(w.name || 'New programme')}</p><p class="hint">${esc(parts.join(' · '))}${flags.length ? '<br>' + esc(flags.join(', ')) : ''}${w.start_date ? '<br>start ' + w.start_date : ''}${w.deadline ? ' · finish by ' + w.deadline : ''}</p><p class="hint">Press Build. You can refine everything afterwards with commands, drag-and-drop, or the ribbon.</p>`; } },
+  ];
+  const readStep = () => { const m = $('#modal'); m.querySelectorAll('input,select').forEach(el => { const n = el.name; if (!n) return; if (el.type === 'checkbox') w[n] = el.checked; else if (el.type === 'number') w[n] = +el.value || 0; else w[n] = el.value; }); };
+  function draw() {
+    const s = steps[step]; const back = $('#modalBack'), m = $('#modal');
+    m.innerHTML = `<h2>${esc(s.title)} <span class="hint" style="font-weight:400">· step ${step + 1} of ${steps.length}</span></h2>` + (s.sub ? `<p class="hint">${esc(s.sub)}</p>` : '') + `<div class="mbody">${s.body()}</div><div class="actions"><button id="wCancel">Cancel</button>${step > 0 ? '<button id="wBack">Back</button>' : ''}<button class="primary" id="wNext">${step === steps.length - 1 ? 'Build programme' : 'Next →'}</button></div>`;
+    back.hidden = false;
+    $('#wCancel').onclick = () => { back.hidden = true; };
+    if ($('#wBack')) $('#wBack').onclick = () => { readStep(); step--; draw(); };
+    $('#wNext').onclick = async () => {
+      readStep();
+      if (step < steps.length - 1) { step++; draw(); return; }
+      const brief = { name: w.name || 'New programme', building_type: w.building_type, storeys: w.storeys || 1, units: w.units || 0, gross_internal_area_m2: w.gia || 0, frame: w.frame || null, foundations: w.foundations || null, envelope: w.envelope || null, roof: w.roof || null, fit_out: w.fit_out, basement: w.basement, demolition: w.demolition, service_diversion: w.service_diversion, contaminated_ground: w.contaminated_ground, external_works: w.external_works, six_day_week: w.six_day_week, start_date: w.start_date || null, deadline: w.deadline || null, planning_condition_date: w.planning_condition_date || null };
+      $('#wNext').disabled = true; $('#wNext').textContent = 'Building…';
+      try { const v = await post('/api/generate', { brief }); back.hidden = true; show(v); await loadList(); toast(`Built ${v.project.activities.length} activities, finish ${fmtD(v.project.finish)}. Export sends it to P6, Asta and MS Project.`, 6000); }
+      catch (e) { toast(e.message, 6000); $('#wNext').disabled = false; $('#wNext').textContent = 'Build programme'; }
+    };
+    const first = m.querySelector('input,select'); if (first) first.focus();
+    m.querySelectorAll('[name=building_type]').forEach(el => el.onchange = () => { readStep(); draw(); });
+  }
+  draw();
+}
 function generateDialog() {
   const sel = (n, opts, v) => `<select name="${n}"><option value="">auto</option>${opts.map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
   modal('Generate a programme', `<textarea name="text" rows="4" style="width:100%" placeholder="Paste the brief, e.g. New-build 24-unit three-storey apartment block in Leeds, RC frame on CFA piles, brick envelope. Start on site 6 April 2026, handover before Christmas 2027. Brownfield site with a live 11kV cable to divert."></textarea>
@@ -797,7 +839,7 @@ function renderPanelBody() {
 // ---------- toolbar wiring ----------
 function wireToolbar() {
   $('#projSel').onchange = e => openProject(e.target.value);
-  $('#btnNew').onclick = newProjectDialog; $('#btnGenerate').onclick = generateDialog;
+  $('#btnNew').onclick = newProjectDialog; $('#btnGenerate').onclick = generateDialog; $('#btnWizard').onclick = wizard;
   $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (!f) return; const fd = new FormData(); fd.append('file', f); toast('Importing ' + f.name + '…'); try { show(await api('/api/import', { method: 'POST', body: fd })); await loadList(); toast(`Imported ${f.name}: ${S.project.activities.length} activities`); } catch (err) { toast(err.message, 6000); } e.target.value = ''; };
   $$('[data-x]').forEach(a => a.onclick = () => { if (S.pid) location.href = '/api/projects/' + encodeURIComponent(S.pid) + '/export.' + a.dataset.x; });
   $('#btnPrint').onclick = () => window.print();

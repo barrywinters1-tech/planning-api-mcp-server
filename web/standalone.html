@@ -123,9 +123,10 @@ svg text{font-family:inherit;font-size:11px}
     <div class="rgroup">
       <select id="projSel" title="Open project"><option value="">— open —</option></select>
       <button id="btnNew" title="New blank project">New</button>
+      <button id="btnWizard" class="primary" title="Answer a few questions and get a full programme">Guided setup…</button>
       <button id="btnGenerate" title="Generate a programme from a brief">Generate…</button>
       <label class="btn" title="Import XER, P6 XML, MS Project XML, .pp, .mpp">Import<input type="file" id="fileIn" accept=".xer,.xml,.pmxml,.json,.pp,.mpp,.mpx" hidden></label>
-      <div class="menu"><button>Export ▾</button><div class="menu-items"><a data-x="xer">Primavera P6 (XER)</a><a data-x="xml">Asta / MS Project (XML)</a><a data-x="json">JSON</a></div></div>
+      <div class="menu"><button>Export ▾</button><div class="menu-items"><a data-x="bundle"><b>All three (P6 + Asta + MS Project) · .zip</b></a><a data-x="xer">Primavera P6 (XER)</a><a data-x="xml">Asta / MS Project (XML)</a><a data-x="json">JSON (re-import here)</a></div></div>
       <button id="btnPrint" title="Print (Ctrl+P)">Print</button>
       <span class="rlabel">File</span>
     </div>
@@ -1007,6 +1008,39 @@ function writeAny(p, fmt) {
 Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData });
 })(typeof window !== 'undefined' ? window : globalThis);
 
+/* ---- part 6: export bundle (store-only ZIP of .xer + .xml + .json) ---- */
+(function (global) {
+const E = global.PlannerEngine;
+const CRC = (function () { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zipStore(files) {
+  const enc = new TextEncoder(); const u16 = n => [n & 255, (n >> 8) & 255]; const u32 = n => [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >> 24) & 255];
+  const parts = []; const central = []; let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name); const data = f.bytes; const crc = crc32(data); const sz = data.length;
+    const lfh = new Uint8Array([0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0)]);
+    parts.push(lfh, name, data);
+    central.push({ hdr: new Uint8Array([0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)]), name: name });
+    offset += lfh.length + name.length + sz;
+  }
+  let cdSize = 0; const cd = [];
+  for (const c of central) { cd.push(c.hdr, c.name); cdSize += c.hdr.length + c.name.length; }
+  const eocd = new Uint8Array([0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(central.length), ...u16(central.length), ...u32(cdSize), ...u32(offset), ...u16(0)]);
+  const all = parts.concat(cd, [eocd]); let total = 0; for (const a of all) total += a.length;
+  const out = new Uint8Array(total); let p = 0; for (const a of all) { out.set(a, p); p += a.length; } return out;
+}
+function writeBundle(p) {
+  const enc = new TextEncoder();
+  return zipStore([
+    { name: p.id + '.xer', bytes: enc.encode(E.writeXer(p)) },
+    { name: p.id + '.xml', bytes: enc.encode(E.writeMspdi(p)) },
+    { name: p.id + '.json', bytes: enc.encode(JSON.stringify(p, null, 1)) },
+    { name: 'README.txt', bytes: enc.encode('Programme export for construction scheduling software.\n\n' + p.id + '.xer  - Primavera P6 (File > Import > XER); also Asta Powerproject (File > Import).\n' + p.id + '.xml  - Microsoft Project (Open) and Asta Powerproject (File > Import, MS Project XML).\n' + p.id + '.json - this planner\'s own format (re-import here).\n') },
+  ]);
+}
+Object.assign(global.PlannerEngine, { writeBundle, zipStore, crc32 });
+})(typeof window !== 'undefined' ? window : globalThis);
+
 </script>
 <script>
 /* In-browser backend: same JSON shapes as api.py, backed by localStorage + PlannerEngine. */
@@ -1081,7 +1115,9 @@ async function importFile(file) {
   throw { status: 501, detail: 'This preview imports its own JSON export. For Primavera XER, P6 XML, MS Project XML and Asta .pp import, use the full local app.' };
 }
 async function download(pid, fmt) {
-  const p = load(pid); const parts = E.writeAny(p, fmt); const content = parts[0], mime = parts[1], filename = parts[2];
+  const p = load(pid);
+  if (fmt === 'bundle') { const bytes = E.writeBundle(p); const blob = new Blob([bytes], { type: 'application/zip' }); const fn = p.id + '-P6-Asta-MSProject.zip'; let dl = null; try { if (window.claude && window.claude.use) dl = await window.claude.use('downloads'); } catch (e) { dl = null; } if (dl) { try { await dl.save({ filename: fn, data: blob }); return; } catch (e) { if (e && e.code === 'declined') return; throw { detail: 'Download unavailable here (' + ((e && e.code) || 'error') + ').' }; } } const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = fn; document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 100); return; }
+  const parts = E.writeAny(p, fmt); const content = parts[0], mime = parts[1], filename = parts[2];
   let dl = null; try { if (window.claude && window.claude.use) dl = await window.claude.use('downloads'); } catch (e) { dl = null; }
   if (dl) { let fn = filename; if (fmt === 'xer') fn = p.id + '.xer.txt'; else if (fmt === 'xml' || fmt === 'mspdi' || fmt === 'msproject') fn = p.id + '.xml.txt'; try { await dl.save({ filename: fn, data: content }); return; } catch (e) { if (e && e.code === 'declined') return; throw { detail: 'Download unavailable here (' + ((e && e.code) || 'error') + '). JSON export works; for .xer/.xml use the full local app.' }; } }
   const blob = new Blob([content], { type: mime }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 100);
@@ -1820,6 +1856,48 @@ function newProjectDialog() {
     try { show(await post('/api/projects', { name: m.querySelector('[name=name]').value, start: m.querySelector('[name=start]').value })); await loadList(); } catch (e) { toast(e.message); }
   }, 'Create');
 }
+function wizard() {
+  const w = { name: '', building_type: 'generic', storeys: 2, units: 0, gia: 0, frame: '', foundations: '', envelope: '', roof: '', fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: '', deadline: '', planning_condition_date: '' };
+  let step = 0;
+  const sel = (n, v, opts) => `<select name="${n}">` + opts.map(o => { const val = Array.isArray(o) ? o[0] : o, lab = Array.isArray(o) ? o[1] : o; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('') + '</select>';
+  const chk = (n, v, lab) => `<label class="row"><input type="checkbox" name="${n}" ${v ? 'checked' : ''}> ${esc(lab)}</label>`;
+  const sizeLabel = () => ['house', 'houses', 'apartments'].includes(w.building_type) ? 'Number of units / dwellings' : 'Gross internal area (m²)';
+  const steps = [
+    { title: 'What are you building?', sub: "Pick the closest type. I'll choose sensible defaults you can change in the next steps.",
+      body: () => `<div class="grid"><label>Project name<input name="name" value="${esc(w.name)}" placeholder="e.g. Victoria Road apartments"></label><label>Type${sel('building_type', w.building_type, [['house', 'Single house'], ['houses', 'Housing (multiple)'], ['apartments', 'Apartment block'], ['office', 'Office'], ['warehouse', 'Warehouse / industrial'], ['school', 'School'], ['refurbishment', 'Refurbishment'], ['generic', 'Other / mixed']])}</label></div>` },
+    { title: 'How big is it?', sub: 'Leave area at 0 to let me estimate it from the type and storeys.',
+      body: () => `<div class="grid"><label>Storeys<input name="storeys" type="number" min="1" value="${w.storeys}"></label><label>${sizeLabel()}<input name="${['house','houses','apartments'].includes(w.building_type) ? 'units' : 'gia'}" type="number" min="0" value="${['house','houses','apartments'].includes(w.building_type) ? w.units : w.gia}"></label><label>Gross internal area (m²), 0 = auto<input name="gia" type="number" min="0" value="${w.gia}"></label></div>` },
+    { title: 'Structure', sub: 'Auto picks what a planner would choose for this building.',
+      body: () => `<div class="grid"><label>Frame${sel('frame', w.frame, [['', 'Auto'], ['masonry', 'Masonry (brick & block)'], ['rc', 'Reinforced concrete'], ['steel', 'Steel'], ['timber', 'Timber / CLT']])}</label><label>Foundations${sel('foundations', w.foundations, [['', 'Auto'], ['strip', 'Strip footings'], ['raft', 'Raft'], ['piled', 'Piled']])}</label></div>` },
+    { title: 'Envelope, roof and fit-out', sub: '',
+      body: () => `<div class="grid"><label>Envelope${sel('envelope', w.envelope, [['', 'Auto'], ['brick', 'Brick'], ['render', 'Render'], ['cladding', 'Cladding / rainscreen'], ['curtain_wall', 'Curtain wall']])}</label><label>Roof${sel('roof', w.roof, [['', 'Auto'], ['pitched', 'Pitched / tiled'], ['flat', 'Flat / membrane']])}</label><label>Fit-out${sel('fit_out', w.fit_out, [['full', 'Full fit-out'], ['basic', 'Basic / Cat A'], ['shell', 'Shell & core']])}</label></div>` },
+    { title: 'Site conditions', sub: 'Tick anything that applies. Each one adds the right activities.',
+      body: () => `<div class="days">${chk('demolition', w.demolition, 'Demolition / soft strip first')}${chk('contaminated_ground', w.contaminated_ground, 'Contaminated / brownfield ground')}${chk('service_diversion', w.service_diversion, 'Service diversions (cables, mains)')}${chk('basement', w.basement, 'Basement')}${chk('external_works', w.external_works, 'External works (roads, landscaping)')}${chk('six_day_week', w.six_day_week, 'Six-day working week')}</div>` },
+    { title: 'Dates', sub: 'All optional. Leave start blank to begin next Monday.',
+      body: () => `<div class="grid"><label>Start on site<input name="start_date" type="date" value="${w.start_date}"></label><label>Must finish by<input name="deadline" type="date" value="${w.deadline}"></label><label>Planning conditions discharged<input name="planning_condition_date" type="date" value="${w.planning_condition_date}"></label></div>` },
+    { title: 'Ready', sub: 'I will build the full programme, schedule it, and run the DCMA health check.',
+      body: () => { const parts = [`${w.storeys}-storey ${w.building_type}`, w.gia ? `${w.gia} m²` : (w.units ? `${w.units} units` : 'size auto'), 'frame: ' + (w.frame || 'auto'), 'foundations: ' + (w.foundations || 'auto'), w.fit_out + ' fit-out']; const flags = ['demolition', 'contaminated_ground', 'service_diversion', 'basement', 'six_day_week'].filter(k => w[k]).map(k => k.replace(/_/g, ' ')); return `<p>${esc(w.name || 'New programme')}</p><p class="hint">${esc(parts.join(' · '))}${flags.length ? '<br>' + esc(flags.join(', ')) : ''}${w.start_date ? '<br>start ' + w.start_date : ''}${w.deadline ? ' · finish by ' + w.deadline : ''}</p><p class="hint">Press Build. You can refine everything afterwards with commands, drag-and-drop, or the ribbon.</p>`; } },
+  ];
+  const readStep = () => { const m = $('#modal'); m.querySelectorAll('input,select').forEach(el => { const n = el.name; if (!n) return; if (el.type === 'checkbox') w[n] = el.checked; else if (el.type === 'number') w[n] = +el.value || 0; else w[n] = el.value; }); };
+  function draw() {
+    const s = steps[step]; const back = $('#modalBack'), m = $('#modal');
+    m.innerHTML = `<h2>${esc(s.title)} <span class="hint" style="font-weight:400">· step ${step + 1} of ${steps.length}</span></h2>` + (s.sub ? `<p class="hint">${esc(s.sub)}</p>` : '') + `<div class="mbody">${s.body()}</div><div class="actions"><button id="wCancel">Cancel</button>${step > 0 ? '<button id="wBack">Back</button>' : ''}<button class="primary" id="wNext">${step === steps.length - 1 ? 'Build programme' : 'Next →'}</button></div>`;
+    back.hidden = false;
+    $('#wCancel').onclick = () => { back.hidden = true; };
+    if ($('#wBack')) $('#wBack').onclick = () => { readStep(); step--; draw(); };
+    $('#wNext').onclick = async () => {
+      readStep();
+      if (step < steps.length - 1) { step++; draw(); return; }
+      const brief = { name: w.name || 'New programme', building_type: w.building_type, storeys: w.storeys || 1, units: w.units || 0, gross_internal_area_m2: w.gia || 0, frame: w.frame || null, foundations: w.foundations || null, envelope: w.envelope || null, roof: w.roof || null, fit_out: w.fit_out, basement: w.basement, demolition: w.demolition, service_diversion: w.service_diversion, contaminated_ground: w.contaminated_ground, external_works: w.external_works, six_day_week: w.six_day_week, start_date: w.start_date || null, deadline: w.deadline || null, planning_condition_date: w.planning_condition_date || null };
+      $('#wNext').disabled = true; $('#wNext').textContent = 'Building…';
+      try { const v = await post('/api/generate', { brief }); back.hidden = true; show(v); await loadList(); toast(`Built ${v.project.activities.length} activities, finish ${fmtD(v.project.finish)}. Export sends it to P6, Asta and MS Project.`, 6000); }
+      catch (e) { toast(e.message, 6000); $('#wNext').disabled = false; $('#wNext').textContent = 'Build programme'; }
+    };
+    const first = m.querySelector('input,select'); if (first) first.focus();
+    m.querySelectorAll('[name=building_type]').forEach(el => el.onchange = () => { readStep(); draw(); });
+  }
+  draw();
+}
 function generateDialog() {
   const sel = (n, opts, v) => `<select name="${n}"><option value="">auto</option>${opts.map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
   modal('Generate a programme', `<textarea name="text" rows="4" style="width:100%" placeholder="Paste the brief, e.g. New-build 24-unit three-storey apartment block in Leeds, RC frame on CFA piles, brick envelope. Start on site 6 April 2026, handover before Christmas 2027. Brownfield site with a live 11kV cable to divert."></textarea>
@@ -1891,7 +1969,7 @@ function renderPanelBody() {
 // ---------- toolbar wiring ----------
 function wireToolbar() {
   $('#projSel').onchange = e => openProject(e.target.value);
-  $('#btnNew').onclick = newProjectDialog; $('#btnGenerate').onclick = generateDialog;
+  $('#btnNew').onclick = newProjectDialog; $('#btnGenerate').onclick = generateDialog; $('#btnWizard').onclick = wizard;
   $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (!f) return; toast('Importing ' + f.name + '…'); try { show(await window.__local.importFile(f)); await loadList(); toast(`Imported ${f.name}: ${S.project.activities.length} activities`); } catch (err) { toast((err && err.detail) || err.message, 7000); } e.target.value = ''; };
   $$('[data-x]').forEach(a => a.onclick = async () => { if (S.pid) try { await window.__local.download(S.pid, a.dataset.x); } catch (e) { toast((e && e.detail) || e.message, 6000); } });
   $('#btnPrint').onclick = () => window.print();
