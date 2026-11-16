@@ -101,9 +101,12 @@ pytest -q
 
 Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real files; the generator across building types; the repairer; the command language.
 
+`tests/test_parity.py` is a golden-master check that the browser engine (`web/engine.js`) and the Python engine agree exactly. A corpus of projects (every link type and constraint, progress, hammocks, a year of DST changes) and briefs runs through both, and every date, float, critical flag, DCMA result, levelling delay, repair, command patch, histogram and cost figure is diffed, along with Python's rounding and number formatting over a few thousand values. Node runs it under UTC, London, Santiago (clocks change at midnight) and Lord Howe (30-minute DST). It needs `node` on the path and skips without it.
+
 ## Known limits
 
-- One shift per working day per calendar. P6 multi-shift calendars collapse to hours per day.
+- One shift per working day per calendar. P6 multi-shift calendars collapse to hours per day. A shift is looked up by the date it starts on, so shifts that run past midnight (nights, 24-hour working) are not modelled correctly.
+- Schedule times are kept to the whole second.
 - No resource levelling. Resources and assignments are carried through so P6 / Asta can level.
 - Progress uses retained logic only.
 - `must_finish_by` has no MSPDI field, so it does not survive an XML round trip.
@@ -112,7 +115,7 @@ Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real 
 
 ## Browser build (no backend)
 
-`web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. It is validated by reproducing the Python-scheduled demo exactly and by cross-checking the generator, DCMA, levelling and file writers against the Python outputs (Python reads back the browser-written XER and MSPDI). The browser build imports its own JSON export; Primavera XER, P6 XML and Asta .pp import stay in the full local app.
+`web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. `tests/test_parity.py` holds the two engines to identical output in four timezones (see Tests); the engine keeps dates as naive wall-clock times in UTC-pinned `Date`s so daylight saving cannot shift them. Python also reads back the browser-written XER and MSPDI. The browser build imports its own JSON export; Primavera XER, P6 XML and Asta .pp import stay in the full local app.
 
 ## Guided setup and one-click interoperability
 

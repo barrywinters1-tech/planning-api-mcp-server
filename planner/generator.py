@@ -58,24 +58,30 @@ class Brief(BaseModel):
 RATES = {
     "site_setup_base": 5, "site_setup_per_1000m2": 1,
     "demolition_m2_per_day": 120,
-    "service_diversion_days": 15,
+    "service_diversion_lead_in_days": 40,   # undertakers quote 8-26 weeks from application; 8 weeks is the optimistic end
+    "service_diversion_days": 15,           # diversion works on site once the undertaker mobilises
     "remediation_m2_per_day": 100,
     "reduce_level_m2_per_day": 250,
     "basement_m2_per_day": 25,
     "strip_found_m2_per_day": 60,
     "raft_m2_per_day": 90,
-    "piles_per_day": 8, "m2_per_pile": 12,
+    "piles_per_day": 8, "m2_per_pile": 40,  # piles sit under columns/walls on a 6-8 m grid, not a 3.5 m mesh
     "pile_caps_m2_per_day": 120,
     "drainage_m2_per_day": 150,
     "ground_slab_m2_per_day": 120,
-    "frame_masonry_m2_per_day": 35,
+    # m² of external wall elevation per gang-day, both leaves (facing brick + block), ties, insulation, lintels,
+    # with the internal loadbearing blockwork that goes up alongside: about 4 weeks for a typical two-storey house
+    "masonry_wall_m2_per_day": 12,
+    "masonry_features_m2_per_day": 150,     # pointing, cavity closers, sills and feature brick once the shell is up
     "frame_rc_m2_per_day": 45, "rc_cure_days": 3,
     "frame_steel_m2_per_day": 180, "steel_deck_m2_per_day": 150,
     "frame_timber_m2_per_day": 120,
     "roof_m2_per_day": 70,
     "envelope_brick_m2_per_day": 45, "envelope_render_m2_per_day": 70,
-    "envelope_cladding_m2_per_day": 110, "envelope_curtain_wall_m2_per_day": 90,
+    "envelope_cladding_m2_per_day": 70,     # one gang; rainscreen on SFS is slower, composite panels faster
+    "envelope_curtain_wall_m2_per_day": 25, # unitised/stick curtain wall is crane- or mast-climber-limited: 15-40 m²/day
     "windows_base": 3, "windows_per_storey": 2,
+    "scaffold_base": 3, "scaffold_per_storey": 2,
     "first_fix_m2_per_day": 90, "drylining_m2_per_day": 70, "screed_m2_per_day": 250,
     "second_fix_m2_per_day": 80, "decoration_m2_per_day": 110, "finishes_m2_per_day": 160,
     "commissioning_base": 10, "commissioning_per_storey": 2,
@@ -311,7 +317,7 @@ def generate(brief: Brief) -> DraftPlan:
         + (f" split into {zones} zones for trade flow" if zones > 1 else ""),
         f"Frame: {b.frame}; foundations: {b.foundations}; envelope: {b.envelope}; roof: {b.roof}; fit-out: {b.fit_out}",
         "Working week " + ("Monday to Saturday" if b.six_day_week else "Monday to Friday") + ", 8 hours, UK bank holidays non-working",
-        "Durations from RATES production table in planner/generator.py; single gang per trade unless zoned",
+        "Durations from the RATES production table; single gang per trade unless zoned",
     ]
 
     wbs = ["Enabling works", "Substructure", "Frame and upper floors", "Roof and envelope", "Internal fit-out",
@@ -326,9 +332,13 @@ def generate(brief: Brief) -> DraftPlan:
                   R["site_setup_base"] + R["site_setup_per_1000m2"] * footprint / 1000, [start], "Groundworks gang", crew=3)
     enabling_done = [setup]
     if b.service_diversion:
+        lead_in = x.add("Statutory diversion lead-in (application, design and quotation)", W["Enabling works"],
+                        R["service_diversion_lead_in_days"], [start])
         enabling_done.append(x.add("Service diversions and temporary supplies", W["Enabling works"], R["service_diversion_days"],
-                                   [start], "Utilities contractor"))
-        x.assumptions.append("Statutory undertaker diversions assumed 15 working days once on site; confirm with DNO/water")
+                                   [lead_in], "Utilities contractor"))
+        x.assumptions.append(f"Statutory diversions: {R['service_diversion_lead_in_days'] // 5}-week undertaker lead-in, then "
+                             f"{R['service_diversion_days']} working days on site. Undertakers quote 8-26 weeks, so confirm with "
+                             "the DNO/water/gas before relying on this date")
     if b.demolition:
         enabling_done = [x.add("Soft strip and demolition", W["Enabling works"], footprint / R["demolition_m2_per_day"] + 3,
                                enabling_done, "Demolition contractor", crew=4)]
@@ -361,6 +371,9 @@ def generate(brief: Brief) -> DraftPlan:
     # ---- 3 frame per storey
     F = W["Frame and upper floors"]
     frame_ids: list[str] = []   # last activity of each storey's frame
+    first_lift = None           # first masonry lift: the scaffold goes up alongside it
+    perimeter = 4 * math.sqrt(footprint)          # square-plan approximation
+    wall_area_per_storey = perimeter * 3.2
     prev = sub_done
     for lvl in range(storeys):
         label = "ground floor" if lvl == 0 else f"level {lvl}"
@@ -382,7 +395,8 @@ def generate(brief: Brief) -> DraftPlan:
             prev = x.add(f"Timber frame panels and floor cassettes - {label}", F, footprint / R["frame_timber_m2_per_day"] + 1, [prev], "Timber frame erectors", crew=5)
         else:
             lift = x.add(f"Brick and block to {'first floor' if lvl == 0 else 'level ' + str(lvl + 1) if lvl + 1 < storeys else 'wall plate'}", F,
-                         footprint / R["frame_masonry_m2_per_day"], [prev], "Bricklayers", crew=6)
+                         wall_area_per_storey / R["masonry_wall_m2_per_day"], [prev], "Bricklayers", crew=6)
+            first_lift = first_lift or lift
             if lvl + 1 < storeys:
                 prev = x.add(f"Floor joists or precast planks - level {lvl + 1}", F, footprint / 300 + 2, [lift], "Carpenters", crew=3)
             else:
@@ -392,13 +406,16 @@ def generate(brief: Brief) -> DraftPlan:
 
     # ---- 4 roof and envelope
     E = W["Roof and envelope"]
+    # access scaffold: on masonry it rises with the brickwork lifts; on a frame it follows the first floor up
+    scaffold = x.add("Erect scaffold, inspect and hand over", E, R["scaffold_base"] + R["scaffold_per_storey"] * storeys,
+                     [(first_lift, "SS", 0)] if first_lift else [frame_ids[0]], "Scaffolders", crew=4)
     roof = x.add("Roof structure" + (" and trusses" if b.roof == "pitched" else " and screed to falls"), E, footprint / R["roof_m2_per_day"] + 3,
-                 [frame_done], "Roofers" if b.roof == "pitched" else "Roofing contractor", crew=4)
+                 [frame_done, scaffold], "Roofers" if b.roof == "pitched" else "Roofing contractor", crew=4)
     roof_cover = x.add("Roof covering" + (" (felt, batten, tile)" if b.roof == "pitched" else " (membrane and insulation)"), E,
                        footprint / R["roof_m2_per_day"] + 2, [roof], "Roofers", crew=4)
-    env_rate = R[f"envelope_{b.envelope}_m2_per_day"]
-    perimeter = 4 * math.sqrt(footprint)          # square-plan approximation
-    wall_area_per_storey = perimeter * 3.2
+    # on a masonry shell the facing leaf is already built: only pointing, closers and features remain
+    shell_built = b.frame == "masonry" and b.envelope == "brick"
+    env_rate = R["masonry_features_m2_per_day"] if shell_built else R[f"envelope_{b.envelope}_m2_per_day"]
     env_ids = []
     env_prev = None
     for lvl in range(storeys):
@@ -406,11 +423,16 @@ def generate(brief: Brief) -> DraftPlan:
         preds: list = [frame_ids[min(lvl + 1, storeys - 1)]] if b.frame != "masonry" else [frame_done]
         if env_prev:
             preds.append(env_prev)  # same envelope gang works up the building
-        env_prev = x.add(f"External envelope ({b.envelope.replace('_', ' ')}) - {label}", E, wall_area_per_storey / env_rate + 1, preds,
+        else:
+            preds.append(scaffold)
+        name = ("Pointing, cavity closers and brick features" if shell_built else f"External envelope ({b.envelope.replace('_', ' ')})")
+        env_prev = x.add(f"{name} - {label}", E, wall_area_per_storey / env_rate + 1, preds,
                          "Bricklayers" if b.envelope in ("brick", "render") else "Cladding contractor", crew=6)
         env_ids.append(env_prev)
     if b.frame == "masonry":
-        x.assumptions.append("Masonry frame: external leaf built with the structure, envelope activities cover pointing, cavity closers and render/brick feature work")
+        x.assumptions.append(f"Masonry shell: both leaves built with the structure at {R['masonry_wall_m2_per_day']} m² of wall per gang-day"
+                             + ("; envelope activities cover pointing, cavity closers and feature brick only" if shell_built
+                                else f"; {b.envelope.replace('_', ' ')} applied once the shell is up"))
     windows = x.add("Windows, curtain walling and external doors", E, R["windows_base"] + R["windows_per_storey"] * storeys, [env_ids[-1]],
                     "Window fitters", crew=3)
     rwg = x.add("Fascias, soffits and rainwater goods", E, footprint / 200 + 2, [roof_cover], "Roofers")
@@ -437,7 +459,9 @@ def generate(brief: Brief) -> DraftPlan:
             ff_pred = [watertight] if lvl == storeys - 1 else [frame_ids[min(lvl + 1, storeys - 1)], env_ids[lvl]]
             carp = stage("carp1", "First fix carpentry and partitions", "first_fix_m2_per_day", ff_pred, "Carpenters")
             mep1 = stage("mep1", "First fix mechanical and electrical", "first_fix_m2_per_day", [carp], "M&E contractor", crew=4)
-            dry = stage("dry", "Drylining, plastering and ceilings", "drylining_m2_per_day", [carp, mep1], "Dryliners", crew=4)
+            # plasterboard and wet plaster need the building watertight, on every floor (top floor gets it via ff_pred)
+            dry = stage("dry", "Drylining, plastering and ceilings", "drylining_m2_per_day",
+                        [carp, mep1] + ([watertight] if lvl < storeys - 1 else []), "Dryliners", crew=4)
             if b.fit_out == "full":
                 scr = stage("screed", "Screed", "screed_m2_per_day", [dry], "Screeders")
                 dry_out = x.add(f"Drying out - {label}", I, 5, [scr, dry], calendar="seven_day")

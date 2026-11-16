@@ -100,7 +100,11 @@ class Calendar(BaseModel):
         return s <= dt <= e
 
     def add_hours(self, dt: datetime, hours: float) -> datetime:
-        """Add working hours to dt (negative hours subtract)."""
+        """Add working hours to dt (negative hours subtract).
+
+        Results land on whole seconds (the final partial-day offset is rounded half-to-even),
+        so schedules never carry microsecond noise and the browser engine, which has
+        millisecond Dates, computes bit-identical dates."""
         if hours == 0:
             return dt
         if hours > 0:
@@ -110,7 +114,7 @@ class Calendar(BaseModel):
                 s, e = self._shift(dt.date())
                 avail = (e - dt).total_seconds() / 3600
                 if remaining <= avail + 1e-9:
-                    return dt + timedelta(hours=remaining)
+                    return dt + timedelta(seconds=round(remaining * 3600))
                 remaining -= avail
                 dt = self.next_working_start(datetime.combine(dt.date() + timedelta(days=1), time.min))
         else:
@@ -120,7 +124,7 @@ class Calendar(BaseModel):
                 s, e = self._shift(dt.date())
                 avail = (dt - s).total_seconds() / 3600
                 if remaining <= avail + 1e-9:
-                    return dt - timedelta(hours=remaining)
+                    return dt - timedelta(seconds=round(remaining * 3600))
                 remaining -= avail
                 dt = self.prev_working_end(datetime.combine(dt.date() - timedelta(days=1), time.max))
 

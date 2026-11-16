@@ -7,14 +7,76 @@ const EPS = 1e-6;
 const HARD = new Set(['must_start_on', 'must_finish_on']);
 
 // ---------- datetime helpers (Date <-> "YYYY-MM-DDTHH:MM:SS") ----------
+// Schedule datetimes are naive wall-clock times, exactly like Python's naive datetime.
+// They are held in Date objects pinned to UTC, which has no daylight saving: every day is
+// 24 hours and every wall-clock time exists. Using local time here made the browser lose
+// or gain an hour across DST changes (and lose whole days where clocks change at midnight).
+// Only ever read these with the getUTC* accessors.
 const P2 = n => String(n).padStart(2, '0');
-function D(iso) { if (iso == null) return null; if (iso instanceof Date) return iso; const m = String(iso).match(/(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/); if (!m) return null; return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)); }
-function ISO(d) { return d ? `${d.getFullYear()}-${P2(d.getMonth() + 1)}-${P2(d.getDate())}T${P2(d.getHours())}:${P2(d.getMinutes())}:${P2(d.getSeconds())}` : null; }
-function YMD(d) { return `${d.getFullYear()}-${P2(d.getMonth() + 1)}-${P2(d.getDate())}`; }
-const dow = d => (d.getDay() + 6) % 7;              // Mon=0 .. Sun=6
-const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
-const dateOnly = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const mk = (y, mo, d, h = 0, mi = 0, s = 0) => new Date(Date.UTC(y, mo, d, h, mi, s));
+function D(iso) { if (iso == null) return null; if (iso instanceof Date) return iso; const m = String(iso).match(/(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/); if (!m) return null; return mk(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)); }
+function ISO(d) { return d ? `${d.getUTCFullYear()}-${P2(d.getUTCMonth() + 1)}-${P2(d.getUTCDate())}T${P2(d.getUTCHours())}:${P2(d.getUTCMinutes())}:${P2(d.getUTCSeconds())}` : null; }
+function YMD(d) { return `${d.getUTCFullYear()}-${P2(d.getUTCMonth() + 1)}-${P2(d.getUTCDate())}`; }
+const dow = d => (d.getUTCDay() + 6) % 7;           // Mon=0 .. Sun=6
+const addDays = (d, n) => { const x = new Date(d); x.setUTCDate(x.getUTCDate() + n); return x; };
+const dateOnly = d => mk(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 const hoursDiff = (a, b) => (b - a) / 3600000;
+// "now" and "today" are the user's local wall clock, expressed as naive values
+function nowISO() { const n = new Date(); return `${n.getFullYear()}-${P2(n.getMonth() + 1)}-${P2(n.getDate())}T${P2(n.getHours())}:${P2(n.getMinutes())}:${P2(n.getSeconds())}`; }
+function today() { const n = new Date(); return mk(n.getFullYear(), n.getMonth(), n.getDate()); }
+
+// ---------- Python-exact number formatting ----------
+// Python rounds half-to-even on the exact binary value of a float (round(), f"{x:.1f}", f"{x:g}");
+// Math.round rounds half-up on an inexact x*10^n. Both engines must print and round identically,
+// so these work on the double's exact decimal expansion (BigInt) and never on float products.
+const _dv = new DataView(new ArrayBuffer(8));
+function exactDec(x) {            // |x| = N / 10^s exactly
+  _dv.setFloat64(0, x); const hi = _dv.getUint32(0), lo = _dv.getUint32(4);
+  const neg = (hi >>> 31) === 1, e = (hi >>> 20) & 0x7ff;
+  let m = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo), p;
+  if (e === 0) p = -1074; else { m |= 1n << 52n; p = e - 1075; }
+  return p >= 0 ? { neg, N: m << BigInt(p), s: 0 } : { neg, N: m * 5n ** BigInt(-p), s: -p };
+}
+function roundDec(N, s, keep) {   // N/10^s rounded half-to-even to `keep` decimal places -> integer over 10^keep
+  if (keep >= s) return N * 10n ** BigInt(keep - s);
+  const div = 10n ** BigInt(s - keep), q = N / div, r2 = (N % div) * 2n;
+  return (r2 > div || (r2 === div && (q & 1n))) ? q + 1n : q;
+}
+function placeDec(q, n) { const t = q.toString().padStart(n + 1, '0'); return n ? t.slice(0, -n) + '.' + t.slice(-n) : t; }
+function pyFixed(x, n = 0) {      // f"{x:.{n}f}"
+  if (!Number.isFinite(x)) return isNaN(x) ? 'nan' : (x > 0 ? 'inf' : '-inf');
+  const { neg, N, s } = exactDec(x); return (neg ? '-' : '') + placeDec(roundDec(N, s, n), n);
+}
+function pyRound(x, n = 0) { if (Number.isInteger(x) || !Number.isFinite(x)) return x; return Number(pyFixed(x, n)); }   // round(x, n); integers pass straight through
+function pyGroup(x) {             // f"{x:,.0f}"
+  const t = pyFixed(x, 0), neg = t[0] === '-', d = neg ? t.slice(1) : t;
+  return (neg ? '-' : '') + d.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function pyG(x, plus = false) {   // f"{x:g}" (and "%+g" with plus)
+  const sign = (x < 0 || Object.is(x, -0)) ? '-' : (plus ? '+' : '');
+  if (!Number.isFinite(x)) return sign + (isNaN(x) ? 'nan' : 'inf');
+  if (x === 0) return sign + '0';
+  const P = 6, { N, s } = exactDec(x);
+  const keep = P - 1 - (N.toString().length - 1 - s);
+  const q = roundDec(N, s, keep), exp = q.toString().length - 1 - keep;
+  const strip = t => t.includes('.') ? t.replace(/0+$/, '').replace(/\.$/, '') : t;
+  if (exp >= -4 && exp < P) return sign + strip(placeDec(q, Math.max(0, keep)));
+  const dg = q.toString(), mant = strip(dg[0] + '.' + dg.slice(1, P));
+  return sign + mant + 'e' + (exp < 0 ? '-' : '+') + P2(Math.abs(exp));
+}
+function pyStr(x) {               // str(float) / repr: shortest round-trip digits, Python's layout
+  if (!Number.isFinite(x)) return isNaN(x) ? 'nan' : (x > 0 ? 'inf' : '-inf');
+  if (x === 0) return Object.is(x, -0) ? '-0.0' : '0.0';
+  const [mant, es] = Math.abs(x).toExponential().split('e'), exp = +es, dg = mant.replace('.', ''), sign = x < 0 ? '-' : '';
+  if (exp < -4 || exp >= 16) return sign + mant + 'e' + (exp < 0 ? '-' : '+') + P2(Math.abs(exp));
+  if (exp < 0) return sign + '0.' + '0'.repeat(-exp - 1) + dg;
+  return sign + (dg.length <= exp + 1 ? dg + '0'.repeat(exp + 1 - dg.length) + '.0' : dg.slice(0, exp + 1) + '.' + dg.slice(exp + 1));
+}
+function pyFloorDiv(a, b) {       // a // b for floats (CPython float_floor_div)
+  const mod = a % b; let div = (a - mod) / b;
+  if (mod && ((b < 0) !== (mod < 0))) div -= 1;
+  let fl = Math.floor(div); if (div - fl > 0.5) fl += 1; return fl;
+}
 
 // ---------- Calendar ----------
 class Cal {
@@ -28,14 +90,14 @@ class Cal {
   }
   hours_on(d) { const k = YMD(d); if (k in this.exceptions) return this.exceptions[k]; return this.working_days.includes(dow(d)) ? this.hours_per_day : 0; }
   is_working(d) { return this.hours_on(d) > 0; }
-  _shift(d) { const s = new Date(d.getFullYear(), d.getMonth(), d.getDate(), this._sh, this._sm, 0); const e = new Date(s.getTime() + this.hours_on(d) * 3600000); return [s, e]; }
+  _shift(d) { const s = mk(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), this._sh, this._sm, 0); const e = new Date(s.getTime() + this.hours_on(d) * 3600000); return [s, e]; }
   next_working_start(dt) { let d = dateOnly(dt); for (let i = 0; i < 3660; i++) { if (this.is_working(d)) { const [s, e] = this._shift(d); if (dt < s) return s; if (dt < e) return dt; } d = addDays(d, 1); dt = new Date(d); } throw new Error('no working time'); }
-  prev_working_end(dt) { let d = dateOnly(dt); for (let i = 0; i < 3660; i++) { if (this.is_working(d)) { const [s, e] = this._shift(d); if (dt > e) return e; if (dt > s) return dt; } d = addDays(d, -1); dt = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59); } throw new Error('no working time'); }
+  prev_working_end(dt) { let d = dateOnly(dt); for (let i = 0; i < 3660; i++) { if (this.is_working(d)) { const [s, e] = this._shift(d); if (dt > e) return e; if (dt > s) return dt; } d = addDays(d, -1); dt = mk(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59); } throw new Error('no working time'); }
   in_shift(dt) { if (!this.is_working(dt)) return false; const [s, e] = this._shift(dt); return dt >= s && dt <= e; }
   add_hours(dt, hours) {
     if (hours === 0) return dt;
-    if (hours > 0) { dt = this.next_working_start(dt); let rem = hours; for (let i = 0; i < 20000; i++) { const [s, e] = this._shift(dt); const avail = hoursDiff(dt, e); if (rem <= avail + 1e-9) return new Date(dt.getTime() + rem * 3600000); rem -= avail; dt = this.next_working_start(new Date(dateOnly(addDays(dt, 1)))); } }
-    else { dt = this.prev_working_end(dt); let rem = -hours; for (let i = 0; i < 20000; i++) { const [s, e] = this._shift(dt); const avail = hoursDiff(s, dt); if (rem <= avail + 1e-9) return new Date(dt.getTime() - rem * 3600000); rem -= avail; dt = this.prev_working_end(new Date(dateOnly(addDays(dt, -1)).getFullYear(), dateOnly(addDays(dt, -1)).getMonth(), dateOnly(addDays(dt, -1)).getDate(), 23, 59, 59)); } }
+    if (hours > 0) { dt = this.next_working_start(dt); let rem = hours; for (let i = 0; i < 20000; i++) { const [s, e] = this._shift(dt); const avail = hoursDiff(dt, e); if (rem <= avail + 1e-9) return new Date(dt.getTime() + pyRound(rem * 3600) * 1000); rem -= avail; dt = this.next_working_start(new Date(dateOnly(addDays(dt, 1)))); } }
+    else { dt = this.prev_working_end(dt); let rem = -hours; for (let i = 0; i < 20000; i++) { const [s, e] = this._shift(dt); const avail = hoursDiff(s, dt); if (rem <= avail + 1e-9) return new Date(dt.getTime() - pyRound(rem * 3600) * 1000); rem -= avail; const y = addDays(dt, -1); dt = this.prev_working_end(mk(y.getUTCFullYear(), y.getUTCMonth(), y.getUTCDate(), 23, 59, 59)); } }
     throw new Error('add_hours overflow');
   }
   hours_between(a, b) { if (b < a) return -this.hours_between(b, a); let total = 0; let d = dateOnly(a); const end = dateOnly(b); while (d <= end) { if (this.is_working(d)) { const [s, e] = this._shift(d); const lo = a > s ? a : s, hi = b < e ? b : e; if (hi > lo) total += hoursDiff(lo, hi); } d = addDays(d, 1); } return total; }
@@ -123,7 +185,7 @@ function schedule(p) {
     if (ls_ceil !== null && ls_ceil < ls) { ls = rem === 0 ? cal.prev_working_end(ls_ceil) : ls_ceil; lf = rem > 0 ? cal.add_hours(ls, rem) : ls; }
     if (a.status === 'in_progress' && a.actual_start) ls = D(a.actual_start);
     a.late_start = ISO(ls); a.late_finish = ISO(lf);
-    a.total_float_hours = Math.round(cal.hours_between(D(a.early_finish), D(a.late_finish)) * 1e4) / 1e4;
+    a.total_float_hours = pyRound(cal.hours_between(D(a.early_finish), D(a.late_finish)), 4);
     let ff = null;
     for (const r of succs[a.id]) {
       const s = m[r.successor_id]; let slack;
@@ -133,7 +195,7 @@ function schedule(p) {
       else slack = cal.hours_between(cal.add_hours(D(a.early_start), r.lag_hours), D(s.early_finish));
       ff = ff === null ? slack : Math.min(ff, slack);
     }
-    a.free_float_hours = Math.round((ff === null ? a.total_float_hours : Math.max(0, ff)) * 1e4) / 1e4;
+    a.free_float_hours = pyRound(ff === null ? a.total_float_hours : Math.max(0, ff), 4);
   }
   const openTf = p.activities.filter(a => a.status !== 'complete' && a.total_float_hours != null).map(a => a.total_float_hours);
   const threshold = openTf.length ? Math.max(0, Math.min(...openTf)) : 0;
@@ -147,22 +209,23 @@ function schedule(p) {
     if (!starts.length && !ends.length) { const peers = p.activities.filter(x => x.wbs_id === a.wbs_id && x.id !== a.id && x.type !== 'level_of_effort' && x.early_start); starts = peers.map(x => D(x.actual_start || x.early_start)); ends = peers.map(x => D(x.actual_finish || x.early_finish)); }
     if (starts.length) { const mn = new Date(Math.min(...starts)); a.early_start = a.late_start = ISO(mn); }
     if (ends.length) { const mx = new Date(Math.max(...ends)); a.early_finish = a.late_finish = ISO(mx); }
-    if (a.early_start && a.early_finish) { a.duration_hours = Math.round(cal.hours_between(D(a.early_start), D(a.early_finish)) * 100) / 100; a.total_float_hours = a.free_float_hours = 0; a.critical = false; }
+    if (a.early_start && a.early_finish) { a.duration_hours = pyRound(cal.hours_between(D(a.early_start), D(a.early_finish)), 2); a.total_float_hours = a.free_float_hours = 0; a.critical = false; }
   }
   for (const a of p.activities) if (a.constraint === 'as_late_as_possible' && a.status === 'not_started') { a.early_start = a.late_start; a.early_finish = a.late_finish; a.total_float_hours = 0; a.free_float_hours = 0; }
-  p.scheduled_at = ISO(new Date());
+  p.scheduled_at = nowISO();
   return p;
 }
 
-global.PlannerEngine = { EPS, HARD, Cal, D, ISO, YMD, dow, addDays, dateOnly, calFor, amap, predsOf, succsOf, isMs, ensureDefaultCal, remHours, schedule };
+global.PlannerEngine = { EPS, HARD, Cal, D, ISO, YMD, dow, addDays, dateOnly, mk, nowISO, today, calFor, amap, predsOf, succsOf, isMs, ensureDefaultCal, remHours, schedule,
+  pyRound, pyFixed, pyGroup, pyG, pyStr, pyFloorDiv };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 2: DCMA, generator, patches, commands, repair, levelling, analysis, files ---- */
 (function (global) {
 const E = global.PlannerEngine;
-const { D, ISO, YMD, dow, addDays, dateOnly, calFor, amap, predsOf, succsOf, isMs, ensureDefaultCal, remHours, schedule, EPS, HARD } = E;
+const { D, ISO, YMD, dow, addDays, dateOnly, calFor, amap, predsOf, succsOf, isMs, ensureDefaultCal, remHours, schedule, EPS, HARD, pyFixed, pyStr } = E;
 const clone = o => JSON.parse(JSON.stringify(o));
-const round = (x, n = 0) => { const f = 10 ** n; return Math.round(x * f) / f; };
+const round = E.pyRound;
 const pct = (n, d) => d ? round(100 * n / d, 1) : 0;
 const HIGH_FLOAT = 44, HIGH_DUR = 44;
 
@@ -209,7 +272,7 @@ function healthCheck(p) {
   C('missed_tasks', 'Missed tasks', pct(missed.length, due.length) <= 5, { value: pct(missed.length, due.length), threshold: '≤ 5%', applicable: !!baselined.length, detail: `${missed.length} of ${due.length} baseline-due activities missed their finish.`, items: missed });
   const [cpOk, cpDetail] = cpTest(p);
   C('cp_test', 'Critical path test', cpOk, { threshold: 'finish moves with critical delay', detail: cpDetail, applicable: nInc > 0 });
-  if (p.must_finish_by && p.finish) { const cal = new E.Cal(p.calendars[p.default_calendar_id]); const cpl = cal.hours_between(dataDate, D(p.finish)); const tf = cal.hours_between(D(p.finish), D(p.must_finish_by)); const cpli = cpl > 0 ? round((cpl + tf) / cpl, 2) : 1; C('cpli', 'Critical path length index', cpli >= 0.95, { value: cpli, threshold: '≥ 0.95', detail: `Critical path ${Math.round(cal.hours_to_days(cpl))}d, float to must-finish ${Math.round(cal.hours_to_days(tf))}d.` }); }
+  if (p.must_finish_by && p.finish) { const cal = new E.Cal(p.calendars[p.default_calendar_id]); const cpl = cal.hours_between(dataDate, D(p.finish)); const tf = cal.hours_between(D(p.finish), D(p.must_finish_by)); const cpli = cpl > 0 ? round((cpl + tf) / cpl, 2) : 1; C('cpli', 'Critical path length index', cpli >= 0.95, { value: cpli, threshold: '≥ 0.95', detail: `Critical path ${pyFixed(cal.hours_to_days(cpl), 0)}d, float to must-finish ${pyFixed(cal.hours_to_days(tf), 0)}d.` }); }
   else C('cpli', 'Critical path length index', true, { applicable: false, detail: 'Set a must-finish-by date to compute CPLI.' });
   const plannedDone = due, actuallyDone = acts.filter(a => a.status === 'complete');
   if (plannedDone.length) { const bei = round(actuallyDone.length / plannedDone.length, 2); C('bei', 'Baseline execution index', bei >= 0.95, { value: bei, threshold: '≥ 0.95', detail: `${actuallyDone.length} complete vs ${plannedDone.length} planned complete by data date.` }); }
@@ -222,7 +285,7 @@ function healthCheck(p) {
   dangling = [...new Set(dangling)].sort();
   C('dangling', 'Dangling logic', !dangling.length, { value: dangling.length, threshold: '0', detail: `${dangling.length} activities only drive successors by their start, or are only driven on their finish.`, items: dangling });
   const applicable = checks.filter(c => c.applicable);
-  const score = applicable.length ? Math.round(100 * applicable.filter(c => c.passed).length / applicable.length) : 100;
+  const score = applicable.length ? round(100 * applicable.filter(c => c.passed).length / applicable.length) : 100;
   const fails = applicable.filter(c => !c.passed).map(c => c.title);
   return { score, checks, summary: fails.length ? 'Failing: ' + fails.join(', ') + '.' : 'Schedule passes all applicable checks.', failing: () => checks.filter(c => c.applicable && !c.passed) };
 }
@@ -233,7 +296,7 @@ function cpTest(p) {
   const push = new E.Cal(trial.calendars[t.calendar_id || trial.default_calendar_id]).days_to_hours(600);
   if (t.status === 'in_progress' && t.remaining_hours != null) t.remaining_hours += push; else { t.duration_hours += push; if (t.remaining_hours != null) t.remaining_hours += push; }
   try { schedule(trial); } catch (e) { return [false, 'Could not schedule the trial: ' + e.message]; }
-  const moved = Math.round((D(trial.finish) - D(p.finish)) / 86400000);
+  const moved = Math.floor((D(trial.finish) - D(p.finish)) / 86400000);   // timedelta.days floors
   return [moved >= 540, `Adding 600 days to ${t.id} moved the finish by ${moved} calendar days.`];
 }
 
@@ -245,8 +308,27 @@ function ensureCalendars(p) {
   for (const [key, spec] of Object.entries(STD_CALS)) if (!(key in p.calendars)) { const c = { id: key, name: spec.name, hours_per_day: spec.hours_per_day, day_start: '08:00:00', working_days: spec.working_days.slice(), exceptions: {} }; if (key !== 'seven_day') UK_HOL.forEach(h => c.exceptions[h] = 0); p.calendars[key] = c; }
   p.default_calendar_id = 'standard';
 }
-function parseDate(s, hour = 8) { if (!s) return null; const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})/); if (m) return `${m[1]}-${m[2]}-${m[3]}T${P2h(hour)}:00:00`; const dm = String(s).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (dm) return `${dm[3]}-${P2h(+dm[2])}-${P2h(+dm[1])}T${P2h(hour)}:00:00`; return null; }
+// Port of planner.plan._parse_date: datetime.strptime over four formats, using CPython's own
+// field patterns (anchored, case-insensitive), then the same calendar validation. A supplied
+// time is kept; a bare date (or midnight) gets `hour`.
 const P2h = n => String(n).padStart(2, '0');
+const SP = { Y: '(\\d\\d\\d\\d)', m: '(1[0-2]|0[1-9]|[1-9])', d: '(3[01]|[12]\\d|0[1-9]|[1-9]| [1-9])', H: '(2[0-3]|[0-1]\\d|\\d)', M: '([0-5]\\d|\\d)', S: '(6[0-1]|[0-5]\\d|\\d)' };
+const DATE_FORMATS = [
+  [new RegExp(`^${SP.Y}-${SP.m}-${SP.d}$`, 'i'), g => [g[1], g[2], g[3], 0, 0, 0]],
+  [new RegExp(`^${SP.Y}-${SP.m}-${SP.d}T${SP.H}:${SP.M}:${SP.S}$`, 'i'), g => [g[1], g[2], g[3], g[4], g[5], g[6]]],
+  [new RegExp(`^${SP.Y}-${SP.m}-${SP.d}\\s+${SP.H}:${SP.M}$`, 'i'), g => [g[1], g[2], g[3], g[4], g[5], 0]],
+  [new RegExp(`^${SP.d}/${SP.m}/${SP.Y}$`, 'i'), g => [g[3], g[2], g[1], 0, 0, 0]],
+];
+function parseDate(s, hour = 8) {
+  if (!s) return null; const t = String(s).trim();
+  for (const [re, pick] of DATE_FORMATS) {
+    const g = t.match(re); if (!g) continue;
+    const [y, mo, d, h, mi, sec] = pick(g).map(Number);
+    if (y < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate() || sec > 59) continue;   // datetime() would raise
+    return `${String(y).padStart(4, '0')}-${P2h(mo)}-${P2h(d)}T${P2h(h || mi ? h : hour)}:${P2h(mi)}:${P2h(sec)}`;
+  }
+  return null;
+}
 function dedupe(p) { const seen = new Set(), out = []; for (const r of p.relationships) { const k = r.predecessor_id + '|' + r.successor_id + '|' + r.type; if (!seen.has(k)) { seen.add(k); out.push(r); } } p.relationships = out; }
 function d2h(p, a, days) { return calFor(p, a).days_to_hours(days); }
 function calById(p, cid) { return new E.Cal(p.calendars[cid] || p.calendars[p.default_calendar_id]); }
@@ -275,14 +357,14 @@ function applyPatch(p, patch) {
         for (const pr of preds) for (const s of succs) if (pr.type === 'FS' && s.type === 'FS') p.relationships.push({ predecessor_id: pr.predecessor_id, successor_id: s.successor_id, type: 'FS', lag_hours: 0 });
         log.push(`removed ${a.id} and bridged ${preds.length}x${succs.length} links`);
       } else if (op.op === 'rename') { if (!m[op.activity_id]) throw new Error('unknown'); m[op.activity_id].name = op.name || m[op.activity_id].name; log.push(`renamed ${op.activity_id}`); }
-      else if (op.op === 'set_duration') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); a.duration_hours = d2h(p, a, Math.max(0, op.duration_days || 0)); if (a.status === 'in_progress') a.remaining_hours = op.remaining_days != null ? d2h(p, a, op.remaining_days) : Math.max(0, a.duration_hours * (1 - a.percent_complete / 100)); log.push(`${a.id} duration -> ${op.duration_days}d`); }
+      else if (op.op === 'set_duration') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); a.duration_hours = d2h(p, a, Math.max(0, op.duration_days || 0)); if (a.status === 'in_progress') a.remaining_hours = op.remaining_days != null ? d2h(p, a, op.remaining_days) : Math.max(0, a.duration_hours * (1 - a.percent_complete / 100)); log.push(`${a.id} duration -> ${op.duration_days == null ? 'None' : pyStr(op.duration_days)}d`); }
       else if (op.op === 'set_type') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); a.type = op.activity_type || 'task'; if (a.type !== 'task') a.duration_hours = 0; log.push(`${a.id} type -> ${a.type}`); }
       else if (op.op === 'set_calendar') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); const old = calFor(p, a); a.calendar_id = op.calendar || 'standard'; a.duration_hours = calFor(p, a).days_to_hours(old.hours_to_days(a.duration_hours)); log.push(`${a.id} calendar -> ${a.calendar_id}`); }
-      else if (op.op === 'add_link') { if (!m[op.predecessor_id] || !m[op.successor_id]) throw new Error('unknown activity in link'); if (op.predecessor_id === op.successor_id) throw new Error('cannot link an activity to itself'); const lt = op.link_type || 'FS'; p.relationships = p.relationships.filter(r => !(r.predecessor_id === op.predecessor_id && r.successor_id === op.successor_id && r.type === lt)); p.relationships.push({ predecessor_id: op.predecessor_id, successor_id: op.successor_id, type: lt, lag_hours: d2h(p, m[op.predecessor_id], op.lag_days || 0) }); log.push(`linked ${op.predecessor_id} -${lt}-> ${op.successor_id}`); }
+      else if (op.op === 'add_link') { if (!m[op.predecessor_id] || !m[op.successor_id]) throw new Error('unknown activity in link'); if (op.predecessor_id === op.successor_id) throw new Error('cannot link an activity to itself'); const lt = op.link_type || 'FS'; p.relationships = p.relationships.filter(r => !(r.predecessor_id === op.predecessor_id && r.successor_id === op.successor_id && r.type === lt)); p.relationships.push({ predecessor_id: op.predecessor_id, successor_id: op.successor_id, type: lt, lag_hours: d2h(p, m[op.predecessor_id], op.lag_days || 0) }); log.push(`linked ${op.predecessor_id} -${lt}${op.lag_days ? '+' + pyStr(op.lag_days) + 'd' : ''}-> ${op.successor_id}`); }
       else if (op.op === 'remove_link') { const b = p.relationships.length; p.relationships = p.relationships.filter(r => !(r.predecessor_id === op.predecessor_id && r.successor_id === op.successor_id && (op.link_type == null || r.type === op.link_type))); log.push(`removed ${b - p.relationships.length} link(s) ${op.predecessor_id}->${op.successor_id}`); }
       else if (op.op === 'set_constraint') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); a.constraint = op.constraint_type || 'start_on_or_after'; a.constraint_date = parseDate(op.date, a.constraint.includes('finish') ? 16 : 8); log.push(`${a.id} constraint -> ${a.constraint} ${op.date}`); }
       else if (op.op === 'clear_constraint') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); a.constraint = 'none'; a.constraint_date = null; log.push(`${a.id} constraint cleared`); }
-      else if (op.op === 'set_progress') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); if (op.actual_start) a.actual_start = parseDate(op.actual_start); if (op.actual_finish) { a.actual_finish = parseDate(op.actual_finish, 16); a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; } else if (op.percent_complete != null || op.remaining_days != null || a.actual_start) { a.status = 'in_progress'; if (op.percent_complete != null) a.percent_complete = op.percent_complete; a.remaining_hours = op.remaining_days != null ? d2h(p, a, op.remaining_days) : Math.max(0, a.duration_hours * (1 - a.percent_complete / 100)); if (!a.actual_start) a.actual_start = p.data_date || p.start; } log.push(`${a.id} progress -> ${a.status} ${a.percent_complete}%`); }
+      else if (op.op === 'set_progress') { const a = m[op.activity_id]; if (!a) throw new Error('unknown'); if (op.actual_start) a.actual_start = parseDate(op.actual_start); if (op.actual_finish) { a.actual_finish = parseDate(op.actual_finish, 16); a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; } else if (op.percent_complete != null || op.remaining_days != null || a.actual_start) { a.status = 'in_progress'; if (op.percent_complete != null) a.percent_complete = op.percent_complete; a.remaining_hours = op.remaining_days != null ? d2h(p, a, op.remaining_days) : Math.max(0, a.duration_hours * (1 - a.percent_complete / 100)); if (!a.actual_start) a.actual_start = p.data_date || p.start; } log.push(`${a.id} progress -> ${a.status} ${pyStr(a.percent_complete)}%`); }
       else if (op.op === 'set_project_start') { p.start = parseDate(op.date) || p.start; if (p.data_date && D(p.data_date) < D(p.start)) p.data_date = p.start; log.push(`project start -> ${op.date}`); }
       else if (op.op === 'set_must_finish_by') { p.must_finish_by = parseDate(op.date, 16); log.push(`must finish by -> ${op.date}`); }
       else if (op.op === 'add_wbs') { if (op.wbs_code && !p.wbs.some(w => w.id === op.wbs_code)) p.wbs.push({ id: op.wbs_code, code: op.wbs_code, name: op.name || op.wbs_code, parent_id: op.parent_wbs_code || null, seq: p.wbs.length }); log.push(`added WBS ${op.wbs_code}`); }
@@ -303,9 +385,9 @@ global.PlannerEngine.clone = clone;
 /* ---- part 3: generator, draft_to_project, levelling, analysis, repair, commands ---- */
 (function (global) {
 const E = global.PlannerEngine;
-const { D, ISO, YMD, dow, addDays, dateOnly, calFor, amap, predsOf, succsOf, isMs, schedule, EPS, HARD, applyPatch, healthCheck, ensureCalendars, parseDate, clone } = E;
+const { D, ISO, YMD, dow, addDays, dateOnly, calFor, amap, predsOf, succsOf, isMs, schedule, EPS, HARD, applyPatch, healthCheck, ensureCalendars, parseDate, clone, pyRound, pyFixed, pyGroup, pyFloorDiv } = E;
 
-const RATES = { site_setup_base: 5, site_setup_per_1000m2: 1, demolition_m2_per_day: 120, service_diversion_days: 15, remediation_m2_per_day: 100, reduce_level_m2_per_day: 250, basement_m2_per_day: 25, strip_found_m2_per_day: 60, raft_m2_per_day: 90, piles_per_day: 8, m2_per_pile: 12, pile_caps_m2_per_day: 120, drainage_m2_per_day: 150, ground_slab_m2_per_day: 120, frame_masonry_m2_per_day: 35, frame_rc_m2_per_day: 45, rc_cure_days: 3, frame_steel_m2_per_day: 180, steel_deck_m2_per_day: 150, frame_timber_m2_per_day: 120, roof_m2_per_day: 70, envelope_brick_m2_per_day: 45, envelope_render_m2_per_day: 70, envelope_cladding_m2_per_day: 110, envelope_curtain_wall_m2_per_day: 90, windows_base: 3, windows_per_storey: 2, first_fix_m2_per_day: 90, drylining_m2_per_day: 70, screed_m2_per_day: 250, second_fix_m2_per_day: 80, decoration_m2_per_day: 110, finishes_m2_per_day: 160, commissioning_base: 10, commissioning_per_storey: 2, externals_base: 10, externals_m2_per_day: 120, snagging_days: 10, max_activity_days: 40, zone_m2: 900 };
+const RATES = { site_setup_base: 5, site_setup_per_1000m2: 1, demolition_m2_per_day: 120, service_diversion_lead_in_days: 40, service_diversion_days: 15, remediation_m2_per_day: 100, reduce_level_m2_per_day: 250, basement_m2_per_day: 25, strip_found_m2_per_day: 60, raft_m2_per_day: 90, piles_per_day: 8, m2_per_pile: 40, pile_caps_m2_per_day: 120, drainage_m2_per_day: 150, ground_slab_m2_per_day: 120, masonry_wall_m2_per_day: 12, masonry_features_m2_per_day: 150, frame_rc_m2_per_day: 45, rc_cure_days: 3, frame_steel_m2_per_day: 180, steel_deck_m2_per_day: 150, frame_timber_m2_per_day: 120, roof_m2_per_day: 70, envelope_brick_m2_per_day: 45, envelope_render_m2_per_day: 70, envelope_cladding_m2_per_day: 70, envelope_curtain_wall_m2_per_day: 25, windows_base: 3, windows_per_storey: 2, scaffold_base: 3, scaffold_per_storey: 2, first_fix_m2_per_day: 90, drylining_m2_per_day: 70, screed_m2_per_day: 250, second_fix_m2_per_day: 80, decoration_m2_per_day: 110, finishes_m2_per_day: 160, commissioning_base: 10, commissioning_per_storey: 2, externals_base: 10, externals_m2_per_day: 120, snagging_days: 10, max_activity_days: 40, zone_m2: 900 };
 const DEFAULT_GIA = { house: 150, houses: 95, apartments: 75, office: 1200, warehouse: 3000, school: 2500, refurbishment: 800, generic: 800 };
 const MONTHS = {}; ['january','february','march','april','may','june','july','august','september','october','november','december'].forEach((m, i) => { MONTHS[m] = i + 1; MONTHS[m.slice(0, 3)] = i + 1; });
 const WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, single: 1, twelve: 12, twenty: 20 };
@@ -334,7 +416,7 @@ function parseBrief(text) {
   let m = t.match(new RegExp('(\\d+|' + Object.keys(WORDS).join('|') + ')[\\s-]*(?:storey|story|stories|storeys|floors?|levels?)\\b')); if (m && numTok(m[1])) b.storeys = Math.floor(numTok(m[1]));
   if (/\bbungalow\b|single[\s-]storey/.test(t)) b.storeys = 1;
   m = t.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:m2|m²|sqm|sq\.?\s*m|square met)/); if (m) b.gross_internal_area_m2 = parseFloat(m[1].replace(/,/g, ''));
-  m = t.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:sq\.?\s*ft|ft2|square feet)/); if (m && !b.gross_internal_area_m2) b.gross_internal_area_m2 = Math.round(parseFloat(m[1].replace(/,/g, '')) / 10.764);
+  m = t.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:sq\.?\s*ft|ft2|square feet)/); if (m && !b.gross_internal_area_m2) b.gross_internal_area_m2 = pyRound(parseFloat(m[1].replace(/,/g, '')) / 10.764);
   m = t.match(/(\d+)[\s-]*(?:unit|flat|apartment|dwelling|house|plot|bed)/); if (m) b.units = +m[1];
   if (/\brc\b|reinforced concrete|concrete frame|in[\s-]situ/.test(t)) b.frame = 'rc'; else if (/steel[\s-]frame|steel portal|portal frame|structural steel/.test(t)) b.frame = 'steel'; else if (/timber[\s-]frame|clt|cross[\s-]laminated|sips/.test(t)) b.frame = 'timber'; else if (/masonry|brick and block|blockwork|traditional/.test(t)) b.frame = 'masonry';
   if (/pil(e|ing)/.test(t)) b.foundations = 'piled'; else if (/\braft\b/.test(t)) b.foundations = 'raft'; else if (/strip found|trench fill/.test(t)) b.foundations = 'strip';
@@ -363,12 +445,11 @@ function defaults(b) {
   if (!b.foundations) b.foundations = (b.storeys >= 4 || b.contaminated_ground || b.basement) ? 'piled' : b.building_type === 'warehouse' ? 'raft' : 'strip';
   if (!b.envelope) b.envelope = b.building_type === 'warehouse' ? 'cladding' : (b.building_type === 'office' && b.storeys >= 5) ? 'curtain_wall' : 'brick';
   if (!b.roof) b.roof = (['house', 'houses'].includes(b.building_type) || (b.frame === 'masonry' && b.storeys <= 3)) ? 'pitched' : 'flat';
-  if (!b.start_date) { const t = new Date(); const off = (7 - dow(t)) % 7 || 7; b.start_date = YMD(addDays(t, off)); }
+  if (!b.start_date) { const t = E.today(); const off = (7 - dow(t)) % 7 || 7; b.start_date = YMD(addDays(t, off)); }
   return b;
 }
-function bround(x){const fl=Math.floor(x);const fr=x-fl;if(Math.abs(fr-0.5)<1e-9)return fl%2===0?fl:fl+1;return Math.round(x);}
-const gdays = (x, lo = 1) => Math.max(lo, bround(x * 2) / 2);
-const commas = n => n.toLocaleString('en-GB', { maximumFractionDigits: 0 });
+const gdays = (x, lo = 1) => Math.max(lo, pyRound(x * 2) / 2);
+const commas = pyGroup;
 
 function generate(brief) {
   const b = defaults(brief), R = RATES;
@@ -389,7 +470,7 @@ function generate(brief) {
   const start = add('Start on site', W['Enabling works'], 0, [], '', 'start_milestone');
   const setup = add('Site set-up, welfare, hoarding and temporary works', W['Enabling works'], R.site_setup_base + R.site_setup_per_1000m2 * footprint / 1000, [start], 'Groundworks gang', 'task', null, 3);
   let enabling = [setup];
-  if (b.service_diversion) { enabling.push(add('Service diversions and temporary supplies', W['Enabling works'], R.service_diversion_days, [start], 'Utilities contractor')); assumptions.push('Statutory undertaker diversions assumed 15 working days once on site; confirm with DNO/water'); }
+  if (b.service_diversion) { const leadIn = add('Statutory diversion lead-in (application, design and quotation)', W['Enabling works'], R.service_diversion_lead_in_days, [start]); enabling.push(add('Service diversions and temporary supplies', W['Enabling works'], R.service_diversion_days, [leadIn], 'Utilities contractor')); assumptions.push(`Statutory diversions: ${Math.floor(R.service_diversion_lead_in_days / 5)}-week undertaker lead-in, then ${R.service_diversion_days} working days on site. Undertakers quote 8-26 weeks, so confirm with the DNO/water/gas before relying on this date`); }
   if (b.demolition) enabling = [add('Soft strip and demolition', W['Enabling works'], footprint / R.demolition_m2_per_day + 3, enabling, 'Demolition contractor', 'task', null, 4)];
   if (b.contaminated_ground) enabling = [add('Ground remediation and validation', W['Enabling works'], footprint / R.remediation_m2_per_day + 5, enabling, 'Remediation contractor')];
   let dig = add('Strip topsoil and reduce levels', W['Enabling works'], footprint / R.reduce_level_m2_per_day + 1, enabling, 'Groundworks gang', 'task', null, 3);
@@ -402,23 +483,24 @@ function generate(brief) {
   const drain = add('Below-ground drainage', S, footprint / R.drainage_m2_per_day + 2, [dig], 'Groundworks gang', 'task', null, 3);
   const slab = add('Ground floor slab, DPM and insulation', S, footprint / R.ground_slab_m2_per_day + 2, [cure, drain], 'Groundworks gang', 'task', null, 4);
   const subDone = add('Substructure complete', S, 0, [slab], '', 'finish_milestone');
-  const F = W['Frame and upper floors']; const frameIds = []; let prev = subDone;
+  const F = W['Frame and upper floors']; const frameIds = []; let firstLift = null; const perim = 4 * Math.sqrt(footprint); const wallPer = perim * 3.2; let prev = subDone;
   for (let lvl = 0; lvl < storeys; lvl++) {
     const label = lvl === 0 ? 'ground floor' : `level ${lvl}`;
     if (b.frame === 'rc') { const cols = add(`RC columns and walls - ${label}`, F, footprint / R.frame_rc_m2_per_day + 2, [prev], 'RC frame contractor', 'task', null, 8); const deck = add(`Suspended slab formwork, rebar and pour - ${label}`, F, footprint / R.frame_rc_m2_per_day + 3, [cols], 'RC frame contractor', 'task', null, 8); prev = add(`Slab cure - ${label}`, F, R.rc_cure_days, [deck], '', 'task', 'seven_day'); }
     else if (b.frame === 'steel') { if (lvl === 0) { prev = add('Steel frame erection (all levels)', F, gia / R.frame_steel_m2_per_day + 4, [prev], 'Steel erectors', 'task', null, 6); assumptions.push('Steel frame erected in one continuous visit; decking and concrete floors follow floor by floor'); } if (lvl > 0) prev = add(`Metal decking and concrete topping - ${label}`, F, footprint / R.steel_deck_m2_per_day + 2, lvl === 1 ? [prev] : [[prev, 'FS', 0]], 'Decking contractor', 'task', null, 4); }
     else if (b.frame === 'timber') prev = add(`Timber frame panels and floor cassettes - ${label}`, F, footprint / R.frame_timber_m2_per_day + 1, [prev], 'Timber frame erectors', 'task', null, 5);
-    else { const lift = add(`Brick and block to ${lvl === 0 ? 'first floor' : lvl + 1 < storeys ? 'level ' + (lvl + 1) : 'wall plate'}`, F, footprint / R.frame_masonry_m2_per_day, [prev], 'Bricklayers', 'task', null, 6); prev = lvl + 1 < storeys ? add(`Floor joists or precast planks - level ${lvl + 1}`, F, footprint / 300 + 2, [lift], 'Carpenters', 'task', null, 3) : lift; }
+    else { const lift = add(`Brick and block to ${lvl === 0 ? 'first floor' : lvl + 1 < storeys ? 'level ' + (lvl + 1) : 'wall plate'}`, F, wallPer / R.masonry_wall_m2_per_day, [prev], 'Bricklayers', 'task', null, 6); firstLift = firstLift || lift; prev = lvl + 1 < storeys ? add(`Floor joists or precast planks - level ${lvl + 1}`, F, footprint / 300 + 2, [lift], 'Carpenters', 'task', null, 3) : lift; }
     frameIds.push(prev);
   }
   const frameDone = add('Frame complete', F, 0, [prev], '', 'finish_milestone');
   const En = W['Roof and envelope'];
-  const roof = add('Roof structure' + (b.roof === 'pitched' ? ' and trusses' : ' and screed to falls'), En, footprint / R.roof_m2_per_day + 3, [frameDone], b.roof === 'pitched' ? 'Roofers' : 'Roofing contractor', 'task', null, 4);
+  const scaffold = add('Erect scaffold, inspect and hand over', En, R.scaffold_base + R.scaffold_per_storey * storeys, firstLift ? [[firstLift, 'SS', 0]] : [frameIds[0]], 'Scaffolders', 'task', null, 4);
+  const roof = add('Roof structure' + (b.roof === 'pitched' ? ' and trusses' : ' and screed to falls'), En, footprint / R.roof_m2_per_day + 3, [frameDone, scaffold], b.roof === 'pitched' ? 'Roofers' : 'Roofing contractor', 'task', null, 4);
   const roofCover = add('Roof covering' + (b.roof === 'pitched' ? ' (felt, batten, tile)' : ' (membrane and insulation)'), En, footprint / R.roof_m2_per_day + 2, [roof], 'Roofers', 'task', null, 4);
-  const envRate = R['envelope_' + b.envelope + '_m2_per_day']; const perim = 4 * Math.sqrt(footprint); const wallPer = perim * 3.2;
+  const shellBuilt = b.frame === 'masonry' && b.envelope === 'brick'; const envRate = shellBuilt ? R.masonry_features_m2_per_day : R['envelope_' + b.envelope + '_m2_per_day'];
   const envIds = []; let envPrev = null;
-  for (let lvl = 0; lvl < storeys; lvl++) { const label = lvl === 0 ? 'ground floor' : `level ${lvl}`; const preds = b.frame !== 'masonry' ? [frameIds[Math.min(lvl + 1, storeys - 1)]] : [frameDone]; if (envPrev) preds.push(envPrev); envPrev = add(`External envelope (${b.envelope.replace(/_/g, ' ')}) - ${label}`, En, wallPer / envRate + 1, preds, ['brick', 'render'].includes(b.envelope) ? 'Bricklayers' : 'Cladding contractor', 'task', null, 6); envIds.push(envPrev); }
-  if (b.frame === 'masonry') assumptions.push('Masonry frame: external leaf built with the structure, envelope activities cover pointing, cavity closers and render/brick feature work');
+  for (let lvl = 0; lvl < storeys; lvl++) { const label = lvl === 0 ? 'ground floor' : `level ${lvl}`; const preds = b.frame !== 'masonry' ? [frameIds[Math.min(lvl + 1, storeys - 1)]] : [frameDone]; if (envPrev) preds.push(envPrev); else preds.push(scaffold); envPrev = add(`${shellBuilt ? 'Pointing, cavity closers and brick features' : `External envelope (${b.envelope.replace(/_/g, ' ')})`} - ${label}`, En, wallPer / envRate + 1, preds, ['brick', 'render'].includes(b.envelope) ? 'Bricklayers' : 'Cladding contractor', 'task', null, 6); envIds.push(envPrev); }
+  if (b.frame === 'masonry') assumptions.push(`Masonry shell: both leaves built with the structure at ${R.masonry_wall_m2_per_day} m² of wall per gang-day` + (shellBuilt ? '; envelope activities cover pointing, cavity closers and feature brick only' : `; ${b.envelope.replace(/_/g, ' ')} applied once the shell is up`));
   const windows = add('Windows, curtain walling and external doors', En, R.windows_base + R.windows_per_storey * storeys, [envIds[envIds.length - 1]], 'Window fitters', 'task', null, 3);
   const rwg = add('Fascias, soffits and rainwater goods', En, footprint / 200 + 2, [roofCover], 'Roofers');
   const watertight = add('Watertight', En, 0, [roofCover, windows, envIds[envIds.length - 1]], '', 'finish_milestone');
@@ -431,7 +513,7 @@ function generate(brief) {
       const ffPred = lvl === storeys - 1 ? [watertight] : [frameIds[Math.min(lvl + 1, storeys - 1)], envIds[lvl]];
       const carp = stage('carp1', 'First fix carpentry and partitions', 'first_fix_m2_per_day', ffPred, 'Carpenters');
       const mep1 = stage('mep1', 'First fix mechanical and electrical', 'first_fix_m2_per_day', [carp], 'M&E contractor');
-      const dry = stage('dry', 'Drylining, plastering and ceilings', 'drylining_m2_per_day', [carp, mep1], 'Dryliners');
+      const dry = stage('dry', 'Drylining, plastering and ceilings', 'drylining_m2_per_day', [carp, mep1].concat(lvl < storeys - 1 ? [watertight] : []), 'Dryliners');
       let base;
       if (b.fit_out === 'full') { const scr = stage('screed', 'Screed', 'screed_m2_per_day', [dry], 'Screeders'); const dryOut = add(`Drying out - ${label}`, I, 5, [scr, dry], '', 'task', 'seven_day'); base = [dryOut]; } else base = [dry];
       const carp2 = stage('carp2', 'Second fix carpentry, doors and joinery', 'second_fix_m2_per_day', base, 'Carpenters');
@@ -459,7 +541,7 @@ function generate(brief) {
 
 const PALETTE = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#76b7b2', '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac', '#1f77b4', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#bcbd22'];
 function draftToProject(draft, description = '') {
-  const start = parseDate(draft.start_date) || ISO(new Date());
+  const start = parseDate(draft.start_date) || E.nowISO();
   const pid = (draft.project_id || '').replace(/[^A-Za-z0-9-]+/g, '-').replace(/^-|-$/g, '').slice(0, 12) || 'PROJ';
   const p = { id: pid, name: draft.project_name, start, data_date: start, must_finish_by: parseDate(draft.must_finish_by, 16), default_calendar_id: 'standard', calendars: {}, wbs: [], activities: [], relationships: [], resources: [], assignments: [], description, assumptions: (draft.assumptions || []).slice(), code_types: {}, baselines: [], levelled: false, finish: null, scheduled_at: null };
   ensureCalendars(p);
@@ -516,16 +598,16 @@ function level(p) {
         while (d <= end) { if (cal.is_working(d)) for (const [rid, u] of Object.entries(demand)) { usage[rid] = usage[rid] || {}; const key = YMD(d); usage[rid][key] = (usage[rid][key] || 0) + u; } d = addDays(d, 1); }
       }
     }
-    done[aid] = [start, finish]; a.level_delay_hours = origEs ? Math.round(cal.hours_between(origEs, start) * 100) / 100 : 0;
+    done[aid] = [start, finish]; a.level_delay_hours = origEs ? pyRound(cal.hours_between(origEs, start), 2) : 0;
     a.early_start = ISO(start); a.early_finish = ISO(finish);
     for (const r of succs[aid]) { if (--indeg[r.successor_id] === 0) { const s = m[r.successor_id]; ready.push({ k: D(s.late_start || s.early_start || p.start).getTime(), pr: s.priority, id: s.id }); } }
   }
   let fin = null; for (const a of p.activities) { const f = D(a.early_finish); if (f && (!fin || f > fin)) fin = f; } p.finish = ISO(fin || D(p.start));
-  for (const a of p.activities) if (a.late_finish && a.early_finish) { const cal = calFor(p, a); a.total_float_hours = Math.round(cal.hours_between(D(a.early_finish), D(a.late_finish)) * 1e4) / 1e4; a.critical = a.total_float_hours <= EPS; }
+  for (const a of p.activities) if (a.late_finish && a.early_finish) { const cal = calFor(p, a); a.total_float_hours = pyRound(cal.hours_between(D(a.early_finish), D(a.late_finish)), 4); a.critical = a.total_float_hours <= EPS; }
   p.levelled = true; return p;
 }
 function unlevel(p) { p.activities.forEach(a => a.level_delay_hours = 0); p.levelled = false; return schedule(p); }
-function setBaseline(p, name = 'Baseline') { schedule(p); const bl = { name, saved_at: ISO(new Date()), finish: p.finish, dates: {} }; for (const a of p.activities) { const s = a.actual_start || a.early_start, f = a.actual_finish || a.early_finish; bl.dates[a.id] = { start: s, finish: f, duration_hours: a.duration_hours }; a.baseline_start = s; a.baseline_finish = f; } p.baselines = p.baselines.filter(b => b.name !== name).concat([bl]); return bl; }
+function setBaseline(p, name = 'Baseline') { schedule(p); const bl = { name, saved_at: E.nowISO(), finish: p.finish, dates: {} }; for (const a of p.activities) { const s = a.actual_start || a.early_start, f = a.actual_finish || a.early_finish; bl.dates[a.id] = { start: s, finish: f, duration_hours: a.duration_hours }; a.baseline_start = s; a.baseline_finish = f; } p.baselines = p.baselines.filter(b => b.name !== name).concat([bl]); return bl; }
 function useBaseline(p, name) { const bl = p.baselines.find(b => b.name === name); if (!bl) return false; for (const a of p.activities) { const d = bl.dates[a.id]; a.baseline_start = d && d.start || null; a.baseline_finish = d && d.finish || null; } return true; }
 function clearBaseline(p) { p.activities.forEach(a => { a.baseline_start = null; a.baseline_finish = null; }); }
 
@@ -538,9 +620,16 @@ function histogram(p, resourceId) {
   for (const a of p.activities) { const dem = dailyDemand(p, a); if (!Object.keys(dem).length) continue; const days = workingDaysList(p, a); for (const d of days) for (const [rid, u] of Object.entries(dem)) { perRes[rid] = perRes[rid] || {}; const k = YMD(d); perRes[rid][k] = (perRes[rid][k] || 0) + u; } }
   const limits = {}, names = {}; p.resources.forEach(r => { limits[r.id] = r.max_units_per_day; names[r.id] = r.name; });
   const out = [];
-  for (const [rid, series] of Object.entries(perRes)) { if (resourceId && rid !== resourceId) continue; const rows = Object.entries(series).sort().map(([d, u]) => ({ date: d, units: Math.round(u * 100) / 100 })); const over = rows.filter(r => limits[rid] && r.units > limits[rid] + 1e-6); const vals = Object.values(series); out.push({ resource_id: rid, name: names[rid] || rid, limit: limits[rid] ?? null, days: rows, peak: vals.length ? Math.round(Math.max(...vals) * 100) / 100 : 0, overallocated_days: over.length, total_units: Math.round(vals.reduce((a, b) => a + b, 0) * 10) / 10 }); }
-  out.sort((a, b) => a.name.localeCompare(b.name));
-  return { resources: out };
+  for (const [rid, series] of Object.entries(perRes)) { if (resourceId && rid !== resourceId) continue; const rows = Object.entries(series).sort().map(([d, u]) => ({ date: d, units: pyRound(u, 2) })); const over = rows.filter(r => limits[rid] && r.units > limits[rid] + 1e-6); const vals = Object.values(series); out.push({ resource_id: rid, name: names[rid] || rid, limit: limits[rid] ?? null, days: rows, peak: vals.length ? pyRound(Math.max(...vals), 2) : 0, overallocated_days: over.length, total_units: pyRound(vals.reduce((a, b) => a + b, 0), 1) }); }
+  out.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);   // Python sorts by code point, not locale
+  const [d0, d1] = span(p);
+  return { from: d0, to: d1, resources: out };
+}
+function span(p) {
+  const starts = p.activities.map(a => a.actual_start || a.early_start).filter(Boolean).map(D);
+  const ends = p.activities.map(a => a.actual_finish || a.early_finish).filter(Boolean).map(D);
+  if (!starts.length) return [YMD(D(p.start)), YMD(D(p.start))];
+  return [YMD(new Date(Math.min(...starts))), YMD(new Date(Math.max(...ends)))];
 }
 function costCurve(p) {
   const dataDate = dateOnly(D(p.data_date) || D(p.start));
@@ -558,11 +647,11 @@ function costCurve(p) {
   }
   const weeks = [...new Set([...Object.keys(wp), ...Object.keys(wb), ...Object.keys(we), ...Object.keys(wa)].map(Number))].sort((a, b) => a - b);
   const rows = []; let cp = [0, 0, 0, 0];
-  for (const w of weeks) { cp[0] += wp[w] || 0; cp[1] += wb[w] || 0; cp[2] += we[w] || 0; cp[3] += wa[w] || 0; rows.push({ week: YMD(new Date(w)), planned: Math.round(cp[0]), baseline: Math.round(cp[1]), earned: Math.round(cp[2]), actual: Math.round(cp[3]) }); }
-  const metrics = { budget: Math.round(budget), bcws: Math.round(bcws), bcwp: Math.round(bcwp), acwp: Math.round(acwp), spi: bcws ? Math.round(bcwp / bcws * 100) / 100 : null, cpi: acwp ? Math.round(bcwp / acwp * 100) / 100 : null, sv: Math.round(bcwp - bcws), cv: acwp ? Math.round(bcwp - acwp) : null, data_date: YMD(dataDate) };
+  for (const w of weeks) { cp[0] += wp[w] || 0; cp[1] += wb[w] || 0; cp[2] += we[w] || 0; cp[3] += wa[w] || 0; rows.push({ week: YMD(new Date(w)), planned: pyRound(cp[0]), baseline: pyRound(cp[1]), earned: pyRound(cp[2]), actual: pyRound(cp[3]) }); }
+  const metrics = { budget: pyRound(budget), bcws: pyRound(bcws), bcwp: pyRound(bcwp), acwp: pyRound(acwp), spi: bcws ? pyRound(bcwp / bcws, 2) : null, cpi: acwp ? pyRound(bcwp / acwp, 2) : null, sv: pyRound(bcwp - bcws), cv: acwp ? pyRound(bcwp - acwp) : null, data_date: YMD(dataDate) };
   return { weeks: rows, metrics, has_baseline: p.activities.some(a => a.baseline_start) };
 }
-function variance(p) { const out = []; for (const a of p.activities) { if (!a.baseline_finish) continue; const cal = calFor(p, a); const f = D(a.actual_finish || a.early_finish), s = D(a.actual_start || a.early_start); out.push({ id: a.id, name: a.name, start_variance_days: a.baseline_start && s ? Math.round(cal.hours_to_days(cal.hours_between(D(a.baseline_start), s)) * 10) / 10 : null, finish_variance_days: f ? Math.round(cal.hours_to_days(cal.hours_between(D(a.baseline_finish), f)) * 10) / 10 : null }); } return out; }
+function variance(p) { const out = []; for (const a of p.activities) { if (!a.baseline_finish) continue; const cal = calFor(p, a); const f = D(a.actual_finish || a.early_finish), s = D(a.actual_start || a.early_start); out.push({ id: a.id, name: a.name, start_variance_days: a.baseline_start && s ? pyRound(cal.hours_to_days(cal.hours_between(D(a.baseline_start), s)), 1) : null, finish_variance_days: f ? pyRound(cal.hours_to_days(cal.hours_between(D(a.baseline_finish), f)), 1) : null }); } return out; }
 
 // ---------- repair ----------
 function reaches(p, src, dst) { const seen = new Set(), st = [src]; while (st.length) { const n = st.pop(); if (n === dst) return true; if (seen.has(n)) continue; seen.add(n); succsOf(p, n).forEach(r => st.push(r.successor_id)); } return false; }
@@ -581,12 +670,12 @@ function planRepairs(p, report) {
   for (const r of p.relationships) if (r.lag_hours < 0) ops.push({ op: 'add_link', predecessor_id: r.predecessor_id, successor_id: r.successor_id, link_type: r.type, lag_days: 0, reason: 'Negative lag (lead) removed; DCMA does not allow leads' });
   for (const a of incomplete) if (HARD.has(a.constraint) && a.constraint_date) { const soft = a.constraint === 'must_start_on' ? 'start_on_or_after' : 'finish_on_or_before'; ops.push({ op: 'set_constraint', activity_id: a.id, constraint_type: soft, date: a.constraint_date.slice(0, 10), reason: `Hard constraint on ${a.id} softened to ${soft.replace(/_/g, ' ')}` }); }
   for (const a of incomplete) { if (isMs(a)) continue; const outs = succsOf(p, a.id); if (outs.length && outs.every(r => r.type === 'SS')) { const s = outs[0]; ops.push({ op: 'add_link', predecessor_id: a.id, successor_id: s.successor_id, link_type: 'FF', lag_days: 0, reason: `${a.id} only drove ${s.successor_id} by its start; added FF so its finish matters` }); } const ins = predsOf(p, a.id); if (ins.length && ins.every(r => r.type === 'FF')) { const pr = ins[0]; ops.push({ op: 'add_link', predecessor_id: pr.predecessor_id, successor_id: a.id, link_type: 'SS', lag_days: 0, reason: `${a.id} was only driven on its finish; added SS from ${pr.predecessor_id}` }); } }
-  for (const a of incomplete) { if (isMs(a) || a.status !== 'not_started') continue; const cal = calFor(p, a); const days = cal.hours_to_days(a.duration_hours); if (days > 44) { const parts = Math.ceil(days / 44); const per = Math.round(days / parts * 10) / 10; let prev = a.id; ops.push({ op: 'set_duration', activity_id: a.id, duration_days: per, reason: `Split ${a.id} (${Math.round(days)}d) into ${parts} stages` }); ops.push({ op: 'rename', activity_id: a.id, name: `${a.name} - stage 1` }); const succs = succsOf(p, a.id); for (let i = 2; i <= parts; i++) { const nid = `${a.id}-${i}`; ops.push({ op: 'add_activity', activity_id: nid, name: `${a.name} - stage ${i}`, duration_days: per, wbs_code: a.wbs_id, calendar: ['standard', 'six_day', 'seven_day'].includes(a.calendar_id) ? a.calendar_id : null, predecessor_id: prev, link_type: 'FS', reason: 'stage split' }); prev = nid; } for (const s of succs) if (s.type === 'FS' || s.type === 'FF') { ops.push({ op: 'remove_link', predecessor_id: a.id, successor_id: s.successor_id, link_type: s.type }); ops.push({ op: 'add_link', predecessor_id: prev, successor_id: s.successor_id, link_type: s.type, lag_days: cal.hours_to_days(s.lag_hours), reason: 'moved successor link to last stage' }); } } }
+  for (const a of incomplete) { if (isMs(a) || a.status !== 'not_started') continue; const cal = calFor(p, a); const days = cal.hours_to_days(a.duration_hours); if (days > 44) { const parts = -pyFloorDiv(-days, 44); const per = pyRound(days / parts, 1); let prev = a.id; ops.push({ op: 'set_duration', activity_id: a.id, duration_days: per, reason: `Split ${a.id} (${pyFixed(days, 0)}d) into ${parts} stages` }); ops.push({ op: 'rename', activity_id: a.id, name: `${a.name} - stage 1` }); const succs = succsOf(p, a.id); for (let i = 2; i <= parts; i++) { const nid = `${a.id}-${i}`; ops.push({ op: 'add_activity', activity_id: nid, name: `${a.name} - stage ${i}`, duration_days: per, wbs_code: a.wbs_id, calendar: ['standard', 'six_day', 'seven_day'].includes(a.calendar_id) ? a.calendar_id : null, predecessor_id: prev, link_type: 'FS', reason: 'stage split' }); prev = nid; } for (const s of succs) if (s.type === 'FS' || s.type === 'FF') { ops.push({ op: 'remove_link', predecessor_id: a.id, successor_id: s.successor_id, link_type: s.type }); ops.push({ op: 'add_link', predecessor_id: prev, successor_id: s.successor_id, link_type: s.type, lag_days: cal.hours_to_days(s.lag_hours), reason: 'moved successor link to last stage' }); } } }
   const neg = incomplete.filter(a => a.total_float_hours != null && a.total_float_hours < 0);
-  if (neg.length) { const worst = neg.reduce((a, b) => a.total_float_hours <= b.total_float_hours ? a : b); const cal = calFor(p, worst); let cause = p.must_finish_by ? 'the must-finish-by date' : 'a finish constraint'; const con = neg.find(a => ['finish_on_or_before', 'must_finish_on', 'start_on_or_before'].includes(a.constraint)); if (con) cause = `the ${con.constraint.replace(/_/g, ' ')} constraint on ${con.id}`; stillOpen.push(`Negative float of ${Math.round(cal.hours_to_days(worst.total_float_hours))} days against ${cause}. Options: move the date, add resource to critical activities, or re-sequence.`); }
+  if (neg.length) { const worst = neg.reduce((a, b) => a.total_float_hours <= b.total_float_hours ? a : b); const cal = calFor(p, worst); let cause = p.must_finish_by ? 'the must-finish-by date' : 'a finish constraint'; const con = neg.find(a => ['finish_on_or_before', 'must_finish_on', 'start_on_or_before'].includes(a.constraint)); if (con) cause = `the ${con.constraint.replace(/_/g, ' ')} constraint on ${con.id}`; stillOpen.push(`Negative float of ${pyFixed(cal.hours_to_days(worst.total_float_hours), 0)} days against ${cause}. Options: move the date, add resource to critical activities, or re-sequence. Use commands to try each.`); }
   const byk = {}; report.checks.forEach(c => byk[c.key] = c);
   if (byk.high_float && !byk.high_float.passed) stillOpen.push('High float on ' + byk.high_float.items.slice(0, 6).join(', ') + ': usually missing logic or a very early deadline; review after the links above are added.');
-  if (byk.lags && !byk.lags.passed) stillOpen.push('Positive lags exceed 5% of links. Replace the longest with a real activity (cure, drying, approval) if the reviewer is strict.');
+  if (byk.lags && !byk.lags.passed) stillOpen.push('Positive lags exceed 5% of links. Replace the longest with a real activity (cure, drying, approval) if the client\'s reviewer is strict.');
   if (byk.resources && byk.resources.applicable && !byk.resources.passed) stillOpen.push("Some activities have no trade assigned; assign with the command 'assign <id> <trade>'.");
   const nLinks = ops.filter(o => o.op === 'add_link').length;
   let msg = ops.length ? `Applied ${ops.length} repair operations (${nLinks} links, ${ops.filter(o => o.op === 'set_constraint').length} constraints softened, ${ops.filter(o => o.op === 'add_activity').length} activities added).` : 'Nothing to repair automatically.';
@@ -600,24 +689,25 @@ Object.assign(global.PlannerEngine, { RATES, parseBrief, generate, draftToProjec
 /* ---- part 4: command language ---- */
 (function (global) {
 const E = global.PlannerEngine;
-const HELP = `add 2 weeks to A1240        extend by 10 days
-shorten A1240 by 3d          reduce
-set A1240 to 15d             absolute duration
-link A1010 -> A1020 SS+2d    add or replace a link
-unlink A1010 A1020
-rename A1010 New name
-delete A1045
-insert "Scaffold" 3d after A1040 before A1050
-start 2026-05-04             move project start
-finish by 1 Nov 2026         set must-finish-by
-constrain A1100 start on or after 16 Mar 2026
-unconstrain A1100
-progress A1010 50% as of 20 Apr 2026
-complete A1010 on 24 Apr 2026
-data date 2026-04-20
-assign A1020 Piling gang
-fix                          run the DCMA repairer
-help`;
+const HELP = `    add 2 weeks to A1240              extend A1240 by 10 days
+    shorten A1240 by 3d               reduce
+    set A1240 to 15d                  absolute duration
+    link A1010 -> A1020 SS+2d         add or replace a link
+    unlink A1010 A1020
+    rename A1010 Excavate strip foundations
+    delete A1045
+    insert "Scaffold lift" 3d after A1040 before A1050
+    start 2026-05-04                  move the project start
+    finish by 1 Nov 2026              set must-finish-by
+    constrain A1100 start on or after 16 Mar 2026
+    unconstrain A1100
+    progress A1010 50% as of 20 Apr 2026
+    complete A1010 on 24 Apr 2026
+    data date 2026-04-20
+    assign A1020 Piling gang
+    fix                               run the DCMA repairer
+    help
+`;   // verbatim copy of planner.commands.HELP
 function CommandError(msg) { const e = new Error(msg); e.name = 'CommandError'; return e; }
 function cdate(text) { const f = E.parseBrief ? null : null; const found = require_dates(text); if (found.length) return found[0]; const m = String(text).match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/); if (m) { let y = +m[3] + (+m[3] < 100 ? 2000 : 0); return `${y}-${String(+m[2]).padStart(2,'0')}-${String(+m[1]).padStart(2,'0')}`; } return null; }
 // reuse the generator's date finder via a light regex set
@@ -629,19 +719,21 @@ function resolve(p, tok) { tok = tok.trim().replace(/^["']|["']$/g, ''); const i
 const hpd = (p, id) => { const a = p.activities.find(x => x.id === id) || {}; const c = p.calendars[a.calendar_id || p.default_calendar_id]; return c ? c.hours_per_day : 8; };
 const ID = "(\"[^\"]+\"|'[^']+'|[A-Za-z][A-Za-z0-9_.-]*\\d[A-Za-z0-9_.-]*|[A-Za-z][A-Za-z0-9 _'/-]{2,40}?)";
 
-function parseCommand(p, text) {
+// every Patch carries still_open, as the Python model does
+function parseCommand(p, text) { const r = parseCommand0(p, text); if (!r.still_open) r.still_open = []; return r; }
+function parseCommand0(p, text) {
   const t = text.trim(), low = t.toLowerCase(); const ops = [];
   const P = (o) => ops.push(o);
   if (low === 'help' || low === '?') return { ops: [], message: HELP };
   if (['fix', 'repair', 'fix it', 'fix the failing checks'].includes(low)) return { ops: [{ op: 'note', reason: '__repair__' }], message: 'repair' };
   let m = t.match(new RegExp('^(add|extend|push|delay)\\s+(.+?)\\s+(?:to|on)\\s+' + ID + '\\s*$', 'i')) || t.match(new RegExp('^(extend|add to|lengthen)\\s+' + ID + '\\s+by\\s+(.+)$', 'i'));
-  if (m) { const g = m.slice(1); let amount, aid; if (['add', 'extend', 'push', 'delay'].includes(g[0].toLowerCase()) && g.length === 3 && /\d/.test(g[1])) { amount = g[1]; aid = g[2]; } else { amount = g[2]; aid = g[1]; } aid = resolve(p, aid); const a = p.activities.find(x => x.id === aid); const cur = a.duration_hours / hpd(p, aid); const d = cdays(amount); if (d == null) throw CommandError("How much? e.g. 'add 2 weeks to A1240'"); const nv = cur + d; P({ op: 'set_duration', activity_id: aid, duration_days: nv, reason: t }); return { ops, message: `${aid} ${a.name}: ${g0(cur)}d → ${g0(nv)}d.` }; }
+  if (m) { const g = m.slice(1); let amount, aid; if (['add', 'extend', 'push', 'delay'].includes(g[0].toLowerCase()) && g.length === 3 && /\d/.test(g[1])) { amount = g[1]; aid = g[2]; } else { amount = g[2]; aid = g[1]; } aid = resolve(p, aid); const a = p.activities.find(x => x.id === aid); const cur = a.duration_hours / hpd(p, aid); const d = cdays(amount); if (d == null) throw CommandError("How much? e.g. 'add 2 weeks to A1240'"); const nv = cur + d; P({ op: 'set_duration', activity_id: aid, duration_days: nv, reason: t }); return { ops, message: `${aid} ${a.name}: ${E.pyG(cur)}d → ${E.pyG(nv)}d.` }; }
   m = t.match(new RegExp('^(shorten|reduce|cut|shrink)\\s+' + ID + '\\s+by\\s+(.+)$', 'i'));
-  if (m) { const aid = resolve(p, m[2]); const a = p.activities.find(x => x.id === aid); const cur = a.duration_hours / hpd(p, aid); const nv = Math.max(0.5, cur - (cdays(m[3]) || 0)); P({ op: 'set_duration', activity_id: aid, duration_days: nv, reason: t }); return { ops, message: `${aid} ${a.name}: ${g0(cur)}d → ${g0(nv)}d.` }; }
+  if (m) { const aid = resolve(p, m[2]); const a = p.activities.find(x => x.id === aid); const cur = a.duration_hours / hpd(p, aid); const nv = Math.max(0.5, cur - (cdays(m[3]) || 0)); P({ op: 'set_duration', activity_id: aid, duration_days: nv, reason: t }); return { ops, message: `${aid} ${a.name}: ${E.pyG(cur)}d → ${E.pyG(nv)}d.` }; }
   m = t.match(new RegExp('^(?:set\\s+)?' + ID + '\\s*(?:=|to|duration)\\s*(\\d+(?:\\.\\d+)?\\s*[a-z]*)\\s*$', 'i'));
-  if (m) { const aid = resolve(p, m[1]); const d = cdays(m[2]); P({ op: 'set_duration', activity_id: aid, duration_days: d, reason: t }); return { ops, message: `${aid} duration set to ${g0(d)}d.` }; }
+  if (m) { const aid = resolve(p, m[1]); const d = cdays(m[2]); P({ op: 'set_duration', activity_id: aid, duration_days: d, reason: t }); return { ops, message: `${aid} duration set to ${E.pyG(d)}d.` }; }
   m = t.match(new RegExp('^link\\s+' + ID + '\\s*(?:->|to|→)\\s*' + ID + '\\s*(FS|SS|FF|SF)?\\s*([+-]\\s*\\d+(?:\\.\\d+)?\\s*[a-z]*)?\\s*$', 'i'));
-  if (m) { const pr = resolve(p, m[1]), s = resolve(p, m[2]); let lag = 0; if (m[4]) lag = (cdays(m[4].replace(/\s/g, '').slice(1)) || 0) * (m[4].trim().startsWith('-') ? -1 : 1); P({ op: 'add_link', predecessor_id: pr, successor_id: s, link_type: (m[3] || 'FS').toUpperCase(), lag_days: lag, reason: t }); return { ops, message: `Linked ${pr} ${(m[3] || 'FS').toUpperCase()}${lag ? (lag > 0 ? '+' : '') + lag + 'd' : ''} ${s}.` }; }
+  if (m) { const pr = resolve(p, m[1]), s = resolve(p, m[2]); let lag = 0; if (m[4]) lag = (cdays(m[4].replace(/\s/g, '').slice(1)) || 0) * (m[4].trim().startsWith('-') ? -1 : 1); P({ op: 'add_link', predecessor_id: pr, successor_id: s, link_type: (m[3] || 'FS').toUpperCase(), lag_days: lag, reason: t }); return { ops, message: `Linked ${pr} ${(m[3] || 'FS').toUpperCase()}${lag ? E.pyG(lag, true) + 'd' : ''} ${s}.` }; }
   m = t.match(new RegExp('^unlink\\s+' + ID + '\\s*(?:->|to|from|→|,)?\\s*' + ID + '\\s*$', 'i'));
   if (m) { const pr = resolve(p, m[1]), s = resolve(p, m[2]); P({ op: 'remove_link', predecessor_id: pr, successor_id: s, reason: t }); P({ op: 'remove_link', predecessor_id: s, successor_id: pr, reason: t }); return { ops, message: `Removed links between ${pr} and ${s}.` }; }
   m = t.match(new RegExp('^rename\\s+' + ID + '\\s+(?:to\\s+)?(.+)$', 'i'));
@@ -649,7 +741,11 @@ function parseCommand(p, text) {
   m = t.match(new RegExp('^(delete|remove)\\s+' + ID + '\\s*$', 'i'));
   if (m) { const aid = resolve(p, m[2]); P({ op: 'remove_activity', activity_id: aid, reason: t }); return { ops, message: `Removed ${aid}; predecessors were linked straight to successors.` }; }
   m = t.match(new RegExp('^(?:insert|add activity|new)\\s+["\'](.+?)["\']\\s+(\\d+(?:\\.\\d+)?\\s*[a-z]*)\\s*(?:after\\s+' + ID + ')?\\s*(?:before\\s+' + ID + ')?\\s*$', 'i'));
-  if (m) { const pred = m[3] ? resolve(p, m[3]) : null, succ = m[4] ? resolve(p, m[4]) : null; const nums = p.activities.map(a => parseInt((a.id.match(/\d+/) || ['0'])[0])); const nid = 'A' + ((nums.length ? Math.max(...nums) : 1000) + 10); const wbs = pred ? (p.activities.find(a => a.id === pred) || {}).wbs_id : succ ? (p.activities.find(a => a.id === succ) || {}).wbs_id : null; P({ op: 'add_activity', activity_id: nid, name: m[1], duration_days: cdays(m[2]), wbs_code: wbs, predecessor_id: pred, successor_id: succ, reason: t }); if (pred && succ) P({ op: 'remove_link', predecessor_id: pred, successor_id: succ, reason: 'inserted between' }); return { ops, message: `Inserted ${nid} '${m[1]}' (${g0(cdays(m[2]))}d)${pred && succ ? ` between ${pred} and ${succ}` : ''}.` }; }
+  if (m) { const pred = m[3] ? resolve(p, m[3]) : null, succ = m[4] ? resolve(p, m[4]) : null; const nums = p.activities.map(a => parseInt((a.id.match(/\d+/) || ['0'])[0])); const nid = 'A' + ((nums.length ? Math.max(...nums) : 1000) + 10); const wbs = pred ? (p.activities.find(a => a.id === pred) || {}).wbs_id : succ ? (p.activities.find(a => a.id === succ) || {}).wbs_id : null; P({ op: 'add_activity', activity_id: nid, name: m[1], duration_days: cdays(m[2]), wbs_code: wbs, predecessor_id: pred, successor_id: succ, reason: t }); if (pred && succ) P({ op: 'remove_link', predecessor_id: pred, successor_id: succ, reason: 'inserted between' }); return { ops, message: `Inserted ${nid} '${m[1]}' (${E.pyG(cdays(m[2]))}d)${pred && succ ? ` between ${pred} and ${succ}` : ''}.` }; }
+  m = t.match(new RegExp('^(?:complete|finished?|done)\\s+' + ID + '(?:\\s+(?:on|at)\\s+(.+))?$', 'i'));
+  if (m) { const aid = resolve(p, m[1]); const d = m[2] ? cdate(m[2]) : (p.data_date || p.start).slice(0, 10); P({ op: 'set_progress', activity_id: aid, actual_finish: d, reason: t }); return { ops, message: `${aid} complete on ${d}.` }; }
+  m = t.match(new RegExp('^(?:started?|begin|actual start)\\s+' + ID + '(?:\\s+(?:on|at)\\s+(.+))?$', 'i'));
+  if (m) { const aid = resolve(p, m[1]); const d = m[2] ? cdate(m[2]) : (p.data_date || p.start).slice(0, 10); P({ op: 'set_progress', activity_id: aid, actual_start: d, percent_complete: 0, reason: t }); return { ops, message: `${aid} started on ${d}.` }; }
   if (/^(project\s+)?start(s|ing)?(\s+on)?\s+/.test(low)) { const d = cdate(t); if (!d) throw CommandError("Give a date, e.g. 'start 4 May 2026'."); P({ op: 'set_project_start', date: d, reason: t }); return { ops, message: `Project start moved to ${d}.` }; }
   if (/^(must\s+)?(finish|complete|handover|deadline|end)\s*(by|on|before|date)?\s+/.test(low) || low.startsWith('deadline')) { const d = cdate(t); if (!d) throw CommandError("Give a date, e.g. 'finish by 1 Nov 2026'."); P({ op: 'set_must_finish_by', date: d, reason: t }); return { ops, message: `Must finish by ${d}. Float is now measured against that date.` }; }
   m = t.match(/^(?:data\s+date|status\s+date|progress\s+to|update\s+to)\s+(.+)$/i);
@@ -660,17 +756,13 @@ function parseCommand(p, text) {
   if (m) { const aid = resolve(p, m[1]); P({ op: 'clear_constraint', activity_id: aid, reason: t }); return { ops, message: `Constraint removed from ${aid}.` }; }
   m = t.match(new RegExp('^(?:progress|update)\\s+' + ID + '\\s+(\\d+(?:\\.\\d+)?)\\s*%(?:\\s+(?:as\\s+of|on|at)\\s+(.+))?$', 'i'));
   if (m) { const aid = resolve(p, m[1]); const d = m[3] ? cdate(m[3]) : null; const o = [{ op: 'set_progress', activity_id: aid, percent_complete: +m[2], actual_start: null, reason: t }]; let msg = `${aid} marked ${m[2]}% complete.`; if (d) { o.unshift({ op: 'note', reason: '__data_date__' + d }); msg += ` Data date ${d}.`; } return { ops: o, message: msg }; }
-  m = t.match(new RegExp('^(?:complete|finished?|done)\\s+' + ID + '(?:\\s+(?:on|at)\\s+(.+))?$', 'i'));
-  if (m) { const aid = resolve(p, m[1]); const d = m[2] ? cdate(m[2]) : (p.data_date || p.start).slice(0, 10); P({ op: 'set_progress', activity_id: aid, actual_finish: d, reason: t }); return { ops, message: `${aid} complete on ${d}.` }; }
-  m = t.match(new RegExp('^(?:started?|begin|actual start)\\s+' + ID + '(?:\\s+(?:on|at)\\s+(.+))?$', 'i'));
-  if (m) { const aid = resolve(p, m[1]); const d = m[2] ? cdate(m[2]) : (p.data_date || p.start).slice(0, 10); P({ op: 'set_progress', activity_id: aid, actual_start: d, percent_complete: 0, reason: t }); return { ops, message: `${aid} started on ${d}.` }; }
   m = t.match(new RegExp('^assign\\s+' + ID + '\\s+(?:to\\s+)?(.+)$', 'i'));
   if (m) { const aid = resolve(p, m[1]); return { ops: [{ op: 'note', reason: `__assign__${aid}__${m[2].trim()}` }], message: `Assigned '${m[2].trim()}' to ${aid}.` }; }
   m = t.match(new RegExp('^(?:move|put)\\s+' + ID + '\\s+(?:to|into|under)\\s+wbs\\s+(\\S+)', 'i'));
   if (m) { const aid = resolve(p, m[1]); P({ op: 'move_to_wbs', activity_id: aid, wbs_code: m[2], reason: t }); return { ops, message: `${aid} moved to WBS ${m[2]}.` }; }
   throw CommandError("I did not understand that. Type 'help' for the command list.");
 }
-function g0(n) { return Math.round(n * 100) / 100; }
+
 Object.assign(global.PlannerEngine, { parseCommand, CommandError, COMMAND_HELP: HELP });
 })(typeof window !== 'undefined' ? window : globalThis);
 
@@ -689,8 +781,8 @@ const RES_MSP = { material: '0', labour: '1', equipment: '1', cost: '2' };
 const EXCEL_EPOCH = Date.UTC(1899, 11, 30);
 const P2 = n => String(n).padStart(2, '0');
 const KEY = (a, b) => JSON.stringify([a, b]);
-function fmtDt(iso) { if (!iso) return ''; const d = D(iso); return d.getFullYear() + '-' + P2(d.getMonth() + 1) + '-' + P2(d.getDate()) + ' ' + P2(d.getHours()) + ':' + P2(d.getMinutes()); }
-function fmtDtSec(iso) { if (!iso) return ''; const d = D(iso); return d.getFullYear() + '-' + P2(d.getMonth() + 1) + '-' + P2(d.getDate()) + 'T' + P2(d.getHours()) + ':' + P2(d.getMinutes()) + ':' + P2(d.getSeconds()); }
+function fmtDt(iso) { if (!iso) return ''; const d = D(iso); return d.getUTCFullYear() + '-' + P2(d.getUTCMonth() + 1) + '-' + P2(d.getUTCDate()) + ' ' + P2(d.getUTCHours()) + ':' + P2(d.getUTCMinutes()); }
+function fmtDtSec(iso) { if (!iso) return ''; const d = D(iso); return d.getUTCFullYear() + '-' + P2(d.getUTCMonth() + 1) + '-' + P2(d.getUTCDate()) + 'T' + P2(d.getUTCHours()) + ':' + P2(d.getUTCMinutes()) + ':' + P2(d.getUTCSeconds()); }
 function fmtDur(h) { const hh = Math.floor(h), mm = Math.round((h - hh) * 60); return 'PT' + hh + 'H' + mm + 'M0S'; }
 function colorInt(hex) { try { hex = (hex || '').replace('#', ''); const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16); return r | (g << 8) | (b << 16); } catch (e) { return 0; } }
 const aStart = a => a.actual_start || a.early_start;
@@ -700,19 +792,19 @@ function table(name, fields, rows) { const out = ['%T\t' + name, '%F\t' + fields
 
 function buildClndrData(cal) {
   const c = new E.Cal(cal);
-  const shift = h => { const hm = c.day_start.split(':'); const s = new Date(2020, 0, 1, +hm[0], +hm[1]); const e = new Date(s.getTime() + h * 3600000); return '0||0(s|' + P2(s.getHours()) + ':' + P2(s.getMinutes()) + '|f|' + P2(e.getHours()) + ':' + P2(e.getMinutes()) + ')'; };
+  const shift = h => { const hm = c.day_start.split(':'); const s = E.mk(2020, 0, 1, +hm[0], +hm[1]); const e = new Date(s.getTime() + h * 3600000); return '0||0(s|' + P2(s.getUTCHours()) + ':' + P2(s.getUTCMinutes()) + '|f|' + P2(e.getUTCHours()) + ':' + P2(e.getUTCMinutes()) + ')'; };
   const days = []; for (let p6 = 1; p6 <= 7; p6++) { const wd = (p6 - 2 + 7) % 7; days.push('0||' + p6 + '()' + (c.working_days.includes(wd) ? '( ' + shift(c.hours_per_day) + ' )' : '( )')); }
   const exc = []; const ex = Object.entries(c.exceptions).sort(); ex.forEach((pair, i) => { const d = pair[0], h = pair[1]; const serial = Math.round((Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) - EXCEL_EPOCH) / 86400000); exc.push('0||' + i + '(d|' + serial + ')' + (h > 0 ? '( ' + shift(h) + ' )' : '( )')); });
   return '(0||CalendarType()( 0||DaysOfWeek()( ' + days.join(' ') + ' ) 0||VIEW(ShowTotal|Y)() 0||Exceptions()( ' + exc.join(' ') + ' ) ))';
 }
 
 function writeXer(p) {
-  E.ensureCalendars(p); const now = new Date(); const nowS = fmtDt(E.ISO(now)); const pid = 1;
+  E.ensureCalendars(p); const now = E.nowISO(); const nowS = fmtDt(now); const pid = 1;
   const calIds = {}; Object.keys(p.calendars).forEach((c, i) => calIds[c] = i + 1);
   const taskIds = {}; p.activities.forEach((a, i) => taskIds[a.id] = i + 1);
   const wbsIds = {}; p.wbs.forEach((w, i) => wbsIds[w.id] = i + 2);
   const rsrcIds = {}; p.resources.forEach((r, i) => rsrcIds[r.id] = i + 1);
-  const header = ['ERMHDR', '19.12', now.getFullYear() + '-' + P2(now.getMonth() + 1) + '-' + P2(now.getDate()), 'Project', 'admin', 'admin', 'dbxDatabaseNoName', 'Project Management', 'GBP'].join('\t');
+  const header = ['ERMHDR', '19.12', now.slice(0, 10), 'Project', 'admin', 'admin', 'dbxDatabaseNoName', 'Project Management', 'GBP'].join('\t');
   const currtype = table('CURRTYPE', ['curr_id', 'decimal_digit_cnt', 'curr_symbol', 'decimal_symbol', 'digit_group_symbol', 'pos_curr_fmt_type', 'neg_curr_fmt_type', 'curr_type', 'curr_short_name', 'group_digit_cnt', 'base_exch_rate'], [{ curr_id: 1, decimal_digit_cnt: 2, curr_symbol: 'GBP', decimal_symbol: '.', digit_group_symbol: ',', pos_curr_fmt_type: '#1,1.1', neg_curr_fmt_type: '(#1,1.1)', curr_type: 'Pound Sterling', curr_short_name: 'GBP', group_digit_cnt: 3, base_exch_rate: 1 }]);
   const calendar = table('CALENDAR', ['clndr_id', 'default_flag', 'clndr_name', 'proj_id', 'base_clndr_id', 'last_chng_date', 'clndr_type', 'day_hr_cnt', 'week_hr_cnt', 'month_hr_cnt', 'year_hr_cnt', 'rsrc_private', 'clndr_data'], Object.values(p.calendars).map(c => ({ clndr_id: calIds[c.id], default_flag: c.id === p.default_calendar_id ? 'Y' : 'N', clndr_name: c.name, proj_id: '', base_clndr_id: '', last_chng_date: nowS, clndr_type: 'CA_Base', day_hr_cnt: c.hours_per_day, week_hr_cnt: c.hours_per_day * c.working_days.length, month_hr_cnt: Math.round(c.hours_per_day * c.working_days.length * 52 / 12 * 10) / 10, year_hr_cnt: c.hours_per_day * c.working_days.length * 52, rsrc_private: 'N', clndr_data: buildClndrData(c) })));
   const finish = p.finish || p.start;
@@ -744,8 +836,8 @@ function writeMspdi(p) {
   E.ensureCalendars(p); const NS = 'http://schemas.microsoft.com/project';
   const calUid = {}; Object.keys(p.calendars).forEach((c, i) => calUid[c] = i + 1);
   const dcal = new E.Cal(p.calendars[p.default_calendar_id]);
-  const now = E.ISO(new Date());
-  const endTime = h => { const hm = dcal.day_start.split(':'); const e = new Date(2020, 0, 1, +hm[0], +hm[1]); e.setTime(e.getTime() + h * 3600000); return P2(e.getHours()) + ':' + P2(e.getMinutes()) + ':00'; };
+  const now = E.nowISO();
+  const endTime = h => { const hm = dcal.day_start.split(':'); const e = E.mk(2020, 0, 1, +hm[0], +hm[1]); e.setTime(e.getTime() + h * 3600000); return P2(e.getUTCHours()) + ':' + P2(e.getUTCMinutes()) + ':00'; };
   const L = []; const el = (tag, val) => L.push('<' + tag + '>' + esc(val) + '</' + tag + '>');
   L.push('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'); L.push('<Project xmlns="' + NS + '">');
   el('SaveVersion', 14); el('Name', p.name); el('Title', p.name); el('ScheduleFromStart', 1);
