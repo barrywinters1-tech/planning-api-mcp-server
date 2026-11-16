@@ -9,3 +9,6 @@ httpx
 # optional: reads Asta Powerproject .pp, MS Project .mpp, P3, SureTrak etc. via MPXJ (needs Java 11+)
 # mpxj
 # JPype1
+
+# optional, only for the AI assistant in api.py
+anthropic

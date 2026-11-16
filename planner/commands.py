@@ -233,3 +233,47 @@ def parse_command(project: Project, text: str) -> Patch:
         return Patch(ops=ops, message=f"{aid} moved to WBS {m[2]}.")
 
     raise CommandError("I did not understand that. Type 'help' for the command list.")
+
+
+def execute(project, text: str) -> dict:
+    """Parse one command and apply it, handling the data-date, assign and repair notes.
+
+    Returns {message, log, still_open}. Raises CommandError if the text is not understood.
+    This is the single code path the HTTP API, the MCP server and the AI agent all use."""
+    from datetime import datetime
+    from .cpm import ScheduleError, schedule
+    from .dcma import health_check
+    from .model import Assignment, Resource
+    from .plan import Patch, PatchOp, apply_patch
+    from .repair import plan_repairs
+
+    patch = parse_command(project, text)
+    log: list[str] = []
+    real: list[PatchOp] = []
+    for op in patch.ops:
+        if op.op == "note" and op.reason.startswith("__data_date__"):
+            project.data_date = datetime.strptime(op.reason[len("__data_date__"):], "%Y-%m-%d").replace(hour=8)
+            log.append(f"data date -> {project.data_date:%Y-%m-%d}")
+        elif op.op == "note" and op.reason.startswith("__assign__"):
+            _, aid, trade = op.reason.split("__")[2:5]
+            rid = "".join(ch if ch.isalnum() else "_" for ch in trade).strip("_").upper()[:20]
+            if not any(r.id == rid for r in project.resources):
+                project.resources.append(Resource(id=rid, name=trade))
+            project.assignments = [x for x in project.assignments if x.activity_id != aid]
+            project.assignments.append(Assignment(activity_id=aid, resource_id=rid, units=project.activity(aid).duration_hours))
+            log.append(f"{aid} assigned {trade}")
+        elif op.op == "note" and op.reason == "__repair__":
+            try:
+                schedule(project)
+                rep = health_check(project)
+            except ScheduleError as e:
+                log.append(f"cannot repair: {e}")
+                continue
+            rp = plan_repairs(project, rep)
+            log += apply_patch(project, rp)
+            patch.message, patch.still_open = rp.message, rp.still_open
+        else:
+            real.append(op)
+    if real:
+        log += apply_patch(project, Patch(ops=real, message=""))
+    return {"message": patch.message, "log": log, "still_open": getattr(patch, "still_open", []) or []}

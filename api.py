@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +25,7 @@ from planner.io import read_any, write_any
 from planner import mpxj_bridge
 from planner.plan import Patch, PatchOp, apply_patch, draft_to_project, schedule_digest
 from planner.repair import plan_repairs
+from planner import agent
 from planner.model import Assignment, Resource
 
 app = FastAPI(title="Planner", version="0.3")
@@ -404,3 +407,43 @@ def new_project(body: NewIn):
     view = _view(p)
     store.save(p)
     return view
+
+
+# ---------------------------------------------------------------- AI assistant (needs ANTHROPIC_API_KEY)
+class ChatIn(BaseModel):
+    message: str
+    history: list[dict] = []
+
+
+def _chat(project, body: ChatIn):
+    try:
+        res = agent.chat(project, body.history, body.message)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # surface model/tool errors to the UI
+        raise HTTPException(500, f"Assistant error: {e}")
+    return res
+
+
+@app.post("/api/chat")
+def chat_new(body: ChatIn):
+    res = _chat(None, body)
+    p = res["project"]
+    out = {"reply": res["reply"], "history": res["history"], "log": res["log"], "tool_calls": res["tool_calls"], "project": None, "report": None}
+    if p is not None:
+        p.id = _unique(p.id)
+        out.update(_view(p))
+        store.save(p)
+    return out
+
+
+@app.post("/api/projects/{pid}/chat")
+def chat_project(pid: str, body: ChatIn):
+    project = _load(pid)
+    history.snapshot(pid)
+    res = _chat(project, body)
+    p = res["project"] or project
+    out = {"reply": res["reply"], "history": res["history"], "log": res["log"], "tool_calls": res["tool_calls"]}
+    out.update(_view(p))
+    store.save(p)
+    return out

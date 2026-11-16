@@ -112,3 +112,13 @@ svg text{font-family:inherit;font-size:11px}
 .bandrow svg{display:block}
 .colgrip{position:absolute;right:0;top:0;width:6px;height:100%;cursor:col-resize}
 .hdr-grid .c{position:relative}
+
+.ai{position:fixed;right:16px;bottom:64px;width:min(440px,calc(100vw - 32px));max-height:66vh;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.22);display:flex;flex-direction:column;z-index:55}
+.ai header{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)}
+.ai .spacer{flex:1}
+.ai .log{overflow:auto;padding:4px 14px;font-size:13px;flex:1}
+.ai .msg{margin:8px 0;padding:8px 10px;border-radius:10px;background:var(--grid)}
+.ai .msg.me{background:var(--sel)}
+.ai .msg .tools{font-size:11px;color:var(--muted);margin-top:4px;font-family:var(--mono)}
+.ai form{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
+.ai form input{flex:1}

@@ -865,6 +865,10 @@ function wireToolbar() {
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
   $('#btnRepair').onclick = () => act('/repair');
+  $('#btnAssistant').onclick = () => { const el = $('#ai'); el.hidden = !el.hidden; if (!el.hidden) $('#aiIn').focus(); };
+  $('#aiClose').onclick = () => $('#ai').hidden = true;
+  $('#aiClear').onclick = () => { S.aiHistory = []; $('#aiLog').innerHTML = ''; addAi('New conversation. What should I build or change?'); };
+  $('#aiForm').onsubmit = async e => { e.preventDefault(); const t = $('#aiIn').value.trim(); if (!t) return; $('#aiIn').value = ''; sendAi(t); };
   $('#cmdForm').onsubmit = async e => { e.preventDefault(); const t = $('#cmdIn').value.trim(); if (!t || !S.pid) return; $('#cmdIn').value = ''; try { const v = await post('/api/projects/' + encodeURIComponent(S.pid) + '/command', { text: t }); if (v.project) show(v); $('#cmdOut').textContent = v.message.split('\n')[0]; if (v.message.includes('\n')) modal('Commands', `<pre style="white-space:pre-wrap;font-size:12px">${esc(v.message)}</pre>`); } catch (err) { $('#cmdOut').textContent = err.message; } };
   $('#sheet').addEventListener('keydown', onKey);
   $('#sheet').addEventListener('wheel', e => { if (e.ctrlKey) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.25 : 0.8); } }, { passive: false });
@@ -890,6 +894,21 @@ function onKey(e) {
   else if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && S.active && byId(S.active) && ALL_COLS[S.activeCol].set) { startEdit(S.active, S.activeCol); const inp = S.editing && S.editing.inp; if (inp && inp.type !== 'date' && inp.tagName === 'INPUT') { inp.value = k; e.preventDefault(); } }
 }
 
+// ---------- AI assistant ----------
+function addAi(html, cls, tools) { const el = document.createElement('div'); el.className = 'msg' + (cls ? ' ' + cls : ''); el.innerHTML = html + (tools && tools.length ? `<div class="tools">used: ${esc(tools.join(', '))}</div>` : ''); $('#aiLog').appendChild(el); $('#aiLog').scrollTop = 1e9; return el; }
+async function sendAi(text) {
+  addAi(esc(text), 'me');
+  const busy = addAi('Thinking…'); const t0 = Date.now();
+  const tick = setInterval(() => busy.firstChild.textContent = `Thinking… ${Math.round((Date.now() - t0) / 1000)}s`, 1000);
+  try {
+    const path = S.pid ? '/api/projects/' + encodeURIComponent(S.pid) + '/chat' : '/api/chat';
+    const v = await post(path, { message: text, history: S.aiHistory || [] });
+    clearInterval(tick); busy.remove();
+    S.aiHistory = v.history || S.aiHistory || [];
+    if (v.project) { show(v); await loadList(); $('#projSel').value = v.project.id; }
+    addAi(esc(v.reply || '(no reply)').replace(/\n/g, '<br>'), '', v.tool_calls);
+  } catch (e) { clearInterval(tick); busy.remove(); addAi('<span class="crit">' + esc((e && e.message) || 'error') + '</span>'); }
+}
 // ---------- init ----------
 (async () => {
   try { const c = JSON.parse(localStorage.getItem('cols') || 'null'); if (Array.isArray(c) && c.length) S.cols = c.filter(k => ALL_COLS[k]); const w = JSON.parse(localStorage.getItem('colw') || 'null'); if (w) Object.entries(w).forEach(([k, v]) => { if (ALL_COLS[k] && v > 20) ALL_COLS[k].w = v; }); } catch { }

@@ -119,3 +119,15 @@ Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real 
 The browser build adds a **Guided setup** wizard: a seven-step interview (building type, size, structure, envelope, site conditions, dates) that assembles a brief and generates the full programme — the same deterministic generator, no AI service. The command bar drives edits in plain phrases (`add 2 weeks to piling`, `finish by 1 Nov 2026`, `fix`).
 
 **Export to all three leading tools in one file:** Export > *All three* writes a `.zip` containing `<id>.xer` (Primavera P6 and Asta Powerproject), `<id>.xml` (Microsoft Project and Asta Powerproject, MS Project XML) and `<id>.json`. The zip is a store-only archive written in-browser; its XER and MSPDI parse back through the Python readers unchanged. In the hosted preview the zip downloads with its real extension (the sandbox allows `.zip`); the individual `.xer`/`.xml` items download as `.txt` there, so the zip is the clean route to P6, Asta and MS Project.
+
+## AI assistant (optional, full app, needs a key)
+
+With `ANTHROPIC_API_KEY` set on the server, the full app gains an **Assistant** chat: you type free-form ("plan a 20-unit two-storey housing scheme, brick, start April 2026, finish by next Christmas", then "compress it by three weeks", or "what's driving the finish?") and a Claude model drives the engine through tools — generate from a brief, run a command, apply structured edits, read the schedule, repair, level, baseline. The model never computes dates; the deterministic engine does, so the AI cannot invent a schedule. Code is in `planner/agent.py` (tool dispatch and the chat loop) with endpoints `POST /api/chat` and `POST /api/projects/{id}/chat`. Model defaults to `claude-opus-5`; override with `PLANNER_MODEL`. The hosted browser preview stays pure-code and points the Assistant button at the full app, because a static page cannot hold a key.
+
+Run with the assistant:
+
+```bash
+pip install -r requirements.txt anthropic
+export ANTHROPIC_API_KEY=...
+uvicorn api:app --port 8080
+```

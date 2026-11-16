@@ -66,6 +66,7 @@
       <span class="rlabel">Plan</span>
     </div>
     <div class="rgroup">
+      <button id="btnAssistant" class="primary" title="Ask the AI to plan or change the programme (full app + API key)">Assistant</button>
       <button data-panel="histogram">Histogram</button>
       <button data-panel="cost">Cost / EV</button>
       <button data-panel="health">Health</button>
@@ -88,6 +89,11 @@
 </div>
 <div class="print-title" id="printTitle"></div>
 <div class="tip" id="tip"></div>
+<div class="ai" id="ai" hidden>
+  <header><b>AI assistant</b><span class="spacer"></span><button id="aiClear" title="New conversation">clear</button><button id="aiClose" title="Close">×</button></header>
+  <div class="log" id="aiLog"><div class="msg">Tell me what to build or change. For example: <i>"Plan a 20-unit two-storey housing scheme, brick, start April 2026, finish by next Christmas"</i>, then <i>"compress it by three weeks"</i> or <i>"what's driving the finish?"</i></div></div>
+  <form id="aiForm"><input id="aiIn" placeholder="Describe or change the programme…" autocomplete="off"><button class="primary">Send</button></form>
+</div>
 <div class="ctx" id="ctx" hidden></div>
 <div class="modal-back" id="modalBack" hidden><div class="modal" id="modal"></div></div>
 <div class="toast" id="toast" hidden></div>

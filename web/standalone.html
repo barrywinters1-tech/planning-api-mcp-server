@@ -116,6 +116,16 @@ svg text{font-family:inherit;font-size:11px}
 .colgrip{position:absolute;right:0;top:0;width:6px;height:100%;cursor:col-resize}
 .hdr-grid .c{position:relative}
 
+.ai{position:fixed;right:16px;bottom:64px;width:min(440px,calc(100vw - 32px));max-height:66vh;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.22);display:flex;flex-direction:column;z-index:55}
+.ai header{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)}
+.ai .spacer{flex:1}
+.ai .log{overflow:auto;padding:4px 14px;font-size:13px;flex:1}
+.ai .msg{margin:8px 0;padding:8px 10px;border-radius:10px;background:var(--grid)}
+.ai .msg.me{background:var(--sel)}
+.ai .msg .tools{font-size:11px;color:var(--muted);margin-top:4px;font-family:var(--mono)}
+.ai form{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
+.ai form input{flex:1}
+
 </style>
 
 <div class="app">
@@ -177,6 +187,7 @@ svg text{font-family:inherit;font-size:11px}
       <span class="rlabel">Plan</span>
     </div>
     <div class="rgroup">
+      <button id="btnAssistant" class="primary" title="Ask the AI to plan or change the programme (full app + API key)">Assistant</button>
       <button data-panel="histogram">Histogram</button>
       <button data-panel="cost">Cost / EV</button>
       <button data-panel="health">Health</button>
@@ -199,6 +210,11 @@ svg text{font-family:inherit;font-size:11px}
 </div>
 <div class="print-title" id="printTitle"></div>
 <div class="tip" id="tip"></div>
+<div class="ai" id="ai" hidden>
+  <header><b>AI assistant</b><span class="spacer"></span><button id="aiClear" title="New conversation">clear</button><button id="aiClose" title="Close">×</button></header>
+  <div class="log" id="aiLog"><div class="msg">Tell me what to build or change. For example: <i>"Plan a 20-unit two-storey housing scheme, brick, start April 2026, finish by next Christmas"</i>, then <i>"compress it by three weeks"</i> or <i>"what's driving the finish?"</i></div></div>
+  <form id="aiForm"><input id="aiIn" placeholder="Describe or change the programme…" autocomplete="off"><button class="primary">Send</button></form>
+</div>
 <div class="ctx" id="ctx" hidden></div>
 <div class="modal-back" id="modalBack" hidden><div class="modal" id="modal"></div></div>
 <div class="toast" id="toast" hidden></div>
@@ -1080,6 +1096,7 @@ async function route(method, path, body) {
   method = (method || 'GET').toUpperCase();
   if (path === '/api/projects' && method === 'GET') { const a = loadAll(); return Object.values(a).map(p => ({ id: p.id, name: p.name, start: p.start, finish: p.finish, activities: p.activities.length, scheduled_at: p.scheduled_at })); }
   if (path === '/api/projects' && method === 'POST') { const start = body.start + 'T08:00:00'; let p = { id: unique((body.project_id || (body.name || 'PROJ').replace(/[^A-Za-z0-9]+/g, '-').slice(0, 12)).toUpperCase() || 'PROJ'), name: body.name || 'New project', start, data_date: start, must_finish_by: null, default_calendar_id: 'standard', calendars: {}, wbs: [{ id: '1', code: '1', name: 'Works', parent_id: null, seq: 0 }], activities: [{ id: 'A1000', name: 'Start', wbs_id: '1', calendar_id: null, type: 'start_milestone', duration_hours: 0, constraint: 'none', constraint_date: null, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, notes: '', codes: {}, priority: 500, level_delay_hours: 0, critical: false }, { id: 'A1010', name: 'New activity', wbs_id: '1', calendar_id: null, type: 'task', duration_hours: 40, constraint: 'none', constraint_date: null, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, notes: '', codes: {}, priority: 500, level_delay_hours: 0, critical: false }, { id: 'A1020', name: 'Finish', wbs_id: '1', calendar_id: null, type: 'finish_milestone', duration_hours: 0, constraint: 'none', constraint_date: null, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, notes: '', codes: {}, priority: 500, level_delay_hours: 0, critical: false }], relationships: [{ predecessor_id: 'A1000', successor_id: 'A1010', type: 'FS', lag_hours: 0 }, { predecessor_id: 'A1010', successor_id: 'A1020', type: 'FS', lag_hours: 0 }], resources: [], assignments: [], description: '', assumptions: [], code_types: {}, baselines: [], levelled: false, finish: null, scheduled_at: null }; E.ensureCalendars(p); const v = view(p); store(p); return v; }
+  if (path === '/api/chat' && method === 'POST') return { reply: 'The AI assistant needs a server with your Anthropic API key, so it runs only in the full local app. This shared preview is pure-code: use Guided setup for a Q&A, or the command bar (add 2 weeks to piling, finish by 1 Nov 2026, fix).', history: (body.history || []).concat([{ role: 'user', text: body.message }, { role: 'assistant', text: 'The AI assistant needs a server with your Anthropic API key, so it runs only in the full local app. This shared preview is pure-code: use Guided setup for a Q&A, or the command bar (add 2 weeks to piling, finish by 1 Nov 2026, fix).' }]), log: [], tool_calls: [], project: null, report: null };
   if (path === '/api/brief/parse' && method === 'POST') return E.parseBrief(body.text || '');
   if (path === '/api/generate' && method === 'POST') { const brief = body.brief || E.parseBrief(body.text || ''); if (body.brief && body.text) brief.source_text = body.text; const draft = E.generate(brief); const p = E.draftToProject(draft, brief.source_text || ''); p.id = unique(p.id); E.schedule(p); const rep = E.healthCheck(p); store(p); return Object.assign(view(p, rep), { brief, draft: { summary: draft.summary, assumptions: draft.assumptions, questions_for_client: draft.questions_for_client } }); }
   const pid = decodeURIComponent(seg[1] || ''); const sub = seg[2] || '';
@@ -1102,6 +1119,7 @@ async function route(method, path, body) {
     if (sub === 'histogram') { p = load(pid); p.levelled ? E.level(p) : E.schedule(p); return E.histogram(p); }
     if (sub === 'costs') { p = load(pid); p.levelled ? E.level(p) : E.schedule(p); return E.costCurve(p); }
     if (sub === 'variance') { p = load(pid); p.levelled ? E.level(p) : E.schedule(p); return E.variance(p); }
+    if (sub === 'chat') { p = load(pid); return Object.assign({ reply: 'The AI assistant needs a server with your Anthropic API key, so it runs only in the full local app. This shared preview is pure-code: use Guided setup for a Q&A, or the command bar (add 2 weeks to piling, finish by 1 Nov 2026, fix).', history: (body.history || []).concat([{ role: 'user', text: body.message }, { role: 'assistant', text: 'The AI assistant needs a server with your Anthropic API key, so it runs only in the full local app. This shared preview is pure-code: use Guided setup for a Q&A, or the command bar (add 2 weeks to piling, finish by 1 Nov 2026, fix).' }]), log: [], tool_calls: [] }, view(p)); }
   }
   throw { status: 404, detail: 'not found: ' + method + ' ' + path };
 }
@@ -1995,6 +2013,10 @@ function wireToolbar() {
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
   $('#btnRepair').onclick = () => act('/repair');
+  $('#btnAssistant').onclick = () => { const el = $('#ai'); el.hidden = !el.hidden; if (!el.hidden) $('#aiIn').focus(); };
+  $('#aiClose').onclick = () => $('#ai').hidden = true;
+  $('#aiClear').onclick = () => { S.aiHistory = []; $('#aiLog').innerHTML = ''; addAi('New conversation. What should I build or change?'); };
+  $('#aiForm').onsubmit = async e => { e.preventDefault(); const t = $('#aiIn').value.trim(); if (!t) return; $('#aiIn').value = ''; sendAi(t); };
   $('#cmdForm').onsubmit = async e => { e.preventDefault(); const t = $('#cmdIn').value.trim(); if (!t || !S.pid) return; $('#cmdIn').value = ''; try { const v = await post('/api/projects/' + encodeURIComponent(S.pid) + '/command', { text: t }); if (v.project) show(v); $('#cmdOut').textContent = v.message.split('\n')[0]; if (v.message.includes('\n')) modal('Commands', `<pre style="white-space:pre-wrap;font-size:12px">${esc(v.message)}</pre>`); } catch (err) { $('#cmdOut').textContent = err.message; } };
   $('#sheet').addEventListener('keydown', onKey);
   $('#sheet').addEventListener('wheel', e => { if (e.ctrlKey) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.25 : 0.8); } }, { passive: false });
@@ -2020,6 +2042,21 @@ function onKey(e) {
   else if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && S.active && byId(S.active) && ALL_COLS[S.activeCol].set) { startEdit(S.active, S.activeCol); const inp = S.editing && S.editing.inp; if (inp && inp.type !== 'date' && inp.tagName === 'INPUT') { inp.value = k; e.preventDefault(); } }
 }
 
+// ---------- AI assistant ----------
+function addAi(html, cls, tools) { const el = document.createElement('div'); el.className = 'msg' + (cls ? ' ' + cls : ''); el.innerHTML = html + (tools && tools.length ? `<div class="tools">used: ${esc(tools.join(', '))}</div>` : ''); $('#aiLog').appendChild(el); $('#aiLog').scrollTop = 1e9; return el; }
+async function sendAi(text) {
+  addAi(esc(text), 'me');
+  const busy = addAi('Thinking…'); const t0 = Date.now();
+  const tick = setInterval(() => busy.firstChild.textContent = `Thinking… ${Math.round((Date.now() - t0) / 1000)}s`, 1000);
+  try {
+    const path = S.pid ? '/api/projects/' + encodeURIComponent(S.pid) + '/chat' : '/api/chat';
+    const v = await post(path, { message: text, history: S.aiHistory || [] });
+    clearInterval(tick); busy.remove();
+    S.aiHistory = v.history || S.aiHistory || [];
+    if (v.project) { show(v); await loadList(); $('#projSel').value = v.project.id; }
+    addAi(esc(v.reply || '(no reply)').replace(/\n/g, '<br>'), '', v.tool_calls);
+  } catch (e) { clearInterval(tick); busy.remove(); addAi('<span class="crit">' + esc((e && e.message) || 'error') + '</span>'); }
+}
 // ---------- init ----------
 (async () => {
   try { const c = JSON.parse(localStorage.getItem('cols') || 'null'); if (Array.isArray(c) && c.length) S.cols = c.filter(k => ALL_COLS[k]); const w = JSON.parse(localStorage.getItem('colw') || 'null'); if (w) Object.entries(w).forEach(([k, v]) => { if (ALL_COLS[k] && v > 20) ALL_COLS[k].w = v; }); } catch { }
