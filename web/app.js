@@ -1373,7 +1373,88 @@ function onKey(e) {
 
 // ---------- AI assistant ----------
 function addAi(html, cls, tools) { const el = document.createElement('div'); el.className = 'msg' + (cls ? ' ' + cls : ''); el.innerHTML = html + (tools && tools.length ? `<div class="tools">used: ${esc(tools.join(', '))}</div>` : ''); $('#aiLog').appendChild(el); $('#aiLog').scrollTop = 1e9; return el; }
+
+// ---------- assistant in the shared page: Claude on the viewer's own account (artifact `sample` capability) ----------
+// No API key lives in the page. Claude gets the scheduling engine as tools; it never computes dates itself.
+// Every change goes through the same routes as the UI, so each one is a normal undo step.
+const AI_RULES = `You are an expert UK construction planner working inside a scheduling app. You build and change Primavera-P6-grade programmes by calling the tools provided; the engine computes every date with the critical path method, so never state or invent dates, durations or float yourself - read them from tool results.
+How to work:
+- To start a programme from a description, call generate_programme with a plain-English brief (type, size, structure, foundations, envelope, start date, deadline, site constraints). It builds the WBS, activities, logic, durations from production rates and milestones, then schedules and health-checks it.
+- To change a programme, call run_command once per change with one plain instruction, e.g. "add 2 weeks to A1240", "link A1010 -> A1020 SS+2d", "finish by 1 Nov 2026", "progress A1010 50% as of 20 Apr 2026", "constrain A1100 start on or after 16 Mar 2026", "set A1240 to 15d", "rename A1010 Site set-up", "delete A1045". Use apply_edits only for several structured changes a command cannot express.
+- Call get_schedule before answering questions about the plan or choosing what to change. repair fixes failing DCMA checks; level_resources keeps trades within crew limits; set_baseline snapshots dates; risk_analysis runs a Monte Carlo of the finish date.
+- Then reply briefly in British English: what you changed, the new finish date and health score from the tool results, and any assumption you made. Ask a question only if you genuinely cannot proceed. Durations and lags are in working days. Activity ids look like A1010.`;
+let _sample;
+async function getSample() {
+  if (_sample !== undefined) return _sample;
+  try { _sample = window.claude && typeof window.claude.use === 'function' ? await window.claude.use('sample') : null; } catch { _sample = null; }
+  if (_sample) { try { const lim = await _sample.limits(); if (!lim || !lim.tools) _sample = null; } catch { _sample = null; } }
+  return _sample;
+}
+function stateLine() {
+  const p = S.project; if (!p) return 'No programme is open.';
+  const crit = p.activities.filter(a => a.critical && a.status !== 'complete').length;
+  return `Open programme: ${p.name} (${p.id}). ${p.activities.length} activities, start ${(p.start || '').slice(0, 10)}, forecast finish ${(p.finish || '').slice(0, 10)}${p.must_finish_by ? ', deadline ' + p.must_finish_by.slice(0, 10) : ''}, data date ${(p.data_date || p.start || '').slice(0, 10)}, ${crit} critical, health ${S.report ? S.report.score + '/100' : 'n/a'}.`;
+}
+function scheduleText() {
+  const p = S.project; if (!p) return 'No programme is open. Call generate_programme first.';
+  const preds = id => p.relationships.filter(r => r.successor_id === id).map(r => r.predecessor_id + (r.type !== 'FS' ? r.type : '') + (r.lag_hours ? (r.lag_hours > 0 ? '+' : '') + fmt1(daysOf(byId(r.predecessor_id) || {}, r.lag_hours)) + 'd' : '')).join(' ');
+  const lines = p.activities.map(a => [a.id, a.name, a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) + 'd' : 'milestone', (a.actual_start || a.early_start || '').slice(0, 10), (a.actual_finish || a.early_finish || '').slice(0, 10), 'TF ' + (a.total_float_hours == null ? '?' : fmt1(daysOf(a, a.total_float_hours)) + 'd'), a.critical ? 'CRIT' : '', a.status !== 'not_started' ? Math.round(a.status === 'complete' ? 100 : a.percent_complete) + '%' : '', a.constraint !== 'none' ? a.constraint + ' ' + (a.constraint_date || '').slice(0, 10) : '', preds(a.id) ? 'after ' + preds(a.id) : ''].filter(Boolean).join(' | '));
+  const failing = S.report ? S.report.checks.filter(c => c.applicable && !c.passed).map(c => c.title) : [];
+  let out = stateLine() + (failing.length ? `\nFailing checks: ${failing.join('; ')}` : '\nAll DCMA checks pass.') + '\nid | name | duration | start | finish | float | critical | progress | constraint | predecessors\n';
+  for (const l of lines) { if (out.length + l.length > 26000) { out += `... ${lines.length} activities in all; ask for a narrower question.`; break; } out += l + '\n'; }
+  return out;
+}
+function aiTools(progress) {
+  const after = async (v, label) => { if (v && v.project) { show(v); await loadList(); if (S.screen === 'projects') go('plan'); } return (v && v.message ? v.message + ' ' : '') + (label || '') + stateLine(); };
+  const need = () => { if (!S.pid) throw new Error('No programme is open. Call generate_programme first.'); };
+  const str = { type: 'string' };
+  return [
+    { name: 'generate_programme', description: 'Build a complete new programme from a plain-English brief and open it. Returns the summary, finish date and health.', inputSchema: { type: 'object', properties: { brief: { type: 'string', description: "e.g. '24-unit three-storey apartment block, RC frame on piles, brick, start 6 April 2026, finish before Christmas 2027'" } }, required: ['brief'] },
+      execute: async i => { progress('Building the programme…'); const v = await post('/api/generate', { text: String(i.brief || '') }); return after(v, 'Generated. '); } },
+    { name: 'get_schedule', description: 'Read the open programme: every activity with duration, dates, float, critical flag, progress, constraint and predecessors, plus failing DCMA checks.', execute: async () => { progress('Reading the programme…'); return scheduleText(); } },
+    { name: 'run_command', description: 'Apply one scheduling change in plain English (the command language). One change per call. Returns what changed and the new state.', inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      execute: async i => { need(); progress('Applying: ' + String(i.command || '')); const v = await post(pidPath('/command'), { text: String(i.command || '') }); if (!v.project) return (v.message || 'No change.') + ' ' + stateLine(); return after(v); } },
+    { name: 'apply_edits', description: 'Apply several structured edits at once. Each op has "op" (add_activity, remove_activity, rename, set_duration, add_link, remove_link, set_constraint, clear_constraint, set_progress, set_must_finish_by, add_wbs, move_to_wbs) plus its fields (activity_id, name, duration_days, predecessor_id, successor_id, link_type, lag_days, constraint_type, date YYYY-MM-DD, percent_complete, wbs_code).',
+      inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object', properties: { op: str } } } }, required: ['ops'] },
+      execute: async i => { need(); const ops = Array.isArray(i.ops) ? i.ops : []; progress(`Applying ${ops.length} edits…`); return after(await post(pidPath('/patch'), { patch: { ops, message: '' } })); } },
+    { name: 'repair', description: 'Auto-fix failing DCMA checks: close open ends, remove leads, soften hard constraints, split over-long activities. Reports what it left for the planner.', execute: async () => { need(); progress('Repairing…'); return after(await post(pidPath('/repair'))); } },
+    { name: 'level_resources', description: 'Delay not-started activities so no trade exceeds its crew limit per day. Returns the new finish.', execute: async () => { need(); progress('Levelling…'); return after(await post(pidPath('/level'))); } },
+    { name: 'set_baseline', description: 'Save the current dates as a named baseline for variance tracking.', inputSchema: { type: 'object', properties: { name: str } }, execute: async i => { need(); return after(await post(pidPath('/baseline'), { name: String(i.name || 'Baseline') })); } },
+    { name: 'risk_analysis', description: 'Monte Carlo of the finish date (300 runs, durations -10% to +30%, more for weather-exposed work). Returns P50/P80/P90, chance of the deadline and the activities most often critical.',
+      execute: async () => { need(); progress('Running the risk analysis…'); const r = window.PlannerEngine.riskAnalysis(S.project, { iterations: 300 }); S.risk = { pid: S.pid, stamp: S.project.scheduled_at, r };
+        return { planned_finish: r.deterministic_finish, p50: r.p50, p80: r.p80, p90: r.p90, chance_of_planned_finish_pct: Math.round(r.deterministic_probability), chance_of_deadline_pct: r.deadline_probability == null ? null : Math.round(r.deadline_probability), sometimes_critical: r.criticality.filter(c => c.pct < 100).slice(0, 8).map(c => `${c.id} ${c.name} ${Math.round(c.pct)}%`) }; } },
+  ];
+}
+const AI_ERRORS = { not_granted: 'The assistant needs your permission to use Claude. Reopen the page and allow it to try again.', sampling_disabled: 'Claude is not available on this account.', rate_limited: 'Claude is busy or your usage limit is reached. Try again in a little while.', session_expired: 'Sign in to Claude again, then retry.', refused: 'Claude declined that request. Try rephrasing it as a planning change.', empty_completion: 'Claude gave no answer. Try a shorter, more specific request.', prompt_too_large: 'That was too much at once. Ask about part of the programme.', tools_unavailable: 'This view cannot let Claude use the planning tools.' };
+async function sendAiLocal(text) {
+  const sample = await getSample();
+  if (!sample) { addAi(esc(text), 'me'); addAi('The assistant uses your own Claude account when this page is opened inside Claude (claude.ai or the Claude app). Here you can still use Guided setup, Paste a brief, or the command palette (Ctrl+K).'); return; }
+  addAi(esc(text), 'me');
+  const busy = addAi('Thinking…'); const t0 = Date.now(); let status = 'Thinking…', streamed = '';
+  const paint = () => { busy.innerHTML = (streamed ? esc(streamed).replace(/\n/g, '<br>') + '<br>' : '') + `<span class="hint">${esc(status)} ${Math.round((Date.now() - t0) / 1000)}s</span>`; };
+  const tick = setInterval(paint, 1000); const used = [];
+  const ctl = new AbortController(); S.aiAbort = ctl; $('#aiStop') && ($('#aiStop').hidden = false);
+  const tools = aiTools(msg => { status = msg; paint(); }).map(t => Object.assign({}, t, { execute: (i, c) => { used.push(t.name); return t.execute(i, c); } }));
+  S.aiTurns = (S.aiTurns || []).slice(-14);
+  const turns = [{ role: 'user', content: AI_RULES + '\n\n' + stateLine() }, ...S.aiTurns, { role: 'user', content: text }];
+  try {
+    const { text: reply, truncated } = await sample(turns, { tools, signal: ctl.signal, onText: ({ text: t }) => { streamed = t; paint(); } });
+    clearInterval(tick); busy.remove();
+    S.aiTurns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
+    addAi(esc(reply).replace(/\n/g, '<br>') + (truncated ? '<br><span class="hint">Cut short. Ask for less at a time.</span>' : ''), '', [...new Set(used)]);
+  } catch (e) {
+    clearInterval(tick); busy.remove();
+    if (e && e.text) addAi(esc(e.text).replace(/\n/g, '<br>'));
+    if (!e || e.code !== 'cancelled') addAi('<span class="crit">' + esc(AI_ERRORS[e && e.code] || 'Claude could not finish that. Try again.') + '</span>', '', [...new Set(used)]);
+    if (e && ['not_granted', 'sampling_disabled', 'tools_unavailable', 'capability_disabled', 'capability_removed', 'not_declared'].includes(e.code)) _sample = null;
+  } finally { S.aiAbort = null; $('#aiStop') && ($('#aiStop').hidden = true); }
+}
+function openAssistant(prefill) {
+  const el = $('#ai'); if (el.hidden) { el.hidden = false; animate(el, { y: 0, opacity: 1, scale: 1 }, { from: { y: 16, opacity: 0, scale: .98 }, response: .34 }); }
+  if (prefill != null) $('#aiIn').value = prefill; $('#aiIn').focus();
+}
 async function sendAi(text) {
+  if (LOCAL) return sendAiLocal(text);
   addAi(esc(text), 'me');
   const busy = addAi('Thinking…'); const t0 = Date.now();
   const tick = setInterval(() => busy.firstChild.textContent = `Thinking… ${Math.round((Date.now() - t0) / 1000)}s`, 1000);
@@ -1495,13 +1576,14 @@ function paintProjects(el, list) {
   };
   el.innerHTML = `<div class="page">
     <div class="page-head"><div><h1 class="display">Projects</h1><p class="lede">${list.length ? `${list.length} programme${list.length > 1 ? 's' : ''}. Status compares each forecast with its deadline and with the progress expected by its data date.` : 'Plan a building in a minute, then keep it on track week by week.'}</p></div>
-      <div class="head-actions"><button type="button" class="btn" id="pImport">Import from P6, Asta or MS Project</button><button type="button" class="primary" id="pNew">New programme</button></div></div>
+      <div class="head-actions"><button type="button" class="btn" id="pAsk" hidden>Describe it to Claude</button><button type="button" class="btn" id="pImport">Import from P6, Asta or MS Project</button><button type="button" class="primary" id="pNew">New programme</button></div></div>
     ${list.length ? '' : `<div class="hero"><div><h2>Describe the job. Get the programme.</h2><p>Answer six questions and Planner lays out the activities, links them, sizes them from production rates, finds the critical path and runs the 14-point DCMA health check. It opens in Primavera P6, Asta Powerproject and Microsoft Project.</p><div class="head-actions"><button type="button" class="primary" id="pNew3">Start a programme</button><button type="button" class="btn" id="pSample">Open a sample</button></div></div><div class="hero-art">${heroArt()}</div></div>`}
     <div class="cards">${list.map(card).join('')}<button type="button" class="card new" id="pNew2"><span class="plus"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M4 10h12"/></svg></span><b style="color:var(--ink)">New programme</b><span class="hint" style="max-width:30ch">Six questions to a linked, scheduled and health-checked programme.</span></button></div>
   </div>`;
   el.scrollTop = scroll;
   ['#pNew', '#pNew2', '#pNew3'].forEach(s => { const b = el.querySelector(s); if (b) b.onclick = () => startFlow(); });
   el.querySelector('#pImport').onclick = () => $('#fileIn').click();
+  const ask = el.querySelector('#pAsk'); if (ask) { ask.onclick = () => openAssistant('Plan a '); (LOCAL ? getSample() : Promise.resolve(true)).then(sm => { ask.hidden = !sm; }); }
   const sample = el.querySelector('#pSample'); if (sample) sample.onclick = () => buildFromBrief({ name: 'Sample: two-storey house', building_type: 'house', storeys: 2, units: 0, gross_internal_area_m2: 0, frame: null, foundations: null, envelope: null, roof: null, fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: null, deadline: null, planning_condition_date: null });
   el.querySelectorAll('[data-open]').forEach(c => {
     c.onclick = e => { if (e.target.closest('[data-del]')) return; openProject(c.dataset.open, 'plan'); };
@@ -1782,6 +1864,7 @@ function palActions() {
     ['All projects', 'Go to', () => go('projects')],
     S.project && ['Plan', 'Go to', () => go('plan')],
     S.project && ['Monitor', 'Go to', () => go('monitor')],
+    ['Ask the AI assistant', 'Assist', () => openAssistant()],
     S.project && ['Share and export', 'File', shareSheet],
     S.project && ['Export to Excel (CSV)', 'File', exportCsv],
     S.project && ['Show the longest path to completion', 'Trace', () => setTrace(finishDrivers(), 'back', 'Longest path to completion')],
@@ -2031,9 +2114,10 @@ function wireToolbar() {
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
   $('#btnRepair').onclick = () => act('/repair');
   $('#btnInspector').onclick = () => toggleInspector();
-  $('#btnAssistant').onclick = () => { const el = $('#ai'); el.hidden = !el.hidden; if (!el.hidden) { animate(el, { y: 0, opacity: 1, scale: 1 }, { from: { y: 16, opacity: 0, scale: .98 }, response: .34 }); $('#aiIn').focus(); } };
+  $('#btnAssistant').onclick = () => { const el = $('#ai'); if (!el.hidden) { el.hidden = true; return; } openAssistant(); };
+  if ($('#aiStop')) $('#aiStop').onclick = () => { if (S.aiAbort) S.aiAbort.abort(); };
   $('#aiClose').onclick = () => { $('#ai').hidden = true; };
-  $('#aiClear').onclick = () => { S.aiHistory = []; $('#aiLog').innerHTML = ''; addAi('New conversation. What should I build or change?'); };
+  $('#aiClear').onclick = () => { S.aiHistory = []; S.aiTurns = []; $('#aiLog').innerHTML = ''; addAi('New conversation. What should I build or change?'); };
   $('#aiForm').onsubmit = async e => { e.preventDefault(); const t = $('#aiIn').value.trim(); if (!t) return; $('#aiIn').value = ''; sendAi(t); };
   // command palette
   $('#cmdForm').onsubmit = e => { e.preventDefault(); const items = palItems(); choosePal(items[palSel]); };

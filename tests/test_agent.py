@@ -19,6 +19,7 @@ class FakeClient:
         self.script = list(script)
         self.calls = []
         self.messages = SimpleNamespace(create=self._create)
+        self.beta = SimpleNamespace(messages=self.messages)   # the agent calls client.beta.messages (server-side fallbacks)
 
     def _create(self, **kwargs):
         snap = dict(kwargs)

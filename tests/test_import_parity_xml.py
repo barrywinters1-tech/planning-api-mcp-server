@@ -16,7 +16,9 @@ import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from xml.sax.saxutils import escape
 
 import pytest
@@ -467,7 +469,14 @@ def test_xml_readers_agree(idx, py_results, js_results):
     if py_results[idx] is None:
         assert js[idx] == {"root": ""}
         return
-    d = diff(py_results[idx], js[idx])
+    py = py_results[idx]
+    # A file with no start date falls back to "today": Python's today (this process's zone) and the
+    # browser's local today differ for a few hours a day in far-off zones, so only compare when they agree.
+    fallback = date.today().isoformat() + "T08:00:00"
+    if isinstance(py, dict) and isinstance(py.get("read"), dict) and py["read"].get("start") == fallback \
+            and datetime.now(ZoneInfo(tz)).date() != date.today():
+        pytest.skip(f"start falls back to today, which is a different date in {tz} right now")
+    d = diff(py, js[idx])
     assert not d, f"{CASES[idx][0]} under TZ={tz}: {len(d)}+ differences\n  " + "\n  ".join(d)
 
 

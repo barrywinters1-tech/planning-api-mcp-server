@@ -7,7 +7,9 @@ place the product talks to an AI service, and it runs server-side with the opera
 own ANTHROPIC_API_KEY. Everything else (the generator, CPM, DCMA, exports) is AI-free.
 
 Run requirements: `pip install anthropic` and ANTHROPIC_API_KEY set on the server.
-Model defaults to claude-opus-5; override with PLANNER_MODEL.
+Model defaults to claude-opus-5-5; override with PLANNER_MODEL. Effort defaults to high
+(PLANNER_EFFORT). Policy refusals fall back server-side to another model (PLANNER_FALLBACKS=off
+to disable).
 """
 from __future__ import annotations
 
@@ -24,7 +26,9 @@ from .model import Project
 from .plan import Patch, PatchOp, apply_patch, draft_to_project, schedule_digest
 from .repair import plan_repairs
 
-MODEL = os.environ.get("PLANNER_MODEL", "claude-opus-5")
+MODEL = os.environ.get("PLANNER_MODEL", "claude-opus-5-5")
+EFFORT = os.environ.get("PLANNER_EFFORT", "high")        # Opus 5.5 defaults to medium; planning edits are multi-step
+FALLBACKS = os.environ.get("PLANNER_FALLBACKS", "on") != "off"
 MAX_STEPS = 20
 
 SYSTEM = """You are an expert construction planner embedded in a scheduling tool. You help the user build and change a Primavera-P6-grade programme by calling tools; the tool engine computes every date with the critical path method, so you never guess dates or durations yourself.
@@ -188,7 +192,7 @@ def chat(project: Optional[Project], history: list[dict], user_message: str,
     """One assistant turn. `history` is prior [{role, text}] turns (user/assistant only).
 
     Returns {reply, project, history, log, tool_calls}. `project` may be newly created.
-    Pass a stub `client` with a `.messages.create(...)` method to test without the API."""
+    Pass a stub `client` with a `.beta.messages.create(...)` method to test without the API."""
     client = client or _anthropic_client()
     h = Holder(project)
     cur = _state_line(project) if project else "No programme loaded yet."
@@ -201,7 +205,12 @@ def chat(project: Optional[Project], history: list[dict], user_message: str,
     tool_calls: list[str] = []
     reply = ""
     for _ in range(MAX_STEPS):
-        resp = client.messages.create(model=model, max_tokens=8000, system=system, tools=TOOLS, messages=messages)
+        extra: dict = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"} if FALLBACKS else {}
+        resp = client.beta.messages.create(model=model, max_tokens=16000, system=system, tools=TOOLS, messages=messages,
+                                           output_config={"effort": EFFORT}, **extra)
+        if resp.stop_reason == "refusal":
+            reply = "I can't help with that request. Try rephrasing it as a planning change."
+            break
         messages.append({"role": "assistant", "content": resp.content})
         if resp.stop_reason == "tool_use":
             results = []
