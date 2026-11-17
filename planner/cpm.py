@@ -59,6 +59,10 @@ def _remaining_hours(a: Activity) -> float:
     return a.duration_hours
 
 
+def _resume_from(a: Activity, data_date: datetime) -> datetime:
+    return max(data_date, a.resume_date) if a.resume_date else data_date
+
+
 def schedule(project: Project) -> Project:
     """Compute early/late dates, floats and the critical path in place."""
     project.ensure_default_calendar()
@@ -85,9 +89,9 @@ def schedule(project: Project) -> Project:
         ef_floor: Optional[datetime] = None
 
         if a.status == Status.IN_PROGRESS and a.actual_start:
-            # retained logic: remaining work resumes at the data date
+            # retained logic: remaining work resumes at the data date, or at a later P6 resume date
             es_floor = a.actual_start
-            ef_floor = cal.add_hours(cal.next_working_start(data_date), rem)
+            ef_floor = cal.add_hours(cal.next_working_start(_resume_from(a, data_date)), rem)
 
         start_links: list = []   # (relationship, date it imposes) for FS/SS
         finish_links: list = []  # ... and for FF/SF
@@ -116,7 +120,7 @@ def schedule(project: Project) -> Project:
 
         if a.status == Status.IN_PROGRESS and a.actual_start:
             es = a.actual_start
-            ef = ef_floor if ef_floor is not None else cal.add_hours(cal.next_working_start(data_date), rem)
+            ef = ef_floor if ef_floor is not None else cal.add_hours(cal.next_working_start(_resume_from(a, data_date)), rem)
         elif a.type == ActivityType.FINISH_MILESTONE:
             # finish milestones sit on the predecessor's finish, not the next morning
             target = es_floor if ef_floor is None else max(es_floor, ef_floor)

@@ -204,6 +204,8 @@ class Activity(BaseModel):
     status: Status = Status.NOT_STARTED
     actual_start: Optional[datetime] = None
     actual_finish: Optional[datetime] = None
+    suspend_date: Optional[datetime] = None   # P6 suspend: work on an in-progress activity stopped here
+    resume_date: Optional[datetime] = None    # remaining work restarts here (never before the data date)
     remaining_hours: Optional[float] = None
     percent_complete: float = 0.0
     # baseline

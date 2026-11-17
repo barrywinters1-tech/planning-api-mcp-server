@@ -32,6 +32,7 @@ from planner.model import Project
 from planner.plan import UK_BANK_HOLIDAYS_2026_27, _parse_date, apply_patch, draft_to_project
 from planner.repair import plan_repairs
 from planner.risk import risk_analysis
+from planner.guardrails import critical_drag, out_of_sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = Path(__file__).parent / "parity" / "js_runner.js"
@@ -225,6 +226,15 @@ def build_cases() -> list[tuple[str, dict]]:
         cases.append((f"risk-{i}", {"kind": "risk", "project": proj, "opts": {"iterations": 40, "seed": 7 + i}}))
     cases.append(("risk-progress", {"kind": "risk", "project": progress(),
                   "opts": {"iterations": 60, "optimistic_pct": 5, "pessimistic_pct": 50, "weather_pct": 0, "correlation_pct": 80, "seed": 3}}))
+    # guardrails: out-of-sequence progress and critical path drag (incl. suspend/resume and mixed calendars)
+    for i in (0, 2, 5):
+        cases.append((f"guard-{i}", {"kind": "guard", "project": _generated(BRIEFS[i])}))
+    oos = progress()
+    for a in oos["activities"]:
+        if a["id"] == "E":
+            a.update({"suspend_date": "2026-03-27T12:00:00", "resume_date": "2026-04-08T08:00:00"})
+    cases.append(("guard-progress", {"kind": "guard", "project": oos}))
+    cases.append(("schedule-suspend-resume", {"kind": "schedule", "project": oos}))
     house = _generated(BRIEFS[0])
     for j, cmd in enumerate(COMMANDS):
         cases.append((f"command-{j}", {"kind": "command", "project": house, "command": cmd}))
@@ -273,6 +283,9 @@ def run_py(c: dict) -> dict:
                 apply_patch(p, parse_command(p, cmd))
             schedule(p)
             return json.loads(json.dumps({"histogram": histogram(p), "cost": cost_curve(p), "variance": variance(p)}, default=_jsonable))
+        if k == "guard":
+            p = Project.model_validate(c["project"]); schedule(p)
+            return {"out_of_sequence": out_of_sequence(p), "drag": critical_drag(p)}
         if k == "risk":
             return risk_analysis(Project.model_validate(c["project"]), **c["opts"])
         if k == "parse_date":

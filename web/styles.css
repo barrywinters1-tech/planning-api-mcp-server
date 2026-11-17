@@ -609,3 +609,10 @@ ul.fid li.warn .fi { background: var(--warn); }
 ul.fid li .hint { font-size: 12px; margin-top: 2px; }
 ul.fid.counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; }
 ul.fid.counts li { display: block; }
+
+/* ---------- why this date ---------- */
+details.why { margin: 10px 0 4px; border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; background: var(--surface-2); }
+details.why summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink); list-style-position: inside; }
+details.why ol { margin: 8px 0 2px; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+details.why .linkchip { margin-right: 4px; }
+.chip.warn.linkish { cursor: pointer; }

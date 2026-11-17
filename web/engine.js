@@ -128,6 +128,8 @@ function topo(p) {
   const m = amap(p); return order.map(i => m[i]);
 }
 
+// P6 suspend/resume: remaining work of an in-progress activity restarts at the resume date, never before the data date
+function resumeFrom(a, dataDate) { const r = D(a.resume_date); return r && r > dataDate ? r : dataDate; }
 function schedule(p) {
   ensureDefaultCal(p);
   const order = topo(p), m = amap(p);
@@ -141,7 +143,7 @@ function schedule(p) {
     const cal = calFor(p, a), rem = remHours(a);
     if (a.status === 'complete' && a.actual_start && a.actual_finish) { a.early_start = a.actual_start; a.early_finish = a.actual_finish; continue; }
     let es_floor = cal.next_working_start(maxD(start, dataDate)), ef_floor = null;
-    if (a.status === 'in_progress' && a.actual_start) { es_floor = D(a.actual_start); ef_floor = cal.add_hours(cal.next_working_start(dataDate), rem); }
+    if (a.status === 'in_progress' && a.actual_start) { es_floor = D(a.actual_start); ef_floor = cal.add_hours(cal.next_working_start(resumeFrom(a, dataDate)), rem); }
     const startLinks = [], finishLinks = [];   // [relationship, date it imposes]
     for (const r of preds[a.id]) {
       const pr = m[r.predecessor_id], pcal = calFor(p, pr);
@@ -156,7 +158,7 @@ function schedule(p) {
       else if (a.constraint === 'finish_on_or_after' || a.constraint === 'must_finish_on') ef_floor = (ef_floor === null || a.constraint === 'must_finish_on') ? cd : maxD(ef_floor, cd);
     }
     let es, ef;
-    if (a.status === 'in_progress' && a.actual_start) { es = D(a.actual_start); ef = ef_floor !== null ? ef_floor : cal.add_hours(cal.next_working_start(dataDate), rem); }
+    if (a.status === 'in_progress' && a.actual_start) { es = D(a.actual_start); ef = ef_floor !== null ? ef_floor : cal.add_hours(cal.next_working_start(resumeFrom(a, dataDate)), rem); }
     else if (a.type === 'finish_milestone') { const target = ef_floor === null ? es_floor : maxD(es_floor, ef_floor); es = ef = cal.in_shift(target) ? target : cal.prev_working_end(target); for (const [r, t] of startLinks.concat(finishLinks)) r.driving = t.getTime() === target.getTime(); }
     else {
       es = cal.next_working_start(es_floor); ef = rem > 0 ? cal.add_hours(es, rem) : es;
@@ -706,6 +708,41 @@ function planRepairs(p, report) {
 
 Object.assign(global.PlannerEngine, { RATES, parseBrief, generate, draftToProject, level, unlevel, setBaseline, useBaseline, clearBaseline, histogram, costCurve, variance, planRepairs, dailyDemand });
 
+// ---------- guardrails: port of planner/guardrails.py (bit-identical, parity tested) ----------
+const _startedG = a => a.status !== 'not_started' && a.actual_start != null;
+const _finishedG = a => a.status === 'complete' && a.actual_finish != null;
+function outOfSequence(p) {
+  const m = amap(p), out = [];
+  for (const r of p.relationships) {
+    const s = m[r.successor_id], q = m[r.predecessor_id]; if (!s || !q) continue;
+    let reason = '';
+    if (r.type === 'FS' && _startedG(s)) { if (!_finishedG(q)) reason = 'started before its predecessor finished'; else if (D(s.actual_start) < D(q.actual_finish)) reason = "started before its predecessor's actual finish"; }
+    else if (r.type === 'SS' && _startedG(s)) { if (!_startedG(q)) reason = 'started before its predecessor started'; else if (D(s.actual_start) < D(q.actual_start)) reason = "started before its predecessor's actual start"; }
+    else if (r.type === 'FF' && _finishedG(s) && !_finishedG(q)) reason = 'finished before its predecessor finished';
+    else if (r.type === 'SF' && _finishedG(s) && !_startedG(q)) reason = 'finished before its predecessor started';
+    if (reason) out.push({ successor: s.id, successor_name: s.name, predecessor: q.id, predecessor_name: q.name, type: r.type, reason });
+  }
+  return out;
+}
+function criticalDrag(project) {
+  const base = JSON.parse(JSON.stringify(project)); schedule(base);
+  const dcal = new E.Cal(base.calendars[base.default_calendar_id]), f0 = base.finish, out = [];
+  for (const a of base.activities) {
+    const rem = E.remHours(a);
+    if (!a.critical || a.type !== 'task' || a.status === 'complete' || rem <= 0) continue;
+    const q = JSON.parse(JSON.stringify(base)), qa = q.activities.find(x => x.id === a.id);
+    if (qa.status === 'in_progress') qa.remaining_hours = 0.0; else qa.duration_hours = 0.0;
+    schedule(q);
+    const hpd = dcal.hours_per_day || 8.0;
+    const drag = q.finish && f0 ? pyRound(dcal.hours_between(D(q.finish), D(f0)) / hpd, 1) : 0.0;
+    const own = calFor(base, a);
+    out.push({ id: a.id, name: a.name, drag_days: Math.max(0.0, drag), remaining_days: pyRound(rem / (own.hours_per_day || 8.0), 1) });
+  }
+  out.sort((x, y) => (y.drag_days - x.drag_days) || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  return out;
+}
+Object.assign(global.PlannerEngine, { outOfSequence, criticalDrag });
+
 // ---------- schedule risk analysis: port of planner/risk.py (bit-identical, parity tested) ----------
 const WEATHER_WORDS = ['excavat', 'topsoil', 'reduce level', 'foundation', 'pil', 'drainage', 'groundwork', 'ground beam',
   'pile cap', 'slab', 'concrete', 'scaffold', 'brick', 'block', 'envelope', 'cladding', 'curtain wall',
@@ -912,8 +949,8 @@ function writeXer(p) {
   for (const w of p.wbs) wbsRows.push(Object.assign({}, wbsBase, { wbs_id: wbsIds[w.id], seq_num: w.seq, proj_node_flag: 'N', wbs_short_name: (w.code || w.id).slice(0, 20), wbs_name: w.name, parent_wbs_id: w.parent_id ? (wbsIds[w.parent_id] || 1) : 1 }));
   const projwbs = table('PROJWBS', Object.keys(wbsBase), wbsRows);
   const rsrc = table('RSRC', ['rsrc_id', 'clndr_id', 'rsrc_seq_num', 'rsrc_name', 'rsrc_short_name', 'def_qty_per_hr', 'cost_qty_type', 'ot_factor', 'active_flag', 'auto_compute_act_flag', 'def_cost_qty_link_flag', 'ot_flag', 'curr_id', 'rsrc_type', 'load_tasks_flag', 'level_flag'], p.resources.map((r, i) => ({ rsrc_id: rsrcIds[r.id], clndr_id: calIds[p.default_calendar_id], rsrc_seq_num: i + 1, rsrc_name: r.name, rsrc_short_name: r.id.slice(0, 20), def_qty_per_hr: 1, cost_qty_type: 'QT_Hour', ot_factor: 1, active_flag: 'Y', auto_compute_act_flag: 'Y', def_cost_qty_link_flag: 'Y', ot_flag: 'N', curr_id: 1, rsrc_type: RSRC_OUT[r.type] || 'RT_Labor', load_tasks_flag: 'N', level_flag: 'N' })));
-  const taskFields = ['task_id', 'proj_id', 'wbs_id', 'clndr_id', 'phys_complete_pct', 'complete_pct_type', 'task_type', 'duration_type', 'status_code', 'task_code', 'task_name', 'total_float_hr_cnt', 'free_float_hr_cnt', 'remain_drtn_hr_cnt', 'target_drtn_hr_cnt', 'cstr_date', 'act_start_date', 'act_end_date', 'late_start_date', 'late_end_date', 'early_start_date', 'early_end_date', 'restart_date', 'reend_date', 'target_start_date', 'target_end_date', 'rem_late_start_date', 'rem_late_end_date', 'cstr_type', 'priority_type', 'driving_path_flag', 'create_date', 'update_date', 'create_user', 'update_user'];
-  const taskRows = p.activities.map(a => { const rem = a.remaining_hours != null ? a.remaining_hours : (a.status === 'complete' ? 0 : a.duration_hours); return { task_id: taskIds[a.id], proj_id: pid, wbs_id: a.wbs_id ? (wbsIds[a.wbs_id] || 1) : 1, clndr_id: calIds[a.calendar_id || p.default_calendar_id] || calIds[p.default_calendar_id], phys_complete_pct: a.percent_complete, complete_pct_type: 'CP_Drtn', task_type: TASK_TYPE_OUT[a.type], duration_type: 'DT_FixedDrtn', status_code: STATUS_OUT[a.status], task_code: a.id.slice(0, 20), task_name: a.name.slice(0, 120), total_float_hr_cnt: a.total_float_hours == null ? '' : a.total_float_hours, free_float_hr_cnt: a.free_float_hours == null ? '' : a.free_float_hours, remain_drtn_hr_cnt: rem, target_drtn_hr_cnt: a.duration_hours, cstr_date: a.constraint !== 'none' ? fmtDt(a.constraint_date) : '', act_start_date: fmtDt(a.actual_start), act_end_date: fmtDt(a.actual_finish), late_start_date: fmtDt(a.late_start), late_end_date: fmtDt(a.late_finish), early_start_date: fmtDt(a.early_start), early_end_date: fmtDt(a.early_finish), restart_date: fmtDt(a.early_start), reend_date: fmtDt(a.early_finish), target_start_date: fmtDt(a.baseline_start || aStart(a)), target_end_date: fmtDt(a.baseline_finish || aFinish(a)), rem_late_start_date: fmtDt(a.late_start), rem_late_end_date: fmtDt(a.late_finish), cstr_type: CSTR_OUT[a.constraint] || '', priority_type: 'PT_Normal', driving_path_flag: a.critical ? 'Y' : 'N', create_date: nowS, update_date: nowS, create_user: 'admin', update_user: 'admin' }; });
+  const taskFields = ['task_id', 'proj_id', 'wbs_id', 'clndr_id', 'phys_complete_pct', 'complete_pct_type', 'task_type', 'duration_type', 'status_code', 'task_code', 'task_name', 'total_float_hr_cnt', 'free_float_hr_cnt', 'remain_drtn_hr_cnt', 'target_drtn_hr_cnt', 'cstr_date', 'act_start_date', 'act_end_date', 'suspend_date', 'resume_date', 'late_start_date', 'late_end_date', 'early_start_date', 'early_end_date', 'restart_date', 'reend_date', 'target_start_date', 'target_end_date', 'rem_late_start_date', 'rem_late_end_date', 'cstr_type', 'priority_type', 'driving_path_flag', 'create_date', 'update_date', 'create_user', 'update_user'];
+  const taskRows = p.activities.map(a => { const rem = a.remaining_hours != null ? a.remaining_hours : (a.status === 'complete' ? 0 : a.duration_hours); return { task_id: taskIds[a.id], proj_id: pid, wbs_id: a.wbs_id ? (wbsIds[a.wbs_id] || 1) : 1, clndr_id: calIds[a.calendar_id || p.default_calendar_id] || calIds[p.default_calendar_id], phys_complete_pct: a.percent_complete, complete_pct_type: 'CP_Drtn', task_type: TASK_TYPE_OUT[a.type], duration_type: 'DT_FixedDrtn', status_code: STATUS_OUT[a.status], task_code: a.id.slice(0, 20), task_name: a.name.slice(0, 120), total_float_hr_cnt: a.total_float_hours == null ? '' : a.total_float_hours, free_float_hr_cnt: a.free_float_hours == null ? '' : a.free_float_hours, remain_drtn_hr_cnt: rem, target_drtn_hr_cnt: a.duration_hours, cstr_date: a.constraint !== 'none' ? fmtDt(a.constraint_date) : '', act_start_date: fmtDt(a.actual_start), act_end_date: fmtDt(a.actual_finish), suspend_date: fmtDt(a.suspend_date), resume_date: fmtDt(a.resume_date), late_start_date: fmtDt(a.late_start), late_end_date: fmtDt(a.late_finish), early_start_date: fmtDt(a.early_start), early_end_date: fmtDt(a.early_finish), restart_date: fmtDt(a.early_start), reend_date: fmtDt(a.early_finish), target_start_date: fmtDt(a.baseline_start || aStart(a)), target_end_date: fmtDt(a.baseline_finish || aFinish(a)), rem_late_start_date: fmtDt(a.late_start), rem_late_end_date: fmtDt(a.late_finish), cstr_type: CSTR_OUT[a.constraint] || '', priority_type: 'PT_Normal', driving_path_flag: a.critical ? 'Y' : 'N', create_date: nowS, update_date: nowS, create_user: 'admin', update_user: 'admin' }; });
   const task = table('TASK', taskFields, taskRows);
   const taskpred = table('TASKPRED', ['task_pred_id', 'task_id', 'pred_task_id', 'proj_id', 'pred_proj_id', 'pred_type', 'lag_hr_cnt'], exportRelationships(p)[0].filter(r => taskIds[r.successor_id] && taskIds[r.predecessor_id]).map((r, i) => ({ task_pred_id: i + 1, task_id: taskIds[r.successor_id], pred_task_id: taskIds[r.predecessor_id], proj_id: pid, pred_proj_id: pid, pred_type: LINK_OUT[r.type], lag_hr_cnt: r.lag_hours })));
   const taskrsrc = table('TASKRSRC', ['taskrsrc_id', 'task_id', 'proj_id', 'cost_qty_link_flag', 'rsrc_id', 'skill_level', 'remain_qty', 'target_qty', 'target_cost', 'remain_cost', 'rollup_dates_flag', 'rate_type', 'cost_per_qty_source_type', 'create_user', 'create_date', 'has_rsrchours'], p.assignments.filter(x => taskIds[x.activity_id] && rsrcIds[x.resource_id]).map((x, i) => ({ taskrsrc_id: i + 1, task_id: taskIds[x.activity_id], proj_id: pid, cost_qty_link_flag: 'Y', rsrc_id: rsrcIds[x.resource_id], skill_level: 3, remain_qty: x.units, target_qty: x.units, target_cost: x.cost, remain_cost: x.cost, rollup_dates_flag: 'Y', rate_type: 'COST_PER_QTY', cost_per_qty_source_type: 'ST_Rsrc', create_user: 'admin', create_date: nowS, has_rsrchours: 'N' })));

@@ -26,6 +26,7 @@ from planner import mpxj_bridge
 from planner.plan import Patch, PatchOp, apply_patch, draft_to_project, schedule_digest
 from planner.repair import plan_repairs
 from planner.risk import risk_analysis
+from planner.guardrails import critical_drag, out_of_sequence
 from planner import agent
 from planner.model import Assignment, Resource
 
@@ -382,6 +383,17 @@ def get_variance(pid: str):
     project = _load(pid)
     schedule(project) if not project.levelled else level(project)
     return variance(project)
+
+
+@app.get("/api/projects/{pid}/guardrails")
+def get_guardrails(pid: str):
+    """Out-of-sequence progress and critical path drag (days each critical activity adds to the finish)."""
+    project = _load(pid)
+    try:
+        schedule(project)
+        return {"out_of_sequence": out_of_sequence(project), "drag": critical_drag(project)}
+    except ScheduleError as e:
+        raise HTTPException(422, str(e))
 
 
 class RiskIn(BaseModel):

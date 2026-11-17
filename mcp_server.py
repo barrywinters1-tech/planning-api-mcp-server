@@ -25,6 +25,7 @@ from planner.generator import Brief, generate, parse_brief
 from planner.io import read_any, write_any
 from planner.repair import plan_repairs
 from planner.risk import risk_analysis
+from planner.guardrails import critical_drag, out_of_sequence
 
 mcp = FastMCP(
     "AI Construction Planner",
@@ -199,6 +200,19 @@ def get_schedule(project_id: str) -> dict:
     except ScheduleError as e:
         return {"error": str(e)}
     return p.model_dump(mode="json")
+
+
+@mcp.tool()
+def schedule_guardrails(project_id: str) -> dict:
+    """Planner guardrails: activities progressed out of sequence (started before an FS predecessor
+    finished, etc.) and critical path drag: how many working days each unfinished critical activity adds
+    to the project finish, largest first. Use drag to pick what to accelerate."""
+    p = _load(project_id)
+    try:
+        schedule(p)
+    except ScheduleError as e:
+        return {"error": str(e)}
+    return {"out_of_sequence": out_of_sequence(p), "drag": critical_drag(p)}
 
 
 @mcp.tool()

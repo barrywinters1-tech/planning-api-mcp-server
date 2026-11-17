@@ -47,6 +47,7 @@ const ALL_COLS = {
   notes: { t: 'Notes', w: 200, get: a => a.notes || '', set: (a, v) => { a.notes = v; } },
   priority: { t: 'Prio', w: 46, num: 1, get: a => a.priority, set: (a, v) => { a.priority = parseInt(v) || 500; } },
   delay: { t: 'Lvl delay', w: 60, num: 1, get: a => a.level_delay_hours ? fmt1(daysOf(a, a.level_delay_hours)) + 'd' : '' },
+  drag: { t: 'Drag', w: 52, num: 1, get: a => S.dragMap && S.dragMap[a.id] != null ? fmt1(S.dragMap[a.id]) + 'd' : '', cls: a => S.dragMap && S.dragMap[a.id] > 0 ? 'crit' : '' },
 };
 const fmt1 = n => Math.round(n * 10) / 10;
 const parseDays = v => { const m = String(v).match(/(-?\d+(?:\.\d+)?)\s*(w|h)?/i); if (!m) return 0; const n = parseFloat(m[1]); return m[2] ? (m[2].toLowerCase() === 'w' ? n * 5 : n / 8) : n; };
@@ -461,7 +462,7 @@ function goToActivity(id) {
 }
 // ---------- CSV export (opens in Excel with real dates and numbers) ----------
 const CSV_DATE = { start: a => a.actual_start || a.early_start, finish: a => a.actual_finish || a.early_finish, astart: a => a.actual_start, afinish: a => a.actual_finish, bstart: a => a.baseline_start, bfinish: a => a.baseline_finish, ls: a => a.late_start, lf: a => a.late_finish };
-const CSV_NUM = { dur: a => a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) : 0, tf: a => a.total_float_hours == null ? '' : fmt1(daysOf(a, a.total_float_hours)), ff: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)), pct: a => a.status === 'complete' ? 100 : Math.round(a.percent_complete), delay: a => fmt1(daysOf(a, a.level_delay_hours || 0)) };
+const CSV_NUM = { dur: a => a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) : 0, tf: a => a.total_float_hours == null ? '' : fmt1(daysOf(a, a.total_float_hours)), ff: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)), pct: a => a.status === 'complete' ? 100 : Math.round(a.percent_complete), delay: a => fmt1(daysOf(a, a.level_delay_hours || 0)), drag: a => S.dragMap && S.dragMap[a.id] != null ? S.dragMap[a.id] : '' };
 function csvText() {
   // numbers pass through; text that a spreadsheet would run as a formula is neutralised
   const q = v => { if (typeof v === 'number') return String(v); v = v == null ? '' : String(v); const f = /^[=+\-@\t\r]/.test(v); return f || /[",\n\r]/.test(v) ? '"' + (f ? "'" : '') + v.replace(/"/g, '""') + '"' : v; };
@@ -588,6 +589,7 @@ function render() {
   const p = S.project; if (!p) return;
   renderSummary(); renderToolbarState();
   const rs = rows(); S.rowsCache = rs;
+  if (S.cols.includes('drag') && S.dragStamp !== p.scheduled_at && p.activities.length <= 1500) { try { computeDrag(true); } catch { } }
   const gw = paneWidth(), cols = visibleCols(gw);
   const [t0, t1] = timeRange(); S.t0 = t0; S.t1 = t1;
   const px = S.view.pxDay; const W = Math.ceil((t1 - t0) / DAY * px) + 40; S.ganttW = W;
@@ -729,6 +731,10 @@ function chart(rs, t0, t1, W, H, bandH) {
       if (S.view.float && a.total_float_hours < 0 && a.late_finish) s += `<rect x="${x(a.late_finish)}" y="${y + mid - 1.5}" width="${Math.max(0, bx + bw - x(a.late_finish))}" height="3" rx="1.5" fill="var(--crit)" opacity=".55"/>`;
       s += `<rect class="hit bar" data-id="${a.id}" x="${bx}" y="${by}" width="${bw}" height="${h}" rx="${rr}" fill="${fill}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
       if (pct > 0) s += `<rect x="${bx}" y="${by}" width="${Math.max(2, bw * Math.min(100, pct) / 100)}" height="${h}" rx="${rr}" fill="var(--done-ink)" opacity=".34" pointer-events="none"/>`;
+      if (a.status === 'in_progress' && a.suspend_date) {   // suspended: a dashed gap until work resumes
+        const sx = x(a.suspend_date), rx = x(a.resume_date && a.resume_date > (p.data_date || p.start) ? a.resume_date : (p.data_date || p.start));
+        if (rx > sx + 1) s += `<rect x="${sx}" y="${by - 1}" width="${rx - sx}" height="${h + 2}" fill="var(--surface)" stroke="${fill}" stroke-dasharray="3 2" pointer-events="none"/><text x="${(sx + rx) / 2}" y="${by + h - 3}" text-anchor="middle" font-size="9" fill="var(--ink-3)" pointer-events="none">suspended</text>`;
+      }
       if (a.constraint && a.constraint !== 'none' && a.constraint_date) { const cx = x(a.constraint_date); s += a.constraint.includes('start') ? `<polygon points="${cx},${by - 1} ${cx - 4},${by - 6} ${cx + 4},${by - 6}" fill="var(--warn)"/>` : `<polygon points="${cx},${by + h + 1} ${cx - 4},${by + h + 6} ${cx + 4},${by + h + 6}" fill="var(--warn)"/>`; }
       const hw = Math.min(8, Math.max(4, bw / 4));     // grab zones at each end: drag to change start or finish
       s += `<rect class="hit handle hs" data-id="${a.id}" data-end="S" x="${bx - 2}" y="${by - 2}" width="${hw}" height="${h + 4}" fill="transparent"/>`;
@@ -795,9 +801,11 @@ function renderSummary() {
     `<span class="f-opt"><b>${p.activities.length}</b> activities · <b class="${crit ? 'crit' : ''}">${crit}</b> critical</span>`,
     r ? `<button type="button" class="linkish" id="fHealth" title="See the health checks">Health <b style="color:${healthColour(r.score)}">${r.score}</b></button>` : '',
     p.levelled ? '<span class="chip plain">Levelled</span>' : '', p.baselines.length ? `<span class="chip plain">Baseline: ${esc(p.baselines[p.baselines.length - 1].name)}</span>` : '',
-    S.extra && S.extra.schedule_error ? `<span class="crit">${esc(S.extra.schedule_error)}</span>` : '', chartKey()].join('');
+    S.extra && S.extra.schedule_error ? `<span class="crit">${esc(S.extra.schedule_error)}</span>` : '',
+    (() => { const n = oosList().length; return n ? `<button type="button" class="linkish chip warn" id="fOos" title="Progress recorded against the logic">${n} out of sequence</button>` : ''; })(), chartKey()].join('');
   $('#dataDate').value = (p.data_date || p.start).slice(0, 10);
   const fh = $('#fHealth'); if (fh) fh.onclick = () => go('monitor');
+  const fo = $('#fOos'); if (fo) fo.onclick = oosDialog;
 }
 function chartKey() {
   const sw = (fill, label, extra = '') => `<span class="k-i"><svg viewBox="0 0 24 12" aria-hidden="true">${fill}</svg>${label}${extra}</span>`;
@@ -867,6 +875,7 @@ function renderActivityPanel() {
       <div class="cell"><div class="k">Latest start</div><div class="v">${fmtD(a.late_start)}</div></div>
       <div class="cell"><div class="k">Latest finish</div><div class="v">${fmtD(a.late_finish)}</div></div>
     </div>
+    ${whyHtml(a)}
     <div class="form">
       <label>Name<input id="iName" value="${esc(a.name)}"></label>
       <div class="row2">
@@ -876,6 +885,7 @@ function renderActivityPanel() {
       <div class="insp-sec">Progress</div>
       <label>Complete <b id="iPctV" style="color:var(--ink)">${pct}%</b><input type="range" id="iPct" min="0" max="100" step="5" value="${pct}" aria-label="Percent complete"></label>
       <div class="row2"><label>Actual start<input type="date" id="iAS" value="${(a.actual_start || '').slice(0, 10)}"></label><label>Actual finish<input type="date" id="iAF" value="${(a.actual_finish || '').slice(0, 10)}"></label></div>
+      ${a.status === 'in_progress' ? `<div class="row2"><label>Suspended on<input type="date" id="iSusp" value="${(a.suspend_date || '').slice(0, 10)}"></label><label>Resumes on<input type="date" id="iRes2" value="${(a.resume_date || '').slice(0, 10)}"></label></div>` : ''}
       <div class="insp-sec">Logic</div>
       <div class="bar-row trace-btns"><button type="button" class="btn" id="iTraceBack">Trace driving path</button><button type="button" class="btn" id="iTraceFwd">What it holds up</button></div>
       <div class="hint" style="font-size:12px">Waits for${preds.some(r => r.driving) ? ' · <b class="drv-key">bold</b> sets its start' : ''}</div>
@@ -899,6 +909,10 @@ function renderActivityPanel() {
   q('#iPct').oninput = e => { q('#iPctV').textContent = e.target.value + '%'; };
   q('#iPct').onchange = e => mutate(p => setProgress(a, +e.target.value, p.data_date ? new Date(p.data_date) : null), `${a.id} ${+e.target.value}% complete`);
   q('#iAS').onchange = e => mutate(() => { const v = e.target.value; a.actual_start = v ? v + 'T08:00:00' : null; actualiseStartMilestones(a); if (v && a.status === 'not_started') { a.status = 'in_progress'; a.remaining_hours = a.duration_hours; } if (!v && !a.actual_finish) { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; } }, `${a.id} actual start set`);
+  el.querySelectorAll('[data-why]').forEach(b => b.onclick = () => goToActivity(b.dataset.why));
+  const why = el.querySelector('details.why'); if (why) why.ontoggle = () => { S.whyOpen = why.open; };
+  if (q('#iSusp')) { q('#iSusp').onchange = e => mutate(() => { a.suspend_date = e.target.value ? e.target.value + 'T16:00:00' : null; if (!a.suspend_date) a.resume_date = null; }, e.target.value ? `${a.id} suspended` : `${a.id} no longer suspended`);
+    q('#iRes2').onchange = e => mutate(() => { a.resume_date = e.target.value ? e.target.value + 'T08:00:00' : null; if (a.resume_date && !a.suspend_date) a.suspend_date = (S.project.data_date || a.actual_start); }, e.target.value ? `${a.id} resumes ${fmtD(e.target.value)}` : `${a.id} resume date cleared`); }
   q('#iAF').onchange = e => mutate(() => { const v = e.target.value; a.actual_finish = v ? v + 'T16:00:00' : null; if (v) { a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start) a.actual_start = a.early_start; } else if (a.status === 'complete') { a.status = 'in_progress'; a.percent_complete = 90; a.remaining_hours = a.duration_hours * .1; } }, `${a.id} actual finish set`);
   q('#iPreds').onchange = e => mutate(() => setPreds(a, e.target.value), `${a.id} logic updated`);
   const setCon = () => mutate(() => { const c = q('#iCon').value, d = q('#iConD').value || (a.early_start || '').slice(0, 10); a.constraint = c; a.constraint_date = c === 'none' || c === 'as_late_as_possible' ? null : (d ? d + (c.includes('finish') ? 'T16:00:00' : 'T08:00:00') : null); if (c !== 'none' && c !== 'as_late_as_possible' && !a.constraint_date) a.constraint = 'none'; }, `${a.id} constraint updated`);
@@ -907,6 +921,46 @@ function renderActivityPanel() {
   el.querySelectorAll('[data-code]').forEach(sel => sel.onchange = () => mutate(() => { a.codes = a.codes || {}; if (sel.value) a.codes[sel.dataset.code] = sel.value; else delete a.codes[sel.dataset.code]; }, null));
   q('#iNotes').onchange = e => mutate(() => { a.notes = e.target.value; }, null);
   if (focusId && q('#' + CSS.escape(focusId))) q('#' + CSS.escape(focusId)).focus({ preventScroll: true });
+}
+
+// ---------- guardrails: why this date, drag, out-of-sequence progress ----------
+function oosList() { try { const E = window.PlannerEngine; return S.project && E && E.outOfSequence ? E.outOfSequence(S.project) : []; } catch { return []; } }
+function oosDialog() {
+  const list = oosList(); if (!list.length) return toast('No out-of-sequence progress');
+  const { m } = modal(`${list.length} out of sequence`, `<p class="hint" style="margin-top:-4px">Progress recorded against the logic. Either record the predecessor's actual dates, or change the link if the work really overlaps (often FS to SS with a lag). The schedule keeps the remaining work behind its predecessors (retained logic) until you do.</p>
+    <div class="crit-list">${list.map(o => `<button type="button" class="crow" data-goto="${esc(o.successor)}" style="grid-template-columns:64px minmax(0,1fr)"><span class="cid">${esc(o.successor)}</span><span class="cname" style="white-space:normal"><b>${esc(o.successor_name)}</b> ${esc(o.reason)}: <span class="mono">${esc(o.predecessor)}</span> ${esc(o.predecessor_name)} (${esc(o.type)})</span></button>`).join('')}</div>`, null, '', { wide: true });
+  m.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { modalClose(); setTimeout(() => goToActivity(b.dataset.goto), 250); });
+}
+function computeDrag(silent) {
+  const E = window.PlannerEngine; if (!S.project || !E || !E.criticalDrag) return;
+  const list = E.criticalDrag(S.project); S.dragMap = Object.fromEntries(list.map(d => [d.id, d.drag_days])); S.dragStamp = S.project.scheduled_at;
+  if (!S.cols.includes('drag')) { const i = S.cols.indexOf('tf'); S.cols.splice(i >= 0 ? i + 1 : S.cols.length, 0, 'drag'); }
+  if (!silent) { go('plan'); const top = list.filter(d => d.drag_days > 0).slice(0, 3); toast(top.length ? 'Biggest drag: ' + top.map(d => `${d.id} ${d.drag_days}d`).join(', ') + '. Shorten these to bring the finish in.' : 'No single activity adds to the finish: parallel paths would take over.', { ms: 7000 }); }
+}
+// walk the driving links back from an activity and say, in words, what sets its date
+function whyChain(a) {
+  const p = S.project, steps = [], seen = new Set(); let cur = a;
+  const lagTxt = (r, pred) => r.lag_hours ? ` ${r.lag_hours > 0 ? '+' : ''}${fmt1(daysOf(pred, r.lag_hours))}d` : '';
+  const verb = { FS: ['starts after', 'finishes'], SS: ['starts after', 'starts'], FF: ['finishes after', 'finishes'], SF: ['finishes after', 'starts'] };
+  for (let i = 0; i < 40 && cur && !seen.has(cur.id); i++) {
+    seen.add(cur.id);
+    if (cur.status === 'complete') { steps.push({ id: cur.id, text: 'is complete (actual dates)' }); break; }
+    if (cur.status === 'in_progress') { steps.push({ id: cur.id, text: `started ${fmtD(cur.actual_start)}; remaining work runs from ${cur.resume_date && cur.resume_date > (p.data_date || p.start) ? 'its resume date ' + fmtD(cur.resume_date) : 'the data date ' + fmtD(p.data_date || p.start)}` }); break; }
+    const drv = p.relationships.filter(r => r.successor_id === cur.id && r.driving);
+    if (drv.length) { const r = drv[0], pred = byId(r.predecessor_id); const [v1, v2] = verb[r.type] || verb.FS; steps.push({ id: cur.id, text: `${v1} ${r.predecessor_id} ${v2} (${r.type}${lagTxt(r, pred)})`, next: r.predecessor_id }); cur = pred; continue; }
+    const c = cur.constraint || 'none';
+    if (c !== 'none' && c !== 'as_late_as_possible' && cur.constraint_date) { steps.push({ id: cur.id, text: `held by its constraint: ${c.replaceAll('_', ' ')} ${fmtD(cur.constraint_date)}` }); break; }
+    const dd = (p.data_date || p.start || '').slice(0, 10), es = (cur.early_start || '').slice(0, 10);
+    steps.push({ id: cur.id, text: p.data_date && es === dd ? `can't start before the data date ${fmtD(p.data_date)}` : es === (p.start || '').slice(0, 10) ? 'starts at the project start' : 'starts as soon as its calendar allows' });
+    break;
+  }
+  return steps;
+}
+function whyHtml(a) {
+  if (!S.project || !a.early_start) return '';
+  const steps = whyChain(a); if (!steps.length) return '';
+  const bl = a.baseline_start ? workingDaysBetween(calOf(a), new Date(a.baseline_start), new Date(a.actual_start || a.early_start)) : null;
+  return `<details class="why" ${S.whyOpen ? 'open' : ''}><summary>Why ${a.status === 'not_started' ? 'it starts' : 'this date'} ${fmtD(a.actual_start || a.early_start)}${bl ? ` <span class="chip ${bl > 0 ? 'bad' : 'ok'}">${bl > 0 ? '+' : ''}${bl}d vs baseline</span>` : ''}</summary><ol>${steps.map(st => `<li><button type="button" class="linkchip" data-why="${esc(st.id)}">${esc(st.id)}</button> ${esc(st.text)}</li>`).join('')}</ol></details>`;
 }
 // ---------- row + cell wiring ----------
 function wireRows() {
@@ -1865,6 +1919,8 @@ function palActions() {
     S.project && ['Plan', 'Go to', () => go('plan')],
     S.project && ['Monitor', 'Go to', () => go('monitor')],
     ['Ask the AI assistant', 'Assist', () => openAssistant()],
+    S.project && ['Critical path drag: what to accelerate', 'Analyse', () => computeDrag()],
+    S.project && ['Out-of-sequence progress', 'Check', oosDialog],
     S.project && ['Share and export', 'File', shareSheet],
     S.project && ['Export to Excel (CSV)', 'File', exportCsv],
     S.project && ['Show the longest path to completion', 'Trace', () => setTrace(finishDrivers(), 'back', 'Longest path to completion')],
@@ -2124,7 +2180,7 @@ function wireToolbar() {
   $('#btnProgress').onclick = progressDialog; $('#btnConstraint').onclick = constraintDialog;
   $('#btnBaseline').onclick = () => modal('Set a baseline', `<p class="hint" style="margin-top:0">A baseline freezes today's dates so you can see slippage later, bar by bar.</p><label>Name<input name="n" id="blName" value="Baseline ${S.project ? S.project.baselines.length + 1 : 1}"></label>`, m => act('/baseline', { name: m.querySelector('[name=n]').value || 'Baseline' }), 'Save baseline');
   $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
-  $('#btnRisk').onclick = riskSheet;
+  $('#btnRisk').onclick = riskSheet; $('#btnDrag').onclick = () => computeDrag();
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));

@@ -59,6 +59,7 @@ async function route(method, path, body) {
     if (seg[2] === 'baseline' && seg[3] === 'use') { p = load(pid); if (!E.useBaseline(p, body.name)) throw { status: 404, detail: 'no such baseline' }; snapshot(pid); const v = view(p); store(p); return v; }
     if (sub === 'histogram') { p = load(pid); p.levelled ? E.level(p) : E.schedule(p); return E.histogram(p); }
     if (sub === 'costs') { p = load(pid); p.levelled ? E.level(p) : E.schedule(p); return E.costCurve(p); }
+    if (sub === 'guardrails') { p = load(pid); E.schedule(p); return { out_of_sequence: E.outOfSequence(p), drag: E.criticalDrag(p) }; }
     if (sub === 'variance') { p = load(pid); p.levelled ? E.level(p) : E.schedule(p); return E.variance(p); }
     if (sub === 'chat') { p = load(pid); return Object.assign({ reply: 'The AI assistant needs a server with your Anthropic API key, so it runs only in the full local app. This shared preview is pure-code: use Guided setup for a Q&A, or the command bar (add 2 weeks to piling, finish by 1 Nov 2026, fix).', history: (body.history || []).concat([{ role: 'user', text: body.message }, { role: 'assistant', text: 'The AI assistant needs a server with your Anthropic API key, so it runs only in the full local app. This shared preview is pure-code: use Guided setup for a Q&A, or the command bar (add 2 weeks to piling, finish by 1 Nov 2026, fix).' }]), log: [], tool_calls: [] }, view(p)); }
   }

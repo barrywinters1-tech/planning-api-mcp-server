@@ -321,6 +321,8 @@ function readXer(text, projectIndex = 0) {
       constraint_date: _dt(getd(r, 'cstr_date', '')),
       status,
       actual_start: actStart, actual_finish: actEnd,
+      suspend_date: status === 'in_progress' ? _dt(getd(r, 'suspend_date', '')) : null,
+      resume_date: status === 'in_progress' ? _dt(getd(r, 'resume_date', '')) : null,
       remaining_hours: status !== 'not_started' ? remain : null,
       percent_complete: pct,
       baseline_start: _dt(getd(r, 'target_start_date', '')), baseline_finish: _dt(getd(r, 'target_end_date', '')),

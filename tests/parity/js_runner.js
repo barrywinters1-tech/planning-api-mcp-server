@@ -36,6 +36,7 @@ function run(c) {
         return { histogram: E.histogram(p), cost: E.costCurve(p), variance: E.variance(p) };
       }
       case 'risk': return E.riskAnalysis(c.project, c.opts);
+      case 'guard': return { out_of_sequence: E.outOfSequence((E.schedule(c.project), c.project)), drag: E.criticalDrag(c.project) };
       case 'parse_date': return { values: c.values.map(([s, h]) => E.parseDate(s, h)) };
       case 'round': return { values: c.values.map(([x, n]) => E.pyRound(x, n)) };
       case 'numfmt': return { values: c.values.map(x => [E.pyFixed(x, 0), E.pyFixed(x, 1), E.pyFixed(x, 4), E.pyG(x), E.pyG(x, true), E.pyStr(x), E.pyGroup(x), E.pyFloorDiv(x, 44)]) };
