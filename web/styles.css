@@ -616,3 +616,10 @@ details.why summary { cursor: pointer; font-size: 13px; font-weight: 600; color:
 details.why ol { margin: 8px 0 2px; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
 details.why .linkchip { margin-right: 4px; }
 .chip.warn.linkish { cursor: pointer; }
+
+/* ---------- compare versions ---------- */
+.cmp-pick { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 10px; }
+.cmp-pick label { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.cmp-text { font-size: 14px; line-height: 1.55; background: var(--surface-2); border-radius: 12px; padding: 4px 14px; }
+.cmp-text p { margin: 10px 0; }
+.ai .msg.review { border: 1px solid var(--accent); }

@@ -232,6 +232,7 @@ let lastTrigger = null;
 document.addEventListener('pointerdown', e => { const b = e.target.closest('button, .tile, .card, [role=button]'); if (b) lastTrigger = b; }, true);
 function presentSheet(back, el) {
   const narrow = innerWidth <= 640;
+  back._gen = (back._gen || 0) + 1; back._closing = false;   // a sheet opened while the last one closes wins
   back.hidden = false; back.style.pointerEvents = '';
   back.style.transition = 'background-color .28s ease'; back.style.backgroundColor = 'transparent';
   requestAnimationFrame(() => { back.style.backgroundColor = ''; });
@@ -245,10 +246,11 @@ function presentSheet(back, el) {
 }
 function dismissSheet(back, el, velocity, after) {
   if (back.hidden || back._closing) return;
-  const narrow = innerWidth <= 640; back._closing = true; back.style.pointerEvents = 'none'; back.style.backgroundColor = 'transparent';
+  const narrow = innerWidth <= 640, gen = back._gen; back._closing = true; back.style.pointerEvents = 'none'; back.style.backgroundColor = 'transparent';
   animate(el, narrow ? { y: el.offsetHeight + 40 } : { scale: .95, opacity: 0, y: 8 }, {
     response: .3, velocity: velocity ? { y: velocity } : undefined,
-    done: () => { back.hidden = true; back._closing = false; back.style.pointerEvents = ''; back.style.backgroundColor = ''; el.style.transform = ''; el.style.opacity = ''; springs.delete(el); if (after) after(); },
+    done: () => { if (back._gen !== gen) return;   // superseded by a sheet opened mid-close
+      back.hidden = true; back._closing = false; back.style.pointerEvents = ''; back.style.backgroundColor = ''; el.style.transform = ''; el.style.opacity = ''; springs.delete(el); if (after) after(); },
   });
 }
 // drag a sheet down to dismiss (phones): tracks 1:1, resists upward, and decides from the projected rest point
@@ -923,6 +925,58 @@ function renderActivityPanel() {
   if (focusId && q('#' + CSS.escape(focusId))) q('#' + CSS.escape(focusId)).focus({ preventScroll: true });
 }
 
+
+// ---------- issued revisions and version comparison ----------
+const nextRev = p => 'Rev ' + String.fromCharCode(65 + ((p && p.revisions) || []).length % 26);
+function revisionDialog() {
+  if (!S.project) return;
+  modal('Issue revision', `<p class="hint" style="margin-top:-4px">Freezes the programme as it is now, so later versions can be compared with what was issued.</p><label>Name<input name="n" value="${esc(nextRev(S.project))}"></label><label>Note<input name="note" placeholder="e.g. Issued to client for acceptance"></label>`,
+    m => act('/revision', { name: m.querySelector('[name=n]').value.trim() || nextRev(S.project), note: m.querySelector('[name=note]').value.trim() }), 'Issue');
+}
+async function compareSheet(preset) {
+  if (!S.project) return; const E = window.PlannerEngine; if (!E || !E.compareProjects) return toast('Comparison is not available on this page');
+  const revs = (S.project.revisions || []).slice().reverse(), others = (S.list || []).filter(x => x.id !== S.pid);
+  const opts = revs.map(r => `<option value="rev:${esc(r.name)}">${esc(r.name)} · issued ${fmtD(r.issued_at)}</option>`).join('') + others.map(o => `<option value="prj:${esc(o.id)}">${esc(o.name)} (${esc(o.id)})</option>`).join('');
+  const { m } = modal('Compare versions', `<div class="cmp-pick"><label>Compare the current programme with<select id="cmpSrc">${opts}<option value="file">A file (XER, P6 XML, MS Project XML, JSON)…</option></select></label><button type="button" class="primary" id="cmpGo">Compare</button></div><input type="file" id="cmpFile" accept=".xer,.xml,.pmxml,.mspdi,.json" hidden><div id="cmpOut">${revs.length ? '' : '<p class="hint">No revisions issued yet. Issue one from More → Issue revision, or when you export.</p>'}</div>`, null, '', { wide: true });
+  const run = async old => { try { renderCompare(m.querySelector('#cmpOut'), E.compareProjects(old, S.project)); } catch (e) { m.querySelector('#cmpOut').innerHTML = `<p class="crit">${esc(e.message || e)}</p>`; } };
+  const go = async () => {
+    const v = m.querySelector('#cmpSrc').value;
+    if (v === 'file') return m.querySelector('#cmpFile').click();
+    if (v.startsWith('rev:')) { const r = revs.find(x => 'rev:' + x.name === v); return run(r.project); }
+    if (v.startsWith('prj:')) { const d = await api('/api/projects/' + encodeURIComponent(v.slice(4))); return run(d.project); }
+  };
+  m.querySelector('#cmpGo').onclick = go;
+  m.querySelector('#cmpFile').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const old = E.readAny(f.name, new Uint8Array(await f.arrayBuffer())); await run(old); } catch (err) { m.querySelector('#cmpOut').innerHTML = `<p class="crit">${esc(err.message || err)}</p>`; } e.target.value = ''; };
+  if (preset) { m.querySelector('#cmpOut').innerHTML = ''; renderCompare(m.querySelector('#cmpOut'), preset); }
+  else if (revs.length || others.length) go();
+}
+function renderCompare(out, r) {
+  const E = window.PlannerEngine, text = E.compareNarrative(r), sm = r.summary, c = sm.counts || {};
+  const sh = sm.finish_shift_days, shTxt = sh == null ? '–' : sh === 0 ? 'No change' : (sh > 0 ? '+' : '') + sh + 'd';
+  const row = (id, name, extra) => `<button type="button" class="crow" data-goto="${esc(id)}" style="grid-template-columns:64px minmax(0,1fr) auto"><span class="cid">${esc(id)}</span><span class="cname">${esc(name || '')}</span><b>${esc(extra || '')}</b></button>`;
+  const sec = (title, items) => items.length ? `<h3>${esc(title)}</h3><div class="crit-list">${items.join('')}</div>` : '';
+  const moves = (r.date_moves || []).slice(0, 12).map(d => row(d.id, d.name, (d.finish_shift_days > 0 ? '+' : '') + d.finish_shift_days + 'd'));
+  const drivers = (r.finish_drivers || []).map(d => row(d.id, d.name, (d.changes || []).map(x => x.kind.replace('_', ' ')).join(', ')));
+  out.innerHTML = `<div class="kpis rk-kpis"><div class="kpi"><div class="k">Finish</div><div class="big ${sh > 0 ? 'bad' : sh < 0 ? 'ok' : ''}">${shTxt}</div><div class="note">${fmtD(sm.old_finish)} → ${fmtD(sm.new_finish)}</div></div>
+      <div class="kpi"><div class="k">Critical path</div><div class="big">${sm.critical_path_changed ? 'Changed' : 'Same'}</div><div class="note">${(r.critical.joined || []).length} joined · ${(r.critical.left || []).length} left</div></div>
+      <div class="kpi"><div class="k">Activities</div><div class="big">${(c.added || 0) + (c.removed || 0) + (c.duration_changes || 0)}</div><div class="note">${c.added || 0} added · ${c.removed || 0} removed · ${c.duration_changes || 0} durations</div></div>
+      <div class="kpi"><div class="k">Logic</div><div class="big">${(c.logic_added || 0) + (c.logic_removed || 0) + (c.logic_changed || 0)}</div><div class="note">${c.logic_added || 0} added · ${c.logic_removed || 0} removed · ${c.logic_changed || 0} changed</div></div></div>
+    <h3>Commentary</h3><div class="cmp-text" id="cmpText">${esc(text).replace(/\n\n/g, '</p><p>').replace(/^/, '<p>') + '</p>'}</div>
+    <div class="bar-row" style="margin:8px 0 4px"><button type="button" class="btn" id="cmpCopy">Copy commentary</button><button type="button" class="btn" id="cmpAi" hidden>Rewrite with Claude</button></div>
+    ${sec('What moved the finish', drivers)}${sec('Biggest date moves', moves)}
+    ${sec('Added', (r.added || []).map(a => row(a.id, a.name, 'new')))}${sec('Removed', (r.removed || []).map(a => row(a.id, a.name, 'removed')))}
+    ${sec('Durations', (r.duration_changes || []).slice(0, 20).map(d => row(d.id, d.name, `${d.old_days}d → ${d.new_days}d`)))}
+    ${sec('Logic', [...(r.logic_added || []).map(l => row(l.succ, `${l.pred} → ${l.succ} ${l.type}${l.lag_days ? ' ' + (l.lag_days > 0 ? '+' : '') + l.lag_days + 'd' : ''}`, 'added')), ...(r.logic_removed || []).map(l => row(l.succ, `${l.pred} → ${l.succ} ${l.type}`, 'removed')), ...(r.logic_changed || []).map(l => row(l.succ, `${l.pred} → ${l.succ} ${l.old_type}${l.old_lag_days ? ' ' + l.old_lag_days + 'd' : ''} → ${l.new_type}${l.new_lag_days ? ' ' + l.new_lag_days + 'd' : ''}`, 'changed'))].slice(0, 30))}`;
+  out.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { modalClose(); setTimeout(() => goToActivity(b.dataset.goto), 250); });
+  out.querySelector('#cmpCopy').onclick = async () => { try { await navigator.clipboard.writeText(out.querySelector('#cmpText').innerText); toast('Commentary copied'); } catch { toast('Select the text and copy it'); } };
+  const ai = out.querySelector('#cmpAi');
+  (LOCAL ? getSample() : Promise.resolve(null)).then(sample => { if (!sample) return; ai.hidden = false; ai.onclick = async () => {
+    ai.disabled = true; const box = out.querySelector('#cmpText'), orig = box.innerHTML; box.innerHTML = '<p class="hint">Thinking…</p>';
+    try { const { text: t } = await sample(`You are a UK construction planner writing the programme commentary that accompanies a revised programme. Rewrite the draft below into clear, professional prose for a client and project manager: lead with the change to completion, then the causes on the critical path, then other notable changes. Keep every number, date and activity id exactly as given; do not add facts. Under 220 words, British English, no headings or bullet points.\n\nDRAFT:\n${text}\n\nSTRUCTURED CHANGES (for reference, JSON):\n${JSON.stringify({ summary: r.summary, finish_drivers: r.finish_drivers }).slice(0, 12000)}`, { onText: ({ text: tt }) => { box.innerHTML = '<p>' + esc(tt).replace(/\n\n/g, '</p><p>') + '</p>'; } });
+      box.innerHTML = '<p>' + esc(t).replace(/\n\n/g, '</p><p>') + '</p>'; }
+    catch (e) { box.innerHTML = orig; toast(AI_ERRORS[e && e.code] || 'Claude could not rewrite it'); }
+    finally { ai.disabled = false; } }; });
+}
 // ---------- guardrails: why this date, drag, out-of-sequence progress ----------
 function oosList() { try { const E = window.PlannerEngine; return S.project && E && E.outOfSequence ? E.outOfSequence(S.project) : []; } catch { return []; } }
 function oosDialog() {
@@ -1490,18 +1544,32 @@ async function sendAiLocal(text) {
   const ctl = new AbortController(); S.aiAbort = ctl; $('#aiStop') && ($('#aiStop').hidden = false);
   const tools = aiTools(msg => { status = msg; paint(); }).map(t => Object.assign({}, t, { execute: (i, c) => { used.push(t.name); return t.execute(i, c); } }));
   S.aiTurns = (S.aiTurns || []).slice(-14);
+  const before = S.project ? JSON.parse(JSON.stringify(S.project)) : null, pid0 = S.pid, undo0 = (S.history && S.history.undo) || 0;
   const turns = [{ role: 'user', content: AI_RULES + '\n\n' + stateLine() }, ...S.aiTurns, { role: 'user', content: text }];
   try {
     const { text: reply, truncated } = await sample(turns, { tools, signal: ctl.signal, onText: ({ text: t }) => { streamed = t; paint(); } });
     clearInterval(tick); busy.remove();
     S.aiTurns.push({ role: 'user', content: text }, { role: 'assistant', content: reply });
     addAi(esc(reply).replace(/\n/g, '<br>') + (truncated ? '<br><span class="hint">Cut short. Ask for less at a time.</span>' : ''), '', [...new Set(used)]);
+    reviewChanges(before, pid0, undo0);
   } catch (e) {
     clearInterval(tick); busy.remove();
     if (e && e.text) addAi(esc(e.text).replace(/\n/g, '<br>'));
     if (!e || e.code !== 'cancelled') addAi('<span class="crit">' + esc(AI_ERRORS[e && e.code] || 'Claude could not finish that. Try again.') + '</span>', '', [...new Set(used)]);
     if (e && ['not_granted', 'sampling_disabled', 'tools_unavailable', 'capability_disabled', 'capability_removed', 'not_declared'].includes(e.code)) _sample = null;
   } finally { S.aiAbort = null; $('#aiStop') && ($('#aiStop').hidden = true); }
+}
+// after Claude has changed the open programme: say what changed and offer to keep it or undo it all
+function reviewChanges(before, pid0, undo0) {
+  const E = window.PlannerEngine; if (!before || S.pid !== pid0 || !S.project || !E || !E.compareProjects) return;
+  const steps = ((S.history && S.history.undo) || 0) - undo0; if (steps <= 0) return;
+  let r; try { r = E.compareProjects(before, S.project); } catch { return; }
+  const c = r.summary.counts || {}, sh = r.summary.finish_shift_days;
+  const bits = [sh ? `finish ${sh > 0 ? '+' : ''}${sh} working days` : 'finish unchanged', c.duration_changes ? `${c.duration_changes} durations` : '', (c.logic_added || 0) + (c.logic_removed || 0) + (c.logic_changed || 0) ? `${(c.logic_added || 0) + (c.logic_removed || 0) + (c.logic_changed || 0)} links` : '', c.added ? `${c.added} added` : '', c.removed ? `${c.removed} removed` : '', c.constraint_changes ? `${c.constraint_changes} constraints` : '', c.progress_changes ? `${c.progress_changes} progress updates` : ''].filter(Boolean);
+  const el = addAi(`<b>Changes to review:</b> ${esc(bits.join(' · '))}<div class="bar-row" style="margin-top:8px"><button type="button" class="btn" data-a="see">See changes</button><button type="button" class="btn" data-a="undo">Undo all (${steps})</button><button type="button" class="btn" data-a="keep">Keep</button></div>`, 'review');
+  el.querySelector('[data-a=see]').onclick = () => compareSheet(r);
+  el.querySelector('[data-a=keep]').onclick = () => { el.querySelector('.bar-row').innerHTML = '<span class="hint">Kept.</span>'; };
+  el.querySelector('[data-a=undo]').onclick = async () => { el.querySelector('.bar-row').innerHTML = '<span class="hint">Undoing…</span>'; for (let i = 0; i < steps; i++) await act('/undo'); el.querySelector('.bar-row').innerHTML = `<span class="hint">Undone. Back to how it was before.</span>`; };
 }
 function openAssistant(prefill) {
   const el = $('#ai'); if (el.hidden) { el.hidden = false; animate(el, { y: 0, opacity: 1, scale: 1 }, { from: { y: 16, opacity: 0, scale: .98 }, response: .34 }); }
@@ -1921,6 +1989,8 @@ function palActions() {
     ['Ask the AI assistant', 'Assist', () => openAssistant()],
     S.project && ['Critical path drag: what to accelerate', 'Analyse', () => computeDrag()],
     S.project && ['Out-of-sequence progress', 'Check', oosDialog],
+    S.project && ['Compare versions', 'Analyse', () => compareSheet()],
+    S.project && ['Issue revision', 'Plan', revisionDialog],
     S.project && ['Share and export', 'File', shareSheet],
     S.project && ['Export to Excel (CSV)', 'File', exportCsv],
     S.project && ['Show the longest path to completion', 'Trace', () => setTrace(finishDrivers(), 'back', 'Longest path to completion')],
@@ -2106,7 +2176,8 @@ function exportCheck(fmt) {
   catch (e) { return exportAs(fmt); }                  // never block an export on the check itself
   const ok = reps.every(r => r.ok);
   const sec = r => `<h3>${esc(r.tool)}</h3><ul class="fid">${r.items.map(i => `<li class="${i.ok ? 'ok' : 'warn'}"><span class="fi" aria-hidden="true">${i.ok ? '✓' : '!'}</span><div><b>${esc(i.text)}</b>${i.detail ? `<div class="hint">${esc(i.detail)}</div>` : ''}</div></li>`).join('')}</ul>`;
-  modal('What the other tool will receive', `<p class="hint" style="margin-top:-4px">${ok ? 'Everything survives the round trip.' : 'Checked by writing the file and reading it back. Items marked ! will not arrive as they are here.'}</p>${reps.map(sec).join('')}`, () => exportAs(fmt), fmt === 'bundle' ? 'Download all three' : 'Download', { wide: true });
+  modal('What the other tool will receive', `<p class="hint" style="margin-top:-4px">${ok ? 'Everything survives the round trip.' : 'Checked by writing the file and reading it back. Items marked ! will not arrive as they are here.'}</p>${reps.map(sec).join('')}<label class="sw" style="margin-top:6px"><span>Record this as issued revision <b>${esc(nextRev(S.project))}</b>, so later versions can be compared with it</span><input type="checkbox" id="xRev" checked><i></i></label>`,
+    async m => { const issue = m.querySelector('#xRev').checked; await exportAs(fmt); if (issue) await act('/revision', { name: nextRev(S.project), note: 'Issued as ' + (fmt === 'bundle' ? 'XER, MS Project XML and JSON' : fmt.toUpperCase()) }); }, fmt === 'bundle' ? 'Download all three' : 'Download', { wide: true });
 }
 function importSummary(p, r) {
   const n = (x, w) => `<li><b>${x}</b> ${w}</li>`, exc = Object.values(p.calendars).reduce((t, c) => t + Object.keys(c.exceptions || {}).length, 0);
@@ -2181,6 +2252,7 @@ function wireToolbar() {
   $('#btnBaseline').onclick = () => modal('Set a baseline', `<p class="hint" style="margin-top:0">A baseline freezes today's dates so you can see slippage later, bar by bar.</p><label>Name<input name="n" id="blName" value="Baseline ${S.project ? S.project.baselines.length + 1 : 1}"></label>`, m => act('/baseline', { name: m.querySelector('[name=n]').value || 'Baseline' }), 'Save baseline');
   $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
   $('#btnRisk').onclick = riskSheet; $('#btnDrag').onclick = () => computeDrag();
+  $('#btnRevision').onclick = revisionDialog; $('#btnCompare').onclick = () => compareSheet();
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));

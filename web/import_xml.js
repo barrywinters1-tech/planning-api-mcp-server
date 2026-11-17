@@ -1063,7 +1063,7 @@ function xmlRootTag(data) {
 // =========================================================================================
 const mkCalendar = (id, o = {}) => Object.assign({ id, name: 'Standard', hours_per_day: 8, day_start: '08:00:00', working_days: [0, 1, 2, 3, 4], exceptions: {} }, o);
 const mkProject = o => Object.assign({ id: '', name: '', start: null, data_date: null, must_finish_by: null, default_calendar_id: 'std', calendars: {},
-  wbs: [], activities: [], relationships: [], resources: [], assignments: [], description: '', assumptions: [], code_types: {}, baselines: [],
+  wbs: [], activities: [], relationships: [], resources: [], assignments: [], description: '', assumptions: [], code_types: {}, baselines: [], revisions: [],
   levelled: false, finish: null, scheduled_at: null }, o);
 const mkActivity = o => Object.assign({ id: '', name: '', wbs_id: null, calendar_id: null, type: 'task', duration_hours: 0, constraint: 'none',
   constraint_date: null, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0,

@@ -255,6 +255,7 @@ class Project(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     code_types: dict[str, dict[str, str]] = Field(default_factory=dict)  # type -> {value: colour}
     baselines: list[Baseline] = Field(default_factory=list)
+    revisions: list[dict] = Field(default_factory=list)   # issued versions: {name, issued_at, note, project}
     levelled: bool = False
     # computed
     finish: Optional[datetime] = None

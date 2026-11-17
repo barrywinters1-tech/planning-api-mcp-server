@@ -27,6 +27,7 @@ from planner.plan import Patch, PatchOp, apply_patch, draft_to_project, schedule
 from planner.repair import plan_repairs
 from planner.risk import risk_analysis
 from planner.guardrails import critical_drag, out_of_sequence
+from planner.compare import compare as compare_projects, narrative as compare_narrative
 from planner import agent
 from planner.model import Assignment, Resource
 
@@ -394,6 +395,57 @@ def get_guardrails(pid: str):
         return {"out_of_sequence": out_of_sequence(project), "drag": critical_drag(project)}
     except ScheduleError as e:
         raise HTTPException(422, str(e))
+
+
+class RevisionIn(BaseModel):
+    name: Optional[str] = None
+    note: str = ""
+
+
+def issue_revision(project: Project, name: Optional[str], note: str = "") -> dict:
+    """Freeze the current programme as an issued revision (Rev A, Rev B, ...) for later comparison."""
+    from datetime import datetime as _dt
+    name = name or f"Rev {chr(65 + len(project.revisions) % 26)}"
+    snap = project.model_dump(mode="json", exclude={"revisions"})
+    rev = {"name": name, "issued_at": _dt.now().replace(microsecond=0).isoformat(), "note": note, "project": snap}
+    project.revisions = [r for r in project.revisions if r.get("name") != name] + [rev]
+    return rev
+
+
+@app.post("/api/projects/{pid}/revision")
+def post_revision(pid: str, body: Optional[RevisionIn] = None):
+    b = body or RevisionIn()
+    project = _load(pid)
+    history.snapshot(pid)
+    issue_revision(project, b.name, b.note)
+    view = _view(project)
+    store.save(project)
+    return view
+
+
+class CompareIn(BaseModel):
+    revision: Optional[str] = None
+    other_project_id: Optional[str] = None
+
+
+@app.post("/api/projects/{pid}/compare")
+def post_compare(pid: str, body: CompareIn):
+    """Compare the programme with an issued revision or another project: structured changes plus a narrative."""
+    project = _load(pid)
+    if body.revision:
+        rev = next((r for r in project.revisions if r.get("name") == body.revision), None)
+        if rev is None:
+            raise HTTPException(404, f"No revision {body.revision!r}")
+        old = Project.model_validate(rev["project"])
+    elif body.other_project_id:
+        old = _load(body.other_project_id)
+    else:
+        raise HTTPException(422, "Give a revision name or another project id.")
+    try:
+        result = compare_projects(old, project)
+    except ScheduleError as e:
+        raise HTTPException(422, str(e))
+    return {"result": result, "narrative": compare_narrative(result)}
 
 
 class RiskIn(BaseModel):

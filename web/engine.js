@@ -566,7 +566,7 @@ const PALETTE = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#76b7b2', '#edc948
 function draftToProject(draft, description = '') {
   const start = parseDate(draft.start_date) || E.nowISO();
   const pid = (draft.project_id || '').replace(/[^A-Za-z0-9-]+/g, '-').replace(/^-|-$/g, '').slice(0, 12) || 'PROJ';
-  const p = { id: pid, name: draft.project_name, start, data_date: start, must_finish_by: parseDate(draft.must_finish_by, 16), default_calendar_id: 'standard', calendars: {}, wbs: [], activities: [], relationships: [], resources: [], assignments: [], description, assumptions: (draft.assumptions || []).slice(), code_types: {}, baselines: [], levelled: false, finish: null, scheduled_at: null };
+  const p = { id: pid, name: draft.project_name, start, data_date: start, must_finish_by: parseDate(draft.must_finish_by, 16), default_calendar_id: 'standard', calendars: {}, wbs: [], activities: [], relationships: [], resources: [], assignments: [], description, assumptions: (draft.assumptions || []).slice(), code_types: {}, baselines: [], revisions: [], levelled: false, finish: null, scheduled_at: null };
   ensureCalendars(p);
   (draft.wbs || []).forEach((w, i) => p.wbs.push({ id: w.code, code: w.code, name: w.name, parent_id: w.parent_code || null, seq: i }));
   const knownW = new Set(p.wbs.map(w => w.id)); const trades = {};

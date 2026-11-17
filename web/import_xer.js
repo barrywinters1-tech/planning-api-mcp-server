@@ -398,7 +398,7 @@ function readXer(text, projectIndex = 0) {
     must_finish_by: _dt(getd(pr, 'plan_end_date', '')),
     default_calendar_id: defaultCal, calendars, wbs, activities: acts, relationships: rels,
     resources: usedRes.length ? usedRes : Array.from(res.values()), assignments: assigns,
-    description: '', assumptions: [], code_types: codeLib, baselines: [], levelled: false, finish: null, scheduled_at: null,
+    description: '', assumptions: [], code_types: codeLib, baselines: [], revisions: [], levelled: false, finish: null, scheduled_at: null,
   };
   if (!own(calendars, defaultCal)) put(calendars, defaultCal, newCalendar(defaultCal));   // Project.ensure_default_calendar()
   return proj;

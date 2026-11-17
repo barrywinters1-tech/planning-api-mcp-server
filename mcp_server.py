@@ -26,6 +26,7 @@ from planner.io import read_any, write_any
 from planner.repair import plan_repairs
 from planner.risk import risk_analysis
 from planner.guardrails import critical_drag, out_of_sequence
+from planner.compare import compare as compare_projects, narrative as compare_narrative
 
 mcp = FastMCP(
     "AI Construction Planner",
@@ -200,6 +201,28 @@ def get_schedule(project_id: str) -> dict:
     except ScheduleError as e:
         return {"error": str(e)}
     return p.model_dump(mode="json")
+
+
+@mcp.tool()
+def compare_programmes(project_id: str, other_project_id: str = "", revision: str = "") -> dict:
+    """Compare a programme with an earlier version: an issued revision of the same project (by name, e.g.
+    "Rev A") or another stored project. Returns what changed (activities, durations, logic, constraints,
+    progress, calendars, date moves, critical path) and a plain-English narrative of why the finish moved."""
+    new = _load(project_id)
+    if revision:
+        rev = next((r for r in new.revisions if r.get("name") == revision), None)
+        if rev is None:
+            return {"error": f"No revision {revision!r}. Issued: {[r.get('name') for r in new.revisions]}"}
+        old = Project.model_validate(rev["project"])
+    elif other_project_id:
+        old = _load(other_project_id)
+    else:
+        return {"error": "Give revision or other_project_id."}
+    try:
+        result = compare_projects(old, new)
+    except ScheduleError as e:
+        return {"error": str(e)}
+    return {"narrative": compare_narrative(result), "result": result}
 
 
 @mcp.tool()
