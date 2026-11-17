@@ -68,6 +68,7 @@ def schedule(project: Project) -> Project:
     preds = defaultdict(list)
     succs = defaultdict(list)
     for r in project.relationships:
+        r.driving = False
         preds[r.successor_id].append(r)
         succs[r.predecessor_id].append(r)
 
@@ -88,21 +89,23 @@ def schedule(project: Project) -> Project:
             es_floor = a.actual_start
             ef_floor = cal.add_hours(cal.next_working_start(data_date), rem)
 
+        start_links: list = []   # (relationship, date it imposes) for FS/SS
+        finish_links: list = []  # ... and for FF/SF
         for r in preds[a.id]:
             p = amap[r.predecessor_id]
             pcal = project.calendar_for(p)
             if r.type == LinkType.FS:
                 t = pcal.add_hours(p.early_finish, r.lag_hours)
-                es_floor = max(es_floor, t)
+                es_floor = max(es_floor, t); start_links.append((r, t))
             elif r.type == LinkType.SS:
                 t = pcal.add_hours(p.early_start, r.lag_hours)
-                es_floor = max(es_floor, t)
+                es_floor = max(es_floor, t); start_links.append((r, t))
             elif r.type == LinkType.FF:
                 t = pcal.add_hours(p.early_finish, r.lag_hours)
-                ef_floor = t if ef_floor is None else max(ef_floor, t)
+                ef_floor = t if ef_floor is None else max(ef_floor, t); finish_links.append((r, t))
             elif r.type == LinkType.SF:
                 t = pcal.add_hours(p.early_start, r.lag_hours)
-                ef_floor = t if ef_floor is None else max(ef_floor, t)
+                ef_floor = t if ef_floor is None else max(ef_floor, t); finish_links.append((r, t))
 
         cd = a.constraint_date
         if cd is not None:
@@ -118,12 +121,23 @@ def schedule(project: Project) -> Project:
             # finish milestones sit on the predecessor's finish, not the next morning
             target = es_floor if ef_floor is None else max(es_floor, ef_floor)
             es = ef = target if cal.in_shift(target) else cal.prev_working_end(target)
+            for r, t in start_links + finish_links:
+                r.driving = t == target
         else:
             es = cal.next_working_start(es_floor)
             ef = cal.add_hours(es, rem) if rem > 0 else es
+            finish_rules = ef_floor is not None and ef_floor >= ef
+            start_rules = not (ef_floor is not None and ef_floor > ef)
             if ef_floor is not None and ef_floor > ef:
                 ef = ef_floor if rem > 0 else cal.prev_working_end(ef_floor)
                 es = cal.add_hours(ef, -rem) if rem > 0 else ef
+            for r, t in start_links:
+                r.driving = start_rules and t == es_floor
+            for r, t in finish_links:
+                r.driving = finish_rules and t == ef_floor
+        if a.status == Status.NOT_STARTED and cd is not None and a.constraint in (Constraint.MUST_START_ON, Constraint.MUST_FINISH_ON):
+            for r, _ in start_links + finish_links:
+                r.driving = False
         if a.status == Status.NOT_STARTED and cd is not None:
             if a.constraint == Constraint.MUST_START_ON:
                 es = cd
@@ -199,16 +213,29 @@ def schedule(project: Project) -> Project:
             ff = slack if ff is None else min(ff, slack)
         a.free_float_hours = round(a.total_float_hours if ff is None else max(0.0, ff), 4)
 
-    # critical = zero or negative float; if a must-finish-by date leaves float everywhere,
-    # flag the longest path (least float) instead, as P6's "longest path" option does
-    open_tf = [a.total_float_hours for a in project.activities
-               if a.status != Status.COMPLETE and a.total_float_hours is not None]
-    threshold = max(0.0, min(open_tf)) if open_tf else 0.0
+    # critical = the longest path: trace back from the activities that set the project finish
+    # through driving links (P6's and Asta's "longest path"). Negative float is reported separately (DCMA).
+    # Tracing logic, rather than picking the lowest float, stays right with mixed calendars,
+    # deadlines and parallel chains that happen to share a float value.
+    open_acts = [a for a in project.activities if a.status != Status.COMPLETE and a.early_finish and a.type != ActivityType.LOE]
+    on_path: set[str] = set()
+    if open_acts:
+        end = max(a.early_finish for a in open_acts)
+        stack = [a for a in open_acts if a.early_finish >= end]
+        while stack:
+            a = stack.pop()
+            if a.id in on_path:
+                continue
+            on_path.add(a.id)
+            for r in preds[a.id]:
+                p = amap[r.predecessor_id]
+                if r.driving and p.status != Status.COMPLETE and p.type != ActivityType.LOE:
+                    stack.append(p)
     for a in project.activities:
         if a.status == Status.COMPLETE or a.total_float_hours is None:
             a.critical = False
         else:
-            a.critical = a.total_float_hours <= threshold + EPS
+            a.critical = a.id in on_path
 
     # hammocks (level of effort): start with the earliest SS predecessor, finish with the latest FF predecessor;
     # with no such links they span the activities in their own WBS node

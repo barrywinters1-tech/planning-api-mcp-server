@@ -163,6 +163,7 @@ class Relationship(BaseModel):
     successor_id: str
     type: LinkType = LinkType.FS
     lag_hours: float = 0.0
+    driving: bool = False  # computed by schedule(): this link sets its successor's date
 
 
 class Resource(BaseModel):

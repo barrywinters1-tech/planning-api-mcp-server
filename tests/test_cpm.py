@@ -162,3 +162,26 @@ def test_hammock_spans_linked_activities():
     assert s.early_start == c.early_start and s.early_finish == c.early_finish  # spans its WBS node
     rep = health_check(p)
     assert "H" not in {i for ch in rep.checks for i in ch.items}  # LOE ignored by logic checks
+
+
+def test_longest_path_across_calendars():
+    """Critical = the chain of driving links back from the finish, not "float <= 0".
+
+    A (5-day) -> cure C (7-day, works Sat) -> D, in parallel with B -> D. The cure ends
+    Saturday, so A, B and C all carry 8h of calendar float, yet A-C-D is what sets D's
+    start. A float threshold would flag only D; the longest path flags A, C and D."""
+    p = proj()
+    p.calendars["seven"] = Calendar(id="seven", working_days=list(range(7)))
+    p.activities = [Activity(id="A", name="A", duration_hours=24), Activity(id="B", name="B", duration_hours=32),
+                    Activity(id="C", name="Cure", duration_hours=24, calendar_id="seven"),
+                    Activity(id="D", name="D", duration_hours=8)]
+    p.relationships = [Relationship(predecessor_id="A", successor_id="C"), Relationship(predecessor_id="C", successor_id="D"),
+                       Relationship(predecessor_id="B", successor_id="D")]
+    schedule(p)
+    a = p.activity_map()
+    assert a["C"].early_finish == datetime(2026, 1, 10, 16)       # Saturday
+    assert a["D"].early_start == datetime(2026, 1, 12, 8)         # Monday
+    assert [a[x].total_float_hours for x in "ABC"] == [8, 8, 8]
+    assert [x for x in "ABCD" if a[x].critical] == ["A", "C", "D"]
+    drv = {(r.predecessor_id, r.successor_id): r.driving for r in p.relationships}
+    assert drv == {("A", "C"): True, ("C", "D"): True, ("B", "D"): False}

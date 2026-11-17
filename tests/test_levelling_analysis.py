@@ -38,7 +38,9 @@ def test_baseline_variance_and_cost():
     p = block()
     set_baseline(p, "Tender")
     assert p.baselines[0].name == "Tender" and all(a.baseline_finish for a in p.activities)
-    task = next(a for a in p.activities if a.critical and a.duration_hours > 0)
+    # Longest-path critical: with seven-day cure calendars, early path activities carry
+    # calendar float, so a zero-float one is the task whose delay passes through 1:1.
+    task = next(a for a in p.activities if a.critical and a.duration_hours > 0 and a.total_float_hours == 0)
     task.duration_hours += 80
     run_schedule(p)
     v = {x["id"]: x for x in variance(p)}

@@ -134,7 +134,7 @@ function schedule(p) {
   const dataDate = D(p.data_date) || D(p.start), start = D(p.start);
   const preds = {}, succs = {};
   p.activities.forEach(a => { preds[a.id] = []; succs[a.id] = []; });
-  for (const r of p.relationships) { preds[r.successor_id].push(r); succs[r.predecessor_id].push(r); }
+  for (const r of p.relationships) { r.driving = false; preds[r.successor_id].push(r); succs[r.predecessor_id].push(r); }
   const maxD = (a, b) => (a && b) ? (a > b ? a : b) : (a || b);
 
   for (const a of order) {
@@ -142,12 +142,13 @@ function schedule(p) {
     if (a.status === 'complete' && a.actual_start && a.actual_finish) { a.early_start = a.actual_start; a.early_finish = a.actual_finish; continue; }
     let es_floor = cal.next_working_start(maxD(start, dataDate)), ef_floor = null;
     if (a.status === 'in_progress' && a.actual_start) { es_floor = D(a.actual_start); ef_floor = cal.add_hours(cal.next_working_start(dataDate), rem); }
+    const startLinks = [], finishLinks = [];   // [relationship, date it imposes]
     for (const r of preds[a.id]) {
       const pr = m[r.predecessor_id], pcal = calFor(p, pr);
-      if (r.type === 'FS') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); if (t > es_floor) es_floor = t; }
-      else if (r.type === 'SS') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); if (t > es_floor) es_floor = t; }
-      else if (r.type === 'FF') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); }
-      else if (r.type === 'SF') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); }
+      if (r.type === 'FS') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); if (t > es_floor) es_floor = t; startLinks.push([r, t]); }
+      else if (r.type === 'SS') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); if (t > es_floor) es_floor = t; startLinks.push([r, t]); }
+      else if (r.type === 'FF') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); finishLinks.push([r, t]); }
+      else if (r.type === 'SF') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); finishLinks.push([r, t]); }
     }
     const cd = D(a.constraint_date);
     if (cd) {
@@ -156,8 +157,15 @@ function schedule(p) {
     }
     let es, ef;
     if (a.status === 'in_progress' && a.actual_start) { es = D(a.actual_start); ef = ef_floor !== null ? ef_floor : cal.add_hours(cal.next_working_start(dataDate), rem); }
-    else if (a.type === 'finish_milestone') { const target = ef_floor === null ? es_floor : maxD(es_floor, ef_floor); es = ef = cal.in_shift(target) ? target : cal.prev_working_end(target); }
-    else { es = cal.next_working_start(es_floor); ef = rem > 0 ? cal.add_hours(es, rem) : es; if (ef_floor !== null && ef_floor > ef) { ef = rem > 0 ? ef_floor : cal.prev_working_end(ef_floor); es = rem > 0 ? cal.add_hours(ef, -rem) : ef; } }
+    else if (a.type === 'finish_milestone') { const target = ef_floor === null ? es_floor : maxD(es_floor, ef_floor); es = ef = cal.in_shift(target) ? target : cal.prev_working_end(target); for (const [r, t] of startLinks.concat(finishLinks)) r.driving = t.getTime() === target.getTime(); }
+    else {
+      es = cal.next_working_start(es_floor); ef = rem > 0 ? cal.add_hours(es, rem) : es;
+      const finishRules = ef_floor !== null && ef_floor >= ef, startRules = !(ef_floor !== null && ef_floor > ef);
+      if (ef_floor !== null && ef_floor > ef) { ef = rem > 0 ? ef_floor : cal.prev_working_end(ef_floor); es = rem > 0 ? cal.add_hours(ef, -rem) : ef; }
+      for (const [r, t] of startLinks) r.driving = startRules && t.getTime() === es_floor.getTime();
+      for (const [r, t] of finishLinks) r.driving = finishRules && t.getTime() === ef_floor.getTime();
+    }
+    if (a.status === 'not_started' && cd && (a.constraint === 'must_start_on' || a.constraint === 'must_finish_on')) for (const [r] of startLinks.concat(finishLinks)) r.driving = false;
     if (a.status === 'not_started' && cd) { if (a.constraint === 'must_start_on') { es = cd; ef = rem > 0 ? cal.add_hours(es, rem) : es; } else if (a.constraint === 'must_finish_on') { ef = cd; es = rem > 0 ? cal.add_hours(ef, -rem) : ef; } }
     a.early_start = ISO(es); a.early_finish = ISO(ef);
   }
@@ -197,9 +205,15 @@ function schedule(p) {
     }
     a.free_float_hours = pyRound(ff === null ? a.total_float_hours : Math.max(0, ff), 4);
   }
-  const openTf = p.activities.filter(a => a.status !== 'complete' && a.total_float_hours != null).map(a => a.total_float_hours);
-  const threshold = openTf.length ? Math.max(0, Math.min(...openTf)) : 0;
-  for (const a of p.activities) a.critical = (a.status === 'complete' || a.total_float_hours == null) ? false : a.total_float_hours <= threshold + EPS;
+  // critical = the longest path traced back from the finish through driving links (negative float is reported separately)
+  const openActs = p.activities.filter(a => a.status !== 'complete' && a.early_finish && a.type !== 'level_of_effort');
+  const onPath = new Set();
+  if (openActs.length) {
+    let end = null; for (const a of openActs) { const f = D(a.early_finish); if (!end || f > end) end = f; }
+    const stack = openActs.filter(a => D(a.early_finish) >= end);
+    while (stack.length) { const a = stack.pop(); if (onPath.has(a.id)) continue; onPath.add(a.id); for (const r of preds[a.id]) { const q = m[r.predecessor_id]; if (r.driving && q.status !== 'complete' && q.type !== 'level_of_effort') stack.push(q); } }
+  }
+  for (const a of p.activities) a.critical = (a.status === 'complete' || a.total_float_hours == null) ? false : onPath.has(a.id);
 
   for (const a of p.activities) {
     if (a.type !== 'level_of_effort' || a.status === 'complete') continue;
