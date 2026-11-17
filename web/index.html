@@ -62,6 +62,7 @@
         <div class="tgroup grow" aria-label="View">
           <div class="miniseg" id="modeSeg"><button data-mode="gantt" class="on">Gantt</button><button data-mode="tl">Time–location</button></div>
           <select id="vTl" hidden aria-label="Locations"><option value="WBS">Locations: WBS</option></select>
+          <div class="tracechip" id="traceChip" hidden></div>
           <div class="search"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="vFilter" placeholder="Filter, or Trade=Bricklayers" aria-label="Filter activities"></div>
           <button class="tb only-ic" id="btnZoomOut" title="Zoom out (-)" aria-label="Zoom out"><svg viewBox="0 0 20 20" class="ic"><path d="M5 10h10"/></svg></button>
           <button class="tb only-ic" id="btnZoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 20 20" class="ic"><path d="M10 5v10M5 10h10"/></svg></button>
@@ -112,7 +113,10 @@
   <label class="sw"><span>Float</span><input type="checkbox" id="vFloat" checked><i></i></label>
   <label class="sw"><span>Baseline</span><input type="checkbox" id="vBaseline"><i></i></label>
   <label class="sw"><span>Progress line</span><input type="checkbox" id="vProgress"><i></i></label>
-  <label class="sw"><span>Critical path only</span><input type="checkbox" id="vCritical"><i></i></label>
+  <label class="fld"><span>Bar text</span><select id="vBarText"><option value="name">Name</option><option value="id">ID and name</option><option value="dates">Dates</option><option value="float">Duration and float</option><option value="res">Resources</option><option value="none">None</option></select></label>
+  <div class="pop-sec">Show</div>
+  <label class="fld"><span>Activities</span><select id="vShow"></select></label>
+  <label class="fld"><span>Outline</span><select id="vLevel"><option value="0">All levels</option></select></label>
   <div class="pop-sec">Arrange</div>
   <label class="fld"><span>Colour</span><select id="vColour"><option value="critical">Critical path</option></select></label>
   <label class="fld"><span>Group</span><select id="vGroup"><option value="">WBS</option></select></label>

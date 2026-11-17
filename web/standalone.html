@@ -504,6 +504,22 @@ svg text { font-family: var(--font); font-size: 11.5px; }
   svg.chart { position: absolute; }
 }
 
+/* ---------- logic tracing ---------- */
+.tracechip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px 0 10px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--ink); font-size: 12.5px; white-space: nowrap; max-width: 420px; }
+.tracechip[hidden] { display: none; }
+.tracechip .tc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.tracechip .tc-l { overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.tracechip button { height: 24px; padding: 0 9px; border-radius: 99px; border: 0; background: transparent; color: var(--accent); font-weight: 600; font-size: 12px; }
+.tracechip button.on { background: var(--accent); color: #fff; }
+.tracechip button:hover:not(.on) { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tracechip #tcX { width: 24px; padding: 0; display: grid; place-items: center; color: var(--ink-2); }
+.tracechip #tcX .ic { width: 14px; height: 14px; }
+.linkchip.drv { font-weight: 700; border-color: var(--accent); color: var(--accent); }
+.drv-key { color: var(--accent); }
+.trace-btns { display: flex; gap: 8px; margin: 2px 0 6px; flex-wrap: wrap; }
+.trace-btns .btn { flex: 1; min-width: 0; }
+@media (max-width: 760px) { .tracechip { max-width: 100%; } .tracechip .tc-l { max-width: 46vw; } }
+
 </style>
 
 <div class="app" id="app">
@@ -561,6 +577,7 @@ svg text { font-family: var(--font); font-size: 11.5px; }
         <div class="tgroup grow" aria-label="View">
           <div class="miniseg" id="modeSeg"><button data-mode="gantt" class="on">Gantt</button><button data-mode="tl">Time–location</button></div>
           <select id="vTl" hidden aria-label="Locations"><option value="WBS">Locations: WBS</option></select>
+          <div class="tracechip" id="traceChip" hidden></div>
           <div class="search"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="vFilter" placeholder="Filter, or Trade=Bricklayers" aria-label="Filter activities"></div>
           <button class="tb only-ic" id="btnZoomOut" title="Zoom out (-)" aria-label="Zoom out"><svg viewBox="0 0 20 20" class="ic"><path d="M5 10h10"/></svg></button>
           <button class="tb only-ic" id="btnZoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 20 20" class="ic"><path d="M10 5v10M5 10h10"/></svg></button>
@@ -611,7 +628,10 @@ svg text { font-family: var(--font); font-size: 11.5px; }
   <label class="sw"><span>Float</span><input type="checkbox" id="vFloat" checked><i></i></label>
   <label class="sw"><span>Baseline</span><input type="checkbox" id="vBaseline"><i></i></label>
   <label class="sw"><span>Progress line</span><input type="checkbox" id="vProgress"><i></i></label>
-  <label class="sw"><span>Critical path only</span><input type="checkbox" id="vCritical"><i></i></label>
+  <label class="fld"><span>Bar text</span><select id="vBarText"><option value="name">Name</option><option value="id">ID and name</option><option value="dates">Dates</option><option value="float">Duration and float</option><option value="res">Resources</option><option value="none">None</option></select></label>
+  <div class="pop-sec">Show</div>
+  <label class="fld"><span>Activities</span><select id="vShow"></select></label>
+  <label class="fld"><span>Outline</span><select id="vLevel"><option value="0">All levels</option></select></label>
   <div class="pop-sec">Arrange</div>
   <label class="fld"><span>Colour</span><select id="vColour"><option value="critical">Critical path</option></select></label>
   <label class="fld"><span>Group</span><select id="vGroup"><option value="">WBS</option></select></label>
@@ -781,7 +801,7 @@ function schedule(p) {
   const dataDate = D(p.data_date) || D(p.start), start = D(p.start);
   const preds = {}, succs = {};
   p.activities.forEach(a => { preds[a.id] = []; succs[a.id] = []; });
-  for (const r of p.relationships) { preds[r.successor_id].push(r); succs[r.predecessor_id].push(r); }
+  for (const r of p.relationships) { r.driving = false; preds[r.successor_id].push(r); succs[r.predecessor_id].push(r); }
   const maxD = (a, b) => (a && b) ? (a > b ? a : b) : (a || b);
 
   for (const a of order) {
@@ -789,12 +809,13 @@ function schedule(p) {
     if (a.status === 'complete' && a.actual_start && a.actual_finish) { a.early_start = a.actual_start; a.early_finish = a.actual_finish; continue; }
     let es_floor = cal.next_working_start(maxD(start, dataDate)), ef_floor = null;
     if (a.status === 'in_progress' && a.actual_start) { es_floor = D(a.actual_start); ef_floor = cal.add_hours(cal.next_working_start(dataDate), rem); }
+    const startLinks = [], finishLinks = [];   // [relationship, date it imposes]
     for (const r of preds[a.id]) {
       const pr = m[r.predecessor_id], pcal = calFor(p, pr);
-      if (r.type === 'FS') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); if (t > es_floor) es_floor = t; }
-      else if (r.type === 'SS') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); if (t > es_floor) es_floor = t; }
-      else if (r.type === 'FF') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); }
-      else if (r.type === 'SF') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); }
+      if (r.type === 'FS') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); if (t > es_floor) es_floor = t; startLinks.push([r, t]); }
+      else if (r.type === 'SS') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); if (t > es_floor) es_floor = t; startLinks.push([r, t]); }
+      else if (r.type === 'FF') { const t = pcal.add_hours(D(pr.early_finish), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); finishLinks.push([r, t]); }
+      else if (r.type === 'SF') { const t = pcal.add_hours(D(pr.early_start), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); finishLinks.push([r, t]); }
     }
     const cd = D(a.constraint_date);
     if (cd) {
@@ -803,8 +824,15 @@ function schedule(p) {
     }
     let es, ef;
     if (a.status === 'in_progress' && a.actual_start) { es = D(a.actual_start); ef = ef_floor !== null ? ef_floor : cal.add_hours(cal.next_working_start(dataDate), rem); }
-    else if (a.type === 'finish_milestone') { const target = ef_floor === null ? es_floor : maxD(es_floor, ef_floor); es = ef = cal.in_shift(target) ? target : cal.prev_working_end(target); }
-    else { es = cal.next_working_start(es_floor); ef = rem > 0 ? cal.add_hours(es, rem) : es; if (ef_floor !== null && ef_floor > ef) { ef = rem > 0 ? ef_floor : cal.prev_working_end(ef_floor); es = rem > 0 ? cal.add_hours(ef, -rem) : ef; } }
+    else if (a.type === 'finish_milestone') { const target = ef_floor === null ? es_floor : maxD(es_floor, ef_floor); es = ef = cal.in_shift(target) ? target : cal.prev_working_end(target); for (const [r, t] of startLinks.concat(finishLinks)) r.driving = t.getTime() === target.getTime(); }
+    else {
+      es = cal.next_working_start(es_floor); ef = rem > 0 ? cal.add_hours(es, rem) : es;
+      const finishRules = ef_floor !== null && ef_floor >= ef, startRules = !(ef_floor !== null && ef_floor > ef);
+      if (ef_floor !== null && ef_floor > ef) { ef = rem > 0 ? ef_floor : cal.prev_working_end(ef_floor); es = rem > 0 ? cal.add_hours(ef, -rem) : ef; }
+      for (const [r, t] of startLinks) r.driving = startRules && t.getTime() === es_floor.getTime();
+      for (const [r, t] of finishLinks) r.driving = finishRules && t.getTime() === ef_floor.getTime();
+    }
+    if (a.status === 'not_started' && cd && (a.constraint === 'must_start_on' || a.constraint === 'must_finish_on')) for (const [r] of startLinks.concat(finishLinks)) r.driving = false;
     if (a.status === 'not_started' && cd) { if (a.constraint === 'must_start_on') { es = cd; ef = rem > 0 ? cal.add_hours(es, rem) : es; } else if (a.constraint === 'must_finish_on') { ef = cd; es = rem > 0 ? cal.add_hours(ef, -rem) : ef; } }
     a.early_start = ISO(es); a.early_finish = ISO(ef);
   }
@@ -844,9 +872,15 @@ function schedule(p) {
     }
     a.free_float_hours = pyRound(ff === null ? a.total_float_hours : Math.max(0, ff), 4);
   }
-  const openTf = p.activities.filter(a => a.status !== 'complete' && a.total_float_hours != null).map(a => a.total_float_hours);
-  const threshold = openTf.length ? Math.max(0, Math.min(...openTf)) : 0;
-  for (const a of p.activities) a.critical = (a.status === 'complete' || a.total_float_hours == null) ? false : a.total_float_hours <= threshold + EPS;
+  // critical = the longest path traced back from the finish through driving links (negative float is reported separately)
+  const openActs = p.activities.filter(a => a.status !== 'complete' && a.early_finish && a.type !== 'level_of_effort');
+  const onPath = new Set();
+  if (openActs.length) {
+    let end = null; for (const a of openActs) { const f = D(a.early_finish); if (!end || f > end) end = f; }
+    const stack = openActs.filter(a => D(a.early_finish) >= end);
+    while (stack.length) { const a = stack.pop(); if (onPath.has(a.id)) continue; onPath.add(a.id); for (const r of preds[a.id]) { const q = m[r.predecessor_id]; if (r.driving && q.status !== 'complete' && q.type !== 'level_of_effort') stack.push(q); } }
+  }
+  for (const a of p.activities) a.critical = (a.status === 'complete' || a.total_float_hours == null) ? false : onPath.has(a.id);
 
   for (const a of p.activities) {
     if (a.type !== 'level_of_effort' || a.status === 'complete') continue;
@@ -1683,7 +1717,8 @@ const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 const S = {
   screen: 'projects', pid: null, project: null, report: null, history: { undo: 0, redo: 0 },
   sel: new Set(), active: null, activeCol: 'name', collapsed: new Set(), selLink: null,
-  view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '' },
+  view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '', show: 'all', level: 0, barText: 'name' },
+  trace: null,
   cols: ['id', 'name', 'dur', 'start', 'finish', 'tf', 'preds', 'pct'],
   panel: null, histRes: '', hist: null, costs: null, editing: null, drag: null, rowsCache: [],
   inspector: false, sideTab: 'activity', list: [], details: {}, staged: {}, ringShown: {},
@@ -2000,7 +2035,7 @@ function rows() {
   const p = S.project, out = [], f = S.view.filter.trim().toLowerCase();
   let codeF = null; const m = f.match(/^([a-z ]+)\s*[=:]\s*(.+)$/); if (m) codeF = [m[1].trim(), m[2].trim()];
   const pass = a => {
-    if (S.view.critical && !a.critical) return false;
+    if (!passQuick(a)) return false;
     if (codeF) return Object.entries(a.codes || {}).some(([k, v]) => k.toLowerCase() === codeF[0] && v.toLowerCase().includes(codeF[1]));
     if (f) return a.name.toLowerCase().includes(f) || a.id.toLowerCase().includes(f);
     return true;
@@ -2023,11 +2058,11 @@ function rows() {
   const walk = (parent, depth) => {
     (kids[parent] || []).sort((a, b) => a.seq - b.seq).forEach(w => {
       const acts = collect(w.id).filter(pass);
-      if ((f || S.view.critical) && !acts.length) return;
+      if ((f || S.view.critical || S.view.show !== 'all') && !acts.length) return;
       const s = acts.map(a => a.actual_start || a.early_start).filter(Boolean).sort()[0];
       const fi = acts.map(a => a.actual_finish || a.early_finish).filter(Boolean).sort().slice(-1)[0];
       out.push({ wbs: w, depth, start: s, finish: fi, n: acts.length, crit: acts.some(a => a.critical), pct: acts.length ? acts.reduce((t, a) => t + a.duration_hours * (a.status === 'complete' ? 100 : a.percent_complete), 0) / Math.max(1, acts.reduce((t, a) => t + a.duration_hours, 0)) : 0 });
-      if (S.collapsed.has(w.id)) return;
+      if (S.collapsed.has(w.id) || (S.view.level && depth + 1 >= S.view.level)) return;
       order((byW[w.id] || []).filter(pass)).forEach(a => out.push({ act: a, depth: depth + 1 }));
       walk(w.id, depth + 1);
     });
@@ -2037,6 +2072,116 @@ function rows() {
   return out;
 }
 const rowKey = r => r.act ? r.act.id : r.wbs ? r.wbs.id : 'G:' + r.group;
+
+// ---------- quick filters, outline levels, logic tracing (Asta-style view tools) ----------
+const QUICK = [['all', 'Everything'], ['critical', 'Critical path'], ['near', 'Near-critical (10 days float or less)'], ['lookahead', 'Next 3 weeks'], ['progress', 'In progress'], ['open', 'Not finished'], ['late', 'Behind baseline'], ['milestones', 'Milestones'], ['trace', 'Traced logic']];
+const isOpen = a => a.status !== 'complete';
+function passQuick(a) {
+  const v = S.view.show, p = S.project;
+  if (S.view.critical && !a.critical) return false;
+  if (v === 'critical') return a.critical;
+  if (v === 'near') return isOpen(a) && a.total_float_hours != null && a.total_float_hours <= 10 * hpd(a);
+  if (v === 'progress') return a.status === 'in_progress';
+  if (v === 'open') return isOpen(a);
+  if (v === 'milestones') return a.type === 'start_milestone' || a.type === 'finish_milestone';
+  if (v === 'late') return !!a.baseline_finish && new Date(a.actual_finish || a.early_finish) > new Date(a.baseline_finish);
+  if (v === 'lookahead') { const dd = new Date(p.data_date || p.start), end = new Date(+dd + 21 * DAY); const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; return isOpen(a) && st && new Date(st) <= end && new Date(fi) >= dd; }
+  if (v === 'trace') return !S.trace || S.trace.set.has(a.id);
+  return true;
+}
+// Walk the logic from the given activities. Backward follows only driving links (the chain that
+// actually sets the dates, which is what a planner means by "why is this here"); forward follows
+// every successor ("what does this hold up").
+function traceSet(starts, dir) {
+  const p = S.project, seen = new Set(starts), st = [...starts];
+  while (st.length) {
+    const id = st.pop();
+    p.relationships.forEach(r => {
+      const next = dir === 'back' ? (r.successor_id === id && r.driving ? r.predecessor_id : null) : (r.predecessor_id === id ? r.successor_id : null);
+      if (next && !seen.has(next)) { seen.add(next); st.push(next); }
+    });
+  }
+  return seen;
+}
+function finishDrivers() {
+  const open = S.project.activities.filter(a => isOpen(a) && a.type !== 'level_of_effort' && a.early_finish);
+  const last = open.reduce((m, a) => a.early_finish > m ? a.early_finish : m, '');
+  return open.filter(a => a.early_finish === last).map(a => a.id);
+}
+function setTrace(ids, dir, label) {
+  if (!S.project || !ids.length) return;
+  S.trace = { ids, dir, set: traceSet(ids, dir), label: label || (dir === 'back' ? `Driving path to ${ids[0]}` : `Everything ${ids[0]} holds up`) };
+  if (S.screen !== 'plan') go('plan'); else render();
+  toast(`${S.trace.label}: ${S.trace.set.size} activities`);
+}
+function clearTrace() { if (!S.trace) return; S.trace = null; if (S.view.show === 'trace') S.view.show = 'all'; render(); }
+function paintTraceChip() {
+  const el = $('#traceChip'); if (!el) return;
+  el.hidden = !S.trace; if (!S.trace) return;
+  el.innerHTML = `<span class="tc-dot"></span><span class="tc-l">${esc(S.trace.label)} · ${S.trace.set.size}</span><button type="button" id="tcOnly" class="${S.view.show === 'trace' ? 'on' : ''}" title="Hide everything else">Only these</button><button type="button" id="tcX" aria-label="Stop tracing" title="Stop tracing (Esc)"><svg viewBox="0 0 20 20" class="ic"><path d="M6 6l8 8M14 6l-8 8"/></svg></button>`;
+  el.querySelector('#tcOnly').onclick = () => { S.view.show = S.view.show === 'trace' ? 'all' : 'trace'; render(); };
+  el.querySelector('#tcX').onclick = clearTrace;
+}
+function syncViewControls() {
+  ['links', 'float', 'baseline', 'progress'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); if (el) el.checked = !!S.view[k]; });
+  if (S.view.critical) { S.view.show = 'critical'; S.view.critical = false; }   // views saved before quick filters
+  const vs = $('#vShow'); if (vs) { vs.innerHTML = QUICK.filter(([k]) => k !== 'trace' || S.trace).map(([k, l]) => `<option value="${k}">${l}</option>`).join(''); vs.value = S.view.show; if (vs.value !== S.view.show) { S.view.show = 'all'; vs.value = 'all'; } }
+  const depth = w => { let d = 0, x = w; while (x && x.parent_id && wbsById(x.parent_id) && d < 20) { d++; x = wbsById(x.parent_id); } return d; };
+  const maxD = Math.max(0, ...S.project.wbs.map(depth)) + 1;
+  const vl = $('#vLevel'); if (vl) { vl.innerHTML = '<option value="0">All levels</option>' + Array.from({ length: Math.min(maxD, 6) }, (_, i) => `<option value="${i + 1}">Summaries to level ${i + 1}</option>`).join(''); vl.value = String(S.view.level || 0); }
+  const vb = $('#vBarText'); if (vb) vb.value = S.view.barText || 'name';
+  $('#vSort').value = S.view.sort; if (document.activeElement !== $('#vFilter')) $('#vFilter').value = S.view.filter;
+}
+function barLabel(a) {
+  const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish, ms = a.type !== 'task' || a.duration_hours === 0;
+  switch (S.view.barText) {
+    case 'none': return '';
+    case 'id': return `${a.id}  ${a.name}`;
+    case 'dates': return ms ? fmtD(a.type === 'finish_milestone' ? fi : st) : `${fmtD(st)} – ${fmtD(fi)}`;
+    case 'float': return ms ? `TF ${fmt1(daysOf(a, a.total_float_hours || 0))}d` : `${fmt1(daysOf(a, a.duration_hours))}d · TF ${fmt1(daysOf(a, a.total_float_hours || 0))}d`;
+    case 'res': return ALL_COLS.res.get(a);
+    default: return a.name;
+  }
+}
+function goToActivity(id) {
+  const a = byId(id); if (!a) return toast(`No activity ${id}`);
+  if (S.screen !== 'plan') go('plan');
+  const visible = () => S.rowsCache.findIndex(r => r.act && r.act.id === id);
+  if (visible() < 0) {
+    // reveal it: open its summaries and drop any filter hiding it
+    let w = a.wbs_id && wbsById(a.wbs_id); while (w) { S.collapsed.delete(w.id); w = w.parent_id && wbsById(w.parent_id); }
+    if (S.view.group) S.collapsed.delete('G:' + ((a.codes || {})[S.view.group] || '(none)'));
+    S.view.level = 0; render();
+    if (visible() < 0) { S.view.filter = ''; S.view.show = 'all'; S.view.critical = false; render(); }
+  }
+  S.sel = new Set([id]); S.active = id; paintSelection();
+  const i = visible(); if (i >= 0) scrollToRow(i);
+  const st = a.actual_start || a.early_start; if (st && S.x) { const sheet = $('#sheet'); sheet.scrollTo({ left: Math.max(0, S.x(st) - 240), behavior: REDUCED.matches ? 'auto' : 'smooth' }); }
+  openInspector(id);
+}
+// ---------- CSV export (opens in Excel with real dates and numbers) ----------
+const CSV_DATE = { start: a => a.actual_start || a.early_start, finish: a => a.actual_finish || a.early_finish, astart: a => a.actual_start, afinish: a => a.actual_finish, bstart: a => a.baseline_start, bfinish: a => a.baseline_finish, ls: a => a.late_start, lf: a => a.late_finish };
+const CSV_NUM = { dur: a => a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) : 0, tf: a => a.total_float_hours == null ? '' : fmt1(daysOf(a, a.total_float_hours)), ff: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)), pct: a => a.status === 'complete' ? 100 : Math.round(a.percent_complete), delay: a => fmt1(daysOf(a, a.level_delay_hours || 0)) };
+function csvText() {
+  // numbers pass through; text that a spreadsheet would run as a formula is neutralised
+  const q = v => { if (typeof v === 'number') return String(v); v = v == null ? '' : String(v); const f = /^[=+\-@\t\r]/.test(v); return f || /[",\n\r]/.test(v) ? '"' + (f ? "'" : '') + v.replace(/"/g, '""') + '"' : v; };
+  const head = ['Level', ...S.cols.map(k => ALL_COLS[k].t + (CSV_NUM[k] && k !== 'pct' ? ' (days)' : '')), 'Critical'];
+  const lines = [head.map(q).join(',')];
+  S.rowsCache.forEach(r => {
+    if (r.act) { const a = r.act; lines.push([r.depth, ...S.cols.map(k => CSV_DATE[k] ? (CSV_DATE[k](a) || '').slice(0, 10) : CSV_NUM[k] ? CSV_NUM[k](a) : ALL_COLS[k].get(a)), a.critical ? 'Yes' : ''].map(q).join(',')); }
+    else lines.push([r.depth, ...S.cols.map(k => k === 'id' ? (r.wbs ? r.wbs.code || '' : '') : k === 'name' ? (r.wbs ? r.wbs.name : r.group) : k === 'start' ? (r.start || '').slice(0, 10) : k === 'finish' ? (r.finish || '').slice(0, 10) : k === 'pct' && r.pct != null ? Math.round(r.pct) : ''), r.crit ? 'Yes' : ''].map(q).join(','));
+  });
+  return '﻿' + lines.join('\r\n') + '\r\n';
+}
+async function saveBlob(filename, blob) {
+  let dl = null; try { if (window.claude && window.claude.use) dl = await window.claude.use('downloads'); } catch { dl = null; }
+  if (dl) { try { await dl.save({ filename, data: blob }); return true; } catch (e) { if (e && e.code === 'declined') return false; } }
+  const url = URL.createObjectURL(blob); const el = document.createElement('a'); el.href = url; el.download = filename; document.body.appendChild(el); el.click(); setTimeout(() => { el.remove(); URL.revokeObjectURL(url); }, 100); return true;
+}
+async function exportCsv() {
+  if (!S.project) return; if (!S.rowsCache.length) render();
+  if (await saveBlob(`${S.project.id}-programme.csv`, new Blob([csvText()], { type: 'text/csv;charset=utf-8' }))) toast(`CSV saved: ${S.rowsCache.filter(r => r.act).length} activities, as shown`);
+}
 
 // ---------- render ----------
 function gridWidth() { return S.cols.reduce((t, k) => t + ALL_COLS[k].w, 0) + 1; }
@@ -2149,17 +2294,19 @@ function chart(rs, t0, t1, W, H, bandH) {
   const yOf = {}; rs.forEach((r, i) => { if (r.act) yOf[r.act.id] = i * RH; });
   const ids = Object.fromEntries(p.activities.map(a => [a.id, a]));
   const mid = RH / 2;
+  const T = S.trace && S.trace.set, inTrace = id => !T || T.has(id);
   if (S.view.links) p.relationships.forEach(r => {
     const a = ids[r.predecessor_id], b = ids[r.successor_id]; if (!a || !b || yOf[a.id] == null || yOf[b.id] == null) return;
     const ax = x(r.type[0] === 'S' ? (a.actual_start || a.early_start) : (a.actual_finish || a.early_finish));
     const bx = x(r.type[1] === 'S' ? (b.actual_start || b.early_start) : (b.actual_finish || b.early_finish));
     const ay = yOf[a.id] + mid, by = yOf[b.id] + mid, crit = a.critical && b.critical;
     const selL = S.selLink && S.selLink.p === a.id && S.selLink.s === b.id;
-    const col = selL ? 'var(--accent)' : crit ? 'var(--crit)' : 'var(--ink-3)';
+    const traced = T && T.has(a.id) && T.has(b.id) && (S.trace.dir !== 'back' || r.driving);
+    const col = selL || traced ? 'var(--accent)' : crit ? 'var(--crit)' : 'var(--ink-3)';
     const dn = by >= ay ? 1 : -1;
     const pts = r.type === 'FS' && bx < ax + 12 ? `${ax},${ay} ${ax + 6},${ay} ${ax + 6},${ay + dn * mid} ${bx - 8},${ay + dn * mid} ${bx - 8},${by} ${bx},${by}` : r.type === 'FS' ? `${ax},${ay} ${ax + 6},${ay} ${ax + 6},${by} ${bx},${by}` : `${ax},${ay} ${ax - 6},${ay} ${ax - 6},${by} ${bx},${by}`;
-    s += `<polyline class="hit link ${selL ? 'sel' : ''}" data-p="${a.id}" data-s="${b.id}" points="${pts}" fill="none" stroke="${col}" stroke-width="${selL ? 2.4 : 1.15}" stroke-linejoin="round" opacity="${crit || selL ? .9 : .6}" style="cursor:pointer"/>`;
-    s += `<polygon points="${bx},${by} ${bx - 5.5},${by - 3.2} ${bx - 5.5},${by + 3.2}" fill="${col}"/>`;
+    s += `<polyline class="hit link ${selL ? 'sel' : ''}" data-p="${a.id}" data-s="${b.id}" points="${pts}" fill="none" stroke="${col}" stroke-width="${selL ? 2.4 : traced ? 2 : 1.15}" stroke-linejoin="round" opacity="${T ? (traced ? 1 : .12) : crit || selL ? .9 : .6}" style="cursor:pointer"/>`;
+    s += `<polygon points="${bx},${by} ${bx - 5.5},${by - 3.2} ${bx - 5.5},${by + 3.2}" fill="${col}" opacity="${T && !traced ? .12 : 1}"/>`;
   });
   const progressPts = [];
   rs.forEach((r, i) => {
@@ -2173,13 +2320,15 @@ function chart(rs, t0, t1, W, H, bandH) {
       return;
     }
     const a = r.act, st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (!st) return;
+    const dim = !inTrace(a.id); if (dim) s += '<g opacity=".2">';
+    const lbl = barLabel(a);
     const pct = a.status === 'complete' ? 100 : a.percent_complete;
     const fill = colourOf(a) || (S.view.colour === 'critical' && a.critical ? 'var(--crit)' : 'var(--bar)');
     if (S.view.baseline && a.baseline_start && a.baseline_finish) s += `<rect x="${x(a.baseline_start)}" y="${y + 23}" width="${Math.max(2, x(a.baseline_finish) - x(a.baseline_start))}" height="3.5" rx="1.75" fill="var(--baseline)"/>`;
     if (a.type !== 'task' || a.duration_hours === 0) {
       const cx = x(a.type === 'finish_milestone' ? fi : st), cy = y + mid;
       s += `<polygon class="hit bar" data-id="${a.id}" points="${cx},${cy - 7.5} ${cx + 7.5},${cy} ${cx},${cy + 7.5} ${cx - 7.5},${cy}" fill="${a.status === 'complete' ? 'var(--progress)' : (colourOf(a) || (a.critical ? 'var(--crit)' : 'var(--ms)'))}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
-      s += `<text x="${cx + 11}" y="${cy + 4}" fill="var(--ink-2)" font-weight="600">${esc(a.name)}</text>`;
+      if (lbl) s += `<text x="${cx + 11}" y="${cy + 4}" fill="var(--ink-2)" font-weight="600">${esc(lbl)}</text>`;
       if (S.view.progress) progressPts.push([a.status === 'complete' ? x(dd) : Math.min(cx, x(dd)), cy]);
     } else {
       const bx = x(st), bw = Math.max(3, x(fi) - bx), h = 14, by = y + (RH - h) / 2, rr = Math.min(2, bw / 2);
@@ -2190,9 +2339,10 @@ function chart(rs, t0, t1, W, H, bandH) {
       if (a.constraint && a.constraint !== 'none' && a.constraint_date) { const cx = x(a.constraint_date); s += a.constraint.includes('start') ? `<polygon points="${cx},${by - 1} ${cx - 4},${by - 6} ${cx + 4},${by - 6}" fill="var(--warn)"/>` : `<polygon points="${cx},${by + h + 1} ${cx - 4},${by + h + 6} ${cx + 4},${by + h + 6}" fill="var(--warn)"/>`; }
       s += `<rect class="hit handle" data-id="${a.id}" x="${bx + bw - 6}" y="${by}" width="8" height="${h}" fill="transparent"/>`;
       s += `<circle class="hit linkdot" data-id="${a.id}" cx="${bx + bw + 7}" cy="${y + mid}" r="4.5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6" opacity="${S.sel.has(a.id) ? 1 : 0}"/>`;
-      s += `<text x="${bx + bw + 14}" y="${y + mid + 4}" fill="var(--ink-2)">${esc(a.name)}</text>`;
+      if (lbl) s += `<text x="${bx + bw + 14}" y="${y + mid + 4}" fill="var(--ink-2)">${esc(lbl)}</text>`;
       if (S.view.progress) { const exp = a.status === 'complete' ? x(dd) : a.status === 'in_progress' ? bx + bw * pct / 100 : Math.min(bx, x(dd)); progressPts.push([exp, y + mid]); }
     }
+    if (dim) s += '</g>';
   });
   if (S.view.progress && progressPts.length) {
     let d = `M${x(dd)},0`; progressPts.forEach(([px_, py]) => { d += ` L${px_},${py}`; }); d += ` L${x(dd)},${H - bandH}`;
@@ -2208,7 +2358,7 @@ function renderTimeLocation(gw, W, t0, t1) {
   else { locOf = a => (a.codes || {})[src] || null; const first = {}; p.activities.forEach(a => { const l = locOf(a), st = a.actual_start || a.early_start; if (l && st && (!first[l] || st < first[l])) first[l] = st; }); locs = Object.keys(p.code_types[src] || {}).filter(l => first[l]).sort((a, b) => first[a].localeCompare(first[b])); }
   const yOf = Object.fromEntries(locs.map((l, i) => [l, i * LH]));
   const H = Math.max(1, locs.length) * LH;
-  const acts = p.activities.filter(a => locOf(a) != null && (a.actual_start || a.early_start) && !(S.view.critical && !a.critical));
+  const acts = p.activities.filter(a => locOf(a) != null && (a.actual_start || a.early_start) && passQuick(a));
   let sv = '';
   const cal = p.calendars[p.default_calendar_id];
   if (S.view.pxDay >= 6 && cal) for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) if (!isWorking(cal, d)) sv += `<rect x="${x(d)}" y="0" width="${S.view.pxDay}" height="${H}" fill="var(--grid)" opacity=".55"/>`;
@@ -2274,6 +2424,7 @@ function renderToolbarState() {
   vt.value = [...vt.options].some(o => o.value === S.view.tlSource) ? S.view.tlSource : 'WBS'; S.view.tlSource = vt.value; vt.hidden = S.view.mode !== 'tl';
   $$('#modeSeg [data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === S.view.mode));
   $('#btnInspector').classList.toggle('on', S.inspector);
+  syncViewControls(); paintTraceChip();
 }
 
 // ---------- inspector: a side panel for the selected activity ----------
@@ -2307,7 +2458,7 @@ function renderActivityPanel() {
   const crit = a.critical ? '<span class="chip bad">Critical</span>' : (tf != null ? `<span class="chip plain">${tf}d float</span>` : '');
   const preds = p.relationships.filter(r => r.successor_id === a.id), succs = p.relationships.filter(r => r.predecessor_id === a.id);
   const lag = r => r.lag_hours ? ` ${r.lag_hours > 0 ? '+' : ''}${fmt1(daysOf(byId(r.predecessor_id) || a, r.lag_hours))}d` : '';
-  const chipFor = (id, extra) => `<button type="button" class="linkchip" data-goto="${esc(id)}" title="${esc((byId(id) || {}).name || '')}">${esc(id)}${esc(extra)}</button>`;
+  const chipFor = (id, extra, drv) => `<button type="button" class="linkchip ${drv ? 'drv' : ''}" data-goto="${esc(id)}" title="${esc((byId(id) || {}).name || '')}${drv ? ' (driving: sets this start)' : ''}">${esc(id)}${esc(extra)}</button>`;
   const cals = Object.values(p.calendars).map(c => `<option value="${esc(c.id)}" ${(a.calendar_id || p.default_calendar_id) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
   const cons = CONSTRAINTS.map(([v, l]) => `<option value="${v}" ${a.constraint === v ? 'selected' : ''}>${l}</option>`).join('');
   const codes = Object.keys(p.code_types).map(t => `<label>${esc(t)}<select data-code="${esc(t)}" id="iCode_${esc(t).replace(/\W+/g, '_')}"><option value="">None</option>${Object.keys(p.code_types[t]).map(v => `<option ${(a.codes || {})[t] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`).join('');
@@ -2330,8 +2481,9 @@ function renderActivityPanel() {
       <label>Complete <b id="iPctV" style="color:var(--ink)">${pct}%</b><input type="range" id="iPct" min="0" max="100" step="5" value="${pct}" aria-label="Percent complete"></label>
       <div class="row2"><label>Actual start<input type="date" id="iAS" value="${(a.actual_start || '').slice(0, 10)}"></label><label>Actual finish<input type="date" id="iAF" value="${(a.actual_finish || '').slice(0, 10)}"></label></div>
       <div class="insp-sec">Logic</div>
-      <div class="hint" style="font-size:12px">Waits for</div>
-      <div class="links-list">${preds.map(r => chipFor(r.predecessor_id, (r.type === 'FS' ? '' : ' ' + r.type) + lag(r))).join('') || '<span class="hint" style="font-size:12.5px">Nothing. It can start on day one.</span>'}</div>
+      <div class="bar-row trace-btns"><button type="button" class="btn" id="iTraceBack">Trace driving path</button><button type="button" class="btn" id="iTraceFwd">What it holds up</button></div>
+      <div class="hint" style="font-size:12px">Waits for${preds.some(r => r.driving) ? ' · <b class="drv-key">bold</b> sets its start' : ''}</div>
+      <div class="links-list">${preds.map(r => chipFor(r.predecessor_id, (r.type === 'FS' ? '' : ' ' + r.type) + lag(r), r.driving)).join('') || '<span class="hint" style="font-size:12.5px">Nothing. It can start on day one.</span>'}</div>
       <label>Predecessors<input id="iPreds" value="${esc(predsText(a))}" placeholder="A1010, A1020SS+2"></label>
       <div class="hint" style="font-size:12px">Holds up</div>
       <div class="links-list">${succs.map(r => chipFor(r.successor_id, r.type === 'FS' ? '' : ' ' + r.type)).join('') || '<span class="hint" style="font-size:12.5px">Nothing waits for it.</span>'}</div>
@@ -2344,6 +2496,7 @@ function renderActivityPanel() {
   const q = s => el.querySelector(s);
   wireSteppers(el);
   el.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { const id = b.dataset.goto; S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(r => rowKey(r) === id); if (i >= 0) scrollToRow(i); renderInspector(); });
+  q('#iTraceBack').onclick = () => setTrace([a.id], 'back'); q('#iTraceFwd').onclick = () => setTrace([a.id], 'fwd');
   q('#iName').onchange = e => { const v = e.target.value.trim(); if (v) mutate(() => { a.name = v; }, null); };
   if (q('#iDur')) q('#iDur').onchange = e => mutate(() => { a.duration_hours = Math.max(0, +e.target.value || 0) * hpd(a); if (a.status === 'in_progress') a.remaining_hours = a.duration_hours * (1 - a.percent_complete / 100); }, `${a.id} is now ${fmt1(+e.target.value || 0)} days`);
   q('#iCal').onchange = e => mutate(() => { const old = hpd(a); a.calendar_id = e.target.value; a.duration_hours = a.duration_hours / old * hpd(a); }, `${a.id} calendar changed`);
@@ -2571,6 +2724,8 @@ function contextMenu(x, y) {
     ['Indent', () => indent(1)], ['Outdent', () => indent(-1)], ['Move up', () => moveRow(-1)], ['Move down', () => moveRow(1)], null,
     ['Link selected (FS)', linkSelected], ['Unlink selected', unlinkSelected], null,
     one ? ['Inspect…', () => openInspector(one.id)] : null,
+    one ? ['Trace driving path', () => setTrace([one.id], 'back')] : null,
+    one ? ['Trace what it holds up', () => setTrace([one.id], 'fwd')] : null,
     acts.length ? ['Progress…', progressDialog] : null,
     acts.length ? ['Constraint…', constraintDialog] : null,
     one && one.constraint !== 'none' ? ['Clear constraint', () => mutate(p => { one.constraint = 'none'; one.constraint_date = null; }, 'Constraint cleared')] : null,
@@ -2665,7 +2820,7 @@ function viewsDialog() {
   modal('Views', `<p class="hint">A view remembers columns, widths, zoom, chart type, toggles, colour, group, sort, filter and panel.</p><table>${Object.keys(views).map(n => `<tr><td>${esc(n)}</td><td><button type="button" data-apply="${esc(n)}">Apply</button> <button type="button" data-del="${esc(n)}">×</button></td></tr>`).join('') || '<tr><td class="hint" colspan="2">No saved views yet</td></tr>'}</table><p><input name="vn" placeholder="Name for the current view"> <button type="button" id="vSave">Save current</button></p>`, null);
   const m = $('#modal');
   const wire = () => {
-    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => { const v = load()[b.dataset.apply]; if (!v) return; S.cols = v.cols; Object.entries(v.widths || {}).forEach(([k, w]) => { if (ALL_COLS[k]) ALL_COLS[k].w = w; }); Object.assign(S.view, v.view); S.panel = v.panel; ['links', 'float', 'baseline', 'progress', 'critical'].forEach(k => { $('#v' + k[0].toUpperCase() + k.slice(1)).checked = !!S.view[k]; }); $('#vSort').value = S.view.sort; $('#vFilter').value = S.view.filter; $('#mCancel').click(); render(); refreshPanel(); });
+    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => { const v = load()[b.dataset.apply]; if (!v) return; S.cols = v.cols; Object.entries(v.widths || {}).forEach(([k, w]) => { if (ALL_COLS[k]) ALL_COLS[k].w = w; }); Object.assign(S.view, v.view); S.panel = v.panel; $('#mCancel').click(); render(); refreshPanel(); });
     m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const v = load(); delete v[b.dataset.del]; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); });
     m.querySelector('#vSave').onclick = () => { const n = m.querySelector('[name=vn]').value.trim(); if (!n) return; const v = load(); v[n] = { cols: S.cols, widths: Object.fromEntries(S.cols.map(k => [k, ALL_COLS[k].w])), view: { ...S.view }, panel: S.panel }; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); toast('View saved'); };
   };
@@ -2714,7 +2869,7 @@ function onKey(e) {
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'l') { e.preventDefault(); linkSelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'u') { e.preventDefault(); unlinkSelected(); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'c') { e.preventDefault(); copySelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'v') { e.preventDefault(); pasteClip(); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'a') { e.preventDefault(); S.sel = new Set(S.rowsCache.map(rowKey)); paintSelection(); }
-  else if (k === 'Escape') { S.sel = new Set(); S.selLink = null; paintSelection(); }
+  else if (k === 'Escape') { S.sel = new Set(); S.selLink = null; paintSelection(); clearTrace(); }
   else if (k === '+' || k === '=') zoom(1.25); else if (k === '-') zoom(0.8);
   else if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && S.active && byId(S.active) && ALL_COLS[S.activeCol].set) { startEdit(S.active, S.activeCol); const inp = S.editing && S.editing.inp; if (inp && inp.type !== 'date' && inp.tagName === 'INPUT') { inp.value = k; e.preventDefault(); } }
 }
@@ -3123,6 +3278,13 @@ function palActions() {
     S.project && ['Plan', 'Go to', () => go('plan')],
     S.project && ['Monitor', 'Go to', () => go('monitor')],
     S.project && ['Share and export', 'File', shareSheet],
+    S.project && ['Export to Excel (CSV)', 'File', exportCsv],
+    S.project && ['Show the longest path to completion', 'Trace', () => setTrace(finishDrivers(), 'back', 'Longest path to completion')],
+    S.project && S.trace && ['Stop tracing', 'Trace', clearTrace],
+    S.project && ['Show the next 3 weeks', 'Filter', () => { S.view.show = 'lookahead'; go('plan'); }],
+    S.project && ['Show near-critical work', 'Filter', () => { S.view.show = 'near'; go('plan'); }],
+    S.project && ['Show milestones only', 'Filter', () => { S.view.show = 'milestones'; go('plan'); }],
+    S.project && S.view.show !== 'all' && ['Show everything', 'Filter', () => { S.view.show = 'all'; S.view.filter = ''; go('plan'); }],
     S.project && ['Auto-repair failing checks', 'Fix', () => act('/repair')],
     S.project && ['Set a baseline', 'Plan', () => $('#btnBaseline').click()],
     S.project && ['Level to crew limits', 'Plan', () => act('/level')],
@@ -3143,8 +3305,11 @@ function openPalette() {
 function closePalette() { const back = $('#palBack'), f = $('#cmdForm'); if (back.hidden) return; back.style.backgroundColor = 'transparent'; animate(f, { y: -8, scale: .98, opacity: 0 }, { response: .24, done: () => { back.hidden = true; back.style.backgroundColor = ''; springs.delete(f); } }); }
 function palItems() {
   const t = $('#cmdIn').value.trim(), tl = t.toLowerCase(); const items = [];
-  if (t && S.project) items.push({ sec: 'Command', label: `Run “${t}”`, k: 'Enter', run: () => runCommand(t) });
+  // matching actions first, so a word like "longest" runs the action; anything else runs as a command
   palActions().filter(([l]) => !tl || l.toLowerCase().includes(tl)).forEach(([l, k, fn]) => items.push({ sec: 'Actions', label: l, k, run: () => { closePalette(); fn(); } }));
+  if (t && S.project) items.push({ sec: 'Command', label: `Run “${t}”`, k: items.length ? '' : 'Enter', run: () => runCommand(t) });
+  if (S.project && tl.length >= 2) S.project.activities.filter(a => a.id.toLowerCase().includes(tl) || a.name.toLowerCase().includes(tl)).slice(0, 7)
+    .forEach(a => items.push({ sec: 'Go to activity', label: `${a.id}  ${a.name}`, k: fmtD(a.actual_start || a.early_start), run: () => { closePalette(); goToActivity(a.id); } }));
   if (S.project) PAL_EXAMPLES.filter(e => !tl || e.includes(tl)).slice(0, t ? 4 : 9).forEach(e => items.push({ sec: 'Try a command', label: e, k: '', fill: e }));
   return items;
 }
@@ -3176,11 +3341,11 @@ function summaryText() {
 function shareSheet() {
   if (!S.project) return;
   const file = '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/>';
-  const tiles = [['bundle', 'All three formats', 'One .zip for P6, Asta and MS Project', '<path d="M5 9h18v14H5z"/><path d="M5 9l3-5h12l3 5M12 13h4"/>'], ['xer', 'Primavera P6', '.xer file. Asta imports it too', file], ['xml', 'MS Project and Asta', 'MS Project XML (MSPDI)', file], ['json', 'Planner file', '.json to open here again', file]];
+  const tiles = [['bundle', 'All three formats', 'One .zip for P6, Asta and MS Project', '<path d="M5 9h18v14H5z"/><path d="M5 9l3-5h12l3 5M12 13h4"/>'], ['xer', 'Primavera P6', '.xer file. Asta imports it too', file], ['xml', 'MS Project and Asta', 'MS Project XML (MSPDI)', file], ['json', 'Planner file', '.json to open here again', file], ['csv', 'Excel', '.csv of the activities as shown', '<path d="M5 4h18v20H5z"/><path d="M5 10h18M5 16h18M11 4v20"/>']];
   const { m } = modal('Share and export', `<p class="hint" style="margin-top:-4px">Send the programme to the tools your client and contractors use.</p><div class="exports">${tiles.map(([f, t, s, ic], i) => `<button type="button" class="tile ${i === 0 ? 'on' : ''}" data-x="${f}"><svg viewBox="0 0 28 28" aria-hidden="true">${ic}</svg><b>${t}</b><span>${s}</span></button>`).join('')}</div>
     <h3>Status note</h3><p class="hint" style="margin:0 0 8px">A short update to paste into an email or message.</p><textarea id="shareText" rows="7" style="width:100%" readonly>${esc(summaryText())}</textarea>
     <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="shareCopy">Copy status note</button>${LOCAL ? '' : '<button type="button" class="btn" id="sharePrint">Print the programme</button>'}</div>`, null, '', { wide: true });
-  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => exportAs(b.dataset.x));
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => b.dataset.x === 'csv' ? exportCsv() : exportAs(b.dataset.x));
   m.querySelector('#shareCopy').onclick = async () => { const ta = m.querySelector('#shareText'); try { await navigator.clipboard.writeText(ta.value); toast('Status note copied'); } catch { ta.focus(); ta.select(); toast('Selected. Press Ctrl+C or ⌘C to copy.'); } };
   const pr = m.querySelector('#sharePrint'); if (pr) pr.onclick = () => { modalClose(); go('plan'); setTimeout(() => window.print(), 300); };
 }
@@ -3228,9 +3393,12 @@ function wireToolbar() {
   $('#btnView').onclick = e => openPop($('#popView'), e.currentTarget, 'right');
   $('#btnMore').onclick = e => openPop($('#popMore'), e.currentTarget);
   $$('#popMore button').forEach(b => b.addEventListener('click', () => closePop($('#popMore'))));
-  ['links', 'float', 'baseline', 'progress', 'critical'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); el.onchange = () => { S.view[k] = el.checked; render(); }; });
+  ['links', 'float', 'baseline', 'progress'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); el.onchange = () => { S.view[k] = el.checked; render(); }; });
   $('#vColour').onchange = e => { S.view.colour = e.target.value; render(); }; $('#vGroup').onchange = e => { S.view.group = e.target.value; render(); }; $('#vSort').onchange = e => { S.view.sort = e.target.value; render(); };
   $('#vFilter').oninput = e => { S.view.filter = e.target.value; render(); };
+  $('#vShow').onchange = e => { S.view.show = e.target.value; render(); };
+  $('#vLevel').onchange = e => { S.view.level = +e.target.value; render(); };
+  $('#vBarText').onchange = e => { S.view.barText = e.target.value; render(); };
   $('#btnColumns').onclick = () => { closePops(); columnsDialog(); }; $('#btnViews').onclick = () => { closePops(); viewsDialog(); };
   $$('#modeSeg [data-mode]').forEach(b => b.onclick = () => { S.view.mode = b.dataset.mode; render(); });
   $('#vTl').onchange = e => { S.view.tlSource = e.target.value; render(); };
@@ -3262,7 +3430,11 @@ function wireToolbar() {
   document.addEventListener('keydown', e => {
     const typing = e.target.matches('input,textarea,select');
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if ($('#palBack').hidden) openPalette(); else closePalette(); return; }
-    if (e.key === 'Escape') { closePops(); if (!$('#palBack').hidden) closePalette(); }
+    if (e.key === 'Escape') {
+      const layered = !$('#palBack').hidden || !$('#modalBack').hidden || $$('.pop').some(p => p._open);
+      closePops(); if (!$('#palBack').hidden) closePalette();
+      if (!layered && !typing && !S.editing && S.trace) clearTrace();   // Esc peels one layer at a time
+    }
     if (typing || S.editing) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && S.project) { e.preventDefault(); act(e.shiftKey ? '/redo' : '/undo'); }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y' && S.project) { e.preventDefault(); act('/redo'); }
