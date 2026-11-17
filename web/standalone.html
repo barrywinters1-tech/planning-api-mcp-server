@@ -30,14 +30,15 @@
   --warn: #e07b00;
   --warn-soft: rgba(224, 123, 0, .14);
   --dd: #8a4fe0;            /* data date */
-  --bar: #6e86b8;
+  --bar: #4a78c8;            /* Asta-style activity blue */
+  --done-ink: #0b1a33;       /* darkens the completed part of a bar */
   --bar-2: #9fb1d6;
   --summary: #2c3240;
   --baseline: #b5bccb;
   --progress: #1f9d55;
   --hist: #6e95e6;
   --over: #e5383b;
-  --weekend: rgba(60, 64, 80, .045);
+  --weekend: rgba(60, 64, 80, .07);
   --glass: rgba(255, 255, 255, .72);
   --glass-edge: rgba(255, 255, 255, .7);
   --scrim: rgba(18, 20, 28, .28);
@@ -60,8 +61,8 @@
     --accent: #3d8bff; --accent-soft: rgba(61, 139, 255, .18); --sel: rgba(61, 139, 255, .22);
     --crit: #ff5a5d; --crit-soft: rgba(255, 90, 93, .16); --ok: #36c477; --ok-soft: rgba(54, 196, 119, .16);
     --warn: #ffa53a; --warn-soft: rgba(255, 165, 58, .16); --dd: #b78bff;
-    --bar: #7f97c9; --bar-2: #4c5d82; --summary: #d4d9e4; --baseline: #59606f; --progress: #36c477; --hist: #6f99f0; --over: #ff5a5d;
-    --weekend: rgba(255, 255, 255, .025); --glass: rgba(24, 27, 34, .72); --glass-edge: rgba(255, 255, 255, .08); --scrim: rgba(0, 0, 0, .5);
+    --bar: #6f97e0; --done-ink: #000; --bar-2: #4c5d82; --summary: #d4d9e4; --baseline: #59606f; --progress: #36c477; --hist: #6f99f0; --over: #ff5a5d;
+    --weekend: rgba(255, 255, 255, .04); --glass: rgba(24, 27, 34, .72); --glass-edge: rgba(255, 255, 255, .08); --scrim: rgba(0, 0, 0, .5);
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .4); --shadow-2: 0 12px 34px rgba(0, 0, 0, .45); --shadow-3: 0 30px 90px rgba(0, 0, 0, .6);
     color-scheme: dark;
   }
@@ -73,8 +74,8 @@
   --accent: #3d8bff; --accent-soft: rgba(61, 139, 255, .18); --sel: rgba(61, 139, 255, .22);
   --crit: #ff5a5d; --crit-soft: rgba(255, 90, 93, .16); --ok: #36c477; --ok-soft: rgba(54, 196, 119, .16);
   --warn: #ffa53a; --warn-soft: rgba(255, 165, 58, .16); --dd: #b78bff;
-  --bar: #7f97c9; --bar-2: #4c5d82; --summary: #d4d9e4; --baseline: #59606f; --progress: #36c477; --hist: #6f99f0; --over: #ff5a5d;
-  --weekend: rgba(255, 255, 255, .025); --glass: rgba(24, 27, 34, .72); --glass-edge: rgba(255, 255, 255, .08); --scrim: rgba(0, 0, 0, .5);
+  --bar: #6f97e0; --done-ink: #000; --bar-2: #4c5d82; --summary: #d4d9e4; --baseline: #59606f; --progress: #36c477; --hist: #6f99f0; --over: #ff5a5d;
+  --weekend: rgba(255, 255, 255, .04); --glass: rgba(24, 27, 34, .72); --glass-edge: rgba(255, 255, 255, .08); --scrim: rgba(0, 0, 0, .5);
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .4); --shadow-2: 0 12px 34px rgba(0, 0, 0, .45); --shadow-3: 0 30px 90px rgba(0, 0, 0, .6);
   color-scheme: dark;
 }
@@ -225,8 +226,8 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .work { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; min-height: 0; }
 #sheet { overflow: auto; position: relative; outline: none; background: var(--surface); overscroll-behavior: contain; }
 #inner { position: relative; }
-.hdr { position: sticky; top: 0; z-index: 5; display: flex; height: 48px; background: var(--glass); -webkit-backdrop-filter: blur(16px) saturate(170%); backdrop-filter: blur(16px) saturate(170%); border-bottom: 1px solid var(--line); }
-.hdr-grid { position: sticky; left: 0; z-index: 6; display: flex; background: var(--surface); border-right: 1px solid var(--line); height: 48px; }
+.hdr { position: sticky; top: 0; z-index: 5; display: flex; height: 60px; background: var(--glass); -webkit-backdrop-filter: blur(16px) saturate(170%); backdrop-filter: blur(16px) saturate(170%); border-bottom: 1px solid var(--line); }
+.hdr-grid { position: sticky; left: 0; z-index: 6; display: flex; background: var(--surface); border-right: 1px solid var(--line); height: 60px; }
 .hdr-grid .c { display: flex; align-items: flex-end; padding: 0 8px 7px; font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: .03em; text-transform: uppercase; border-right: 1px solid var(--line-2); overflow: hidden; white-space: nowrap; cursor: pointer; user-select: none; position: relative; }
 .hdr-grid .c.sorted { color: var(--accent); }
 .hdr-time { position: relative; }
@@ -294,6 +295,37 @@ svg text { font-family: var(--font); font-size: 11.5px; }
 .ring circle { fill: none; stroke-width: 7; stroke-linecap: round; }
 .ring .track { stroke: var(--line-2); }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.mon-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(340px, 1fr); gap: 16px; align-items: start; }
+.mon-side { position: sticky; top: 16px; display: grid; gap: 14px; }
+.vpanel { background: var(--surface); border-radius: var(--r-l); box-shadow: var(--shadow-1); padding: 16px 18px; min-width: 0; }
+.inspector .vpanel { box-shadow: none; padding: 4px 0 14px; border-radius: 0; border-bottom: 1px solid var(--line-2); margin-bottom: 12px; }
+.vhead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.vhead h3 { margin: 0; font: 650 15px/1.25 var(--font-display); letter-spacing: -.012em; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--ink-2); }
+.lg { display: inline-flex; align-items: center; gap: 5px; }
+.lg svg { width: 22px; height: 10px; }
+.viz { width: 100%; min-height: 40px; }
+.viz svg { display: block; overflow: visible; }
+.viz text { font-family: var(--font); font-variant-numeric: tabular-nums; }
+.vnote { margin: 8px 0 0; font-size: 12.5px; color: var(--ink-2); }
+.vnote b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.phases { display: grid; gap: 9px; }
+.ph { display: grid; grid-template-columns: minmax(0, 1fr) minmax(90px, 1.3fr) 38px; gap: 10px; align-items: center; font-size: 12.5px; cursor: default; }
+.ph-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-bar { position: relative; height: 10px; border-radius: 3px; background: var(--accent-soft); }
+.ph-bar b { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--accent); }
+.ph-bar i { position: absolute; top: -3px; bottom: -3px; width: 2px; border-radius: 1px; background: var(--ink); }
+.ph-v { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.mlist { display: grid; }
+.mrow { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line-2); }
+.mrow:first-child { border-top: 0; }
+.mrow .t { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.mrow .s { font-size: 12px; color: var(--ink-2); }
+.mdia { width: 12px; height: 12px; }
+.side-tabs { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -4px 0 14px; position: sticky; top: -16px; z-index: 2; background: var(--surface); padding: 8px 0; }
+.chartkey { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; margin-left: auto; font-size: 11.5px; color: var(--ink-2); }
+.k-i { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.k-i svg { width: 24px; height: 12px; }
 .panel { background: var(--surface); border-radius: var(--r-l); box-shadow: var(--shadow-1); padding: 18px; min-width: 0; margin-bottom: 16px; }
 .panel h2 { margin: 0; font: 650 17px/1.25 var(--font-display); letter-spacing: -.015em; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -419,7 +451,9 @@ svg text { font-family: var(--font); font-size: 11.5px; }
 /* ---------- responsive ---------- */
 @media (max-width: 980px) {
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .grid2 { grid-template-columns: minmax(0, 1fr); }
+  .grid2, .mon-grid { grid-template-columns: minmax(0, 1fr); }
+  .mon-side { position: static; order: -1; }
+  .chartkey { margin-left: 0; }
   .hero { grid-template-columns: minmax(0, 1fr); }
   .tb span:not(.dd-dot):not(.dd-l) { display: none; }
   .tb:not(.only-ic):not(.datefield) { padding: 4px 8px; }
@@ -1642,7 +1676,7 @@ const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())
 const fmtD = s => s ? new Date(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }) : '';
 const fmtLong = s => s ? new Date(s).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '';
 const DAY = 864e5;
-const RH = 30, HDR = 48, GX = 20;
+const RH = 30, HDR = 60, GX = 20;
 const LOCAL = window.__local || null;          // in-browser backend (shareable single page)
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -1652,7 +1686,7 @@ const S = {
   view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '' },
   cols: ['id', 'name', 'dur', 'start', 'finish', 'tf', 'preds', 'pct'],
   panel: null, histRes: '', hist: null, costs: null, editing: null, drag: null, rowsCache: [],
-  inspector: false, list: [], details: {}, staged: {}, ringShown: {},
+  inspector: false, sideTab: 'activity', list: [], details: {}, staged: {}, ringShown: {},
 };
 const ALL_COLS = {
   id: { t: 'ID', w: 68, get: a => a.id },
@@ -1723,6 +1757,16 @@ function setProgress(a, pct, asOf) {
   if (pct >= 100) { a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start) a.actual_start = a.early_start; if (!a.actual_finish) a.actual_finish = asOf ? iso(asOf) : (S.project.data_date || a.early_finish); }
   else if (pct > 0) { a.status = 'in_progress'; a.percent_complete = pct; a.remaining_hours = a.duration_hours * (1 - pct / 100); if (!a.actual_start) a.actual_start = a.early_start; a.actual_finish = null; }
   else { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; a.actual_start = a.actual_finish = null; }
+  actualiseStartMilestones(a);
+}
+// Once work has started, the start milestones in front of it have happened. Leaving them open would
+// pin them to the data date with negative float and make the whole programme read as late.
+function actualiseStartMilestones(a) {
+  if (!a.actual_start || !S.project) return;
+  S.project.relationships.filter(r => r.successor_id === a.id).forEach(r => {
+    const m = byId(r.predecessor_id);
+    if (m && m.type === 'start_milestone' && m.status !== 'complete') { m.status = 'complete'; m.percent_complete = 100; m.remaining_hours = 0; m.actual_start = m.actual_finish = a.actual_start; }
+  });
 }
 // ---------- data: the server API, or the in-browser backend ----------
 async function api(path, opts = {}) {
@@ -1749,7 +1793,7 @@ async function loadList() {
   try { S.list = await api('/api/projects'); } catch (e) { S.list = []; toast(e.message); }
   if (S.screen === 'projects') renderProjects();
 }
-async function openProject(pid, screen = 'monitor') {
+async function openProject(pid, screen = 'plan') {
   if (!pid) return;
   try { const v = await api('/api/projects/' + encodeURIComponent(pid)); if (pid !== S.pid) S.staged = {}; S.sel = new Set(); S.active = null; show(v); go(screen); } catch (e) { toast(e.message, { ms: 5000 }); }
 }
@@ -2066,21 +2110,28 @@ function colourOf(a) {
 }
 function hashColour(s) { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) & 0xffff; return `hsl(${h % 360},55%,55%)`; }
 function timescale(t0, t1, W) {
+  // three-tier date zone, as in Asta Powerproject: month and year / week commencing / programme week (or day when zoomed in)
   const px = S.view.pxDay, x = S.x, p = S.project; let s = `<svg width="${W}" height="${HDR}">`;
-  const tier = px >= 18 ? 'day' : px >= 4 ? 'week' : 'month';
+  s += `<rect x="0" y="0" width="${W}" height="${HDR}" fill="var(--surface-2)"/><line x1="0" y1="20" x2="${W}" y2="20" stroke="var(--line)"/><line x1="0" y1="40" x2="${W}" y2="40" stroke="var(--line-2)"/>`;
   for (let d = new Date(t0.getFullYear(), t0.getMonth(), 1); d < t1; d.setMonth(d.getMonth() + 1)) {
-    const nx = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    const nx = new Date(d.getFullYear(), d.getMonth() + 1, 1), w = x(nx) - x(d);
     s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${HDR}" stroke="var(--line)"/>`;
-    const w = x(nx) - x(d); const label = w > 80 ? d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : w > 36 ? d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : w > 14 ? d.toLocaleDateString('en-GB', { month: 'short' })[0] : '';
-    s += `<text x="${x(d) + 6}" y="18" fill="var(--ink)" font-weight="650" letter-spacing="-.01em">${label}</text>`;
+    const vx = Math.max(x(d), GX), vis = x(nx) - vx;
+    const label = vis > 104 ? d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : vis > 52 ? d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : vis > 18 ? d.toLocaleDateString('en-GB', { month: 'short' })[0] : '';
+    if (label) s += `<text x="${vx + 6}" y="14.5" fill="var(--ink)" font-weight="650" font-size="11.5">${label}</text>`;
   }
-  if (tier !== 'month') for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7)) {
-    s += `<line x1="${x(d)}" y1="27" x2="${x(d)}" y2="${HDR}" stroke="var(--line-2)"/>`;
-    s += `<text x="${x(d) + 3}" y="${tier === 'day' ? 34 : 41}" fill="var(--ink-3)" font-size="10.5">${d.getDate()}${tier === 'day' ? ' ' + d.toLocaleDateString('en-GB', { month: 'short' }) : ''}</text>`;
+  const weekW = px * 7, every = weekW >= 26 ? 1 : weekW >= 13 ? 2 : 4;
+  const st = new Date(p.start), mon0 = new Date(st.getFullYear(), st.getMonth(), st.getDate() - ((st.getDay() + 6) % 7));
+  let k = 0;
+  for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7), k++) {
+    s += `<line x1="${x(d)}" y1="20" x2="${x(d)}" y2="${HDR}" stroke="var(--line-2)"/>`;
+    if (k % every) continue;
+    s += `<text x="${x(d) + 3}" y="34" fill="var(--ink-2)" font-size="10.5">${d.getDate()}${weekW * every >= 48 ? ' ' + d.toLocaleDateString('en-GB', { month: 'short' }) : ''}</text>`;
+    const wk = Math.round((d - mon0) / (7 * DAY)) + 1;
+    if (px < 12 && wk >= 1 && weekW * every >= 24) s += `<text x="${x(d) + 3}" y="54" fill="var(--ink-3)" font-size="10">${weekW * every >= 40 ? 'Wk ' : 'W'}${wk}</text>`;
   }
-  if (tier === 'day') for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) s += `<text x="${x(d) + px / 2}" y="45" fill="var(--ink-3)" text-anchor="middle" font-size="9">${'MTWTFSS'[(d.getDay() + 6) % 7]}</text>`;
-  // the data date and the deadline get their own tags in the timescale
-  const tag = (d, label, col) => { const cx = x(d), w = label.length * 6 + 14; return `<g><rect x="${cx - w / 2}" y="22" width="${w}" height="15" rx="7.5" fill="${col}"/><text x="${cx}" y="32.5" text-anchor="middle" fill="#fff" font-size="10" font-weight="650">${label}</text></g>`; };
+  if (px >= 12) for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) { const we = (d.getDay() + 6) % 7 > 4; s += `<text x="${x(d) + px / 2}" y="54" fill="${we ? 'var(--ink-3)' : 'var(--ink-2)'}" text-anchor="middle" font-size="9.5">${'MTWTFSS'[(d.getDay() + 6) % 7]}</text>`; }
+  const tag = (d, label, col) => { const cx = x(d), w = label.length * 6 + 14; return `<g><rect x="${cx - w / 2}" y="43" width="${w}" height="15" rx="7.5" fill="${col}"/><text x="${cx}" y="53.5" text-anchor="middle" fill="#fff" font-size="10" font-weight="650">${label}</text></g>`; };
   s += tag(p.data_date || p.start, 'Data date', 'var(--dd)');
   if (p.must_finish_by) s += tag(p.must_finish_by, 'Deadline', 'var(--crit)');
   return s + '</svg>';
@@ -2091,7 +2142,7 @@ function chart(rs, t0, t1, W, H, bandH) {
   if (px >= 5 && cal) for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) if (!isWorking(cal, d)) s += `<rect x="${x(d)}" y="0" width="${px}" height="${H - bandH}" fill="var(--weekend)"/>`;
   for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7)) s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--line-2)"/>`;
   for (let d = new Date(t0.getFullYear(), t0.getMonth(), 1); d < t1; d.setMonth(d.getMonth() + 1)) s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--line)"/>`;
-  rs.forEach((r, i) => { const key = rowKey(r); s += `<rect class="hit rowbg" data-key="${esc(key)}" x="0" y="${i * RH}" width="${W}" height="${RH}" fill="${S.sel.has(key) ? 'var(--sel)' : (r.wbs || r.group) ? 'var(--grid)' : 'transparent'}" opacity="${S.sel.has(key) ? .6 : .5}"/>`; });
+  rs.forEach((r, i) => { const key = rowKey(r); s += `<rect class="hit rowbg" data-key="${esc(key)}" x="0" y="${i * RH}" width="${W}" height="${RH}" fill="${S.sel.has(key) ? 'var(--sel)' : (r.wbs || r.group) ? 'var(--grid)' : 'transparent'}" opacity="${S.sel.has(key) ? .6 : .5}"/><line x1="0" y1="${(i + 1) * RH - .5}" x2="${W}" y2="${(i + 1) * RH - .5}" stroke="var(--line-2)"/>`; });
   const dd = new Date(p.data_date || p.start);
   s += `<line x1="${x(dd)}" y1="0" x2="${x(dd)}" y2="${H}" stroke="var(--dd)" stroke-dasharray="5 4" stroke-width="1.6"/>`;
   if (p.must_finish_by) s += `<line x1="${x(p.must_finish_by)}" y1="0" x2="${x(p.must_finish_by)}" y2="${H - bandH}" stroke="var(--crit)" stroke-dasharray="2 4" stroke-width="1.4"/>`;
@@ -2123,7 +2174,7 @@ function chart(rs, t0, t1, W, H, bandH) {
     }
     const a = r.act, st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (!st) return;
     const pct = a.status === 'complete' ? 100 : a.percent_complete;
-    const fill = colourOf(a) || (a.status === 'complete' ? 'var(--progress)' : S.view.colour === 'critical' && a.critical ? 'var(--crit)' : 'var(--bar)');
+    const fill = colourOf(a) || (S.view.colour === 'critical' && a.critical ? 'var(--crit)' : 'var(--bar)');
     if (S.view.baseline && a.baseline_start && a.baseline_finish) s += `<rect x="${x(a.baseline_start)}" y="${y + 23}" width="${Math.max(2, x(a.baseline_finish) - x(a.baseline_start))}" height="3.5" rx="1.75" fill="var(--baseline)"/>`;
     if (a.type !== 'task' || a.duration_hours === 0) {
       const cx = x(a.type === 'finish_milestone' ? fi : st), cy = y + mid;
@@ -2131,11 +2182,11 @@ function chart(rs, t0, t1, W, H, bandH) {
       s += `<text x="${cx + 11}" y="${cy + 4}" fill="var(--ink-2)" font-weight="600">${esc(a.name)}</text>`;
       if (S.view.progress) progressPts.push([a.status === 'complete' ? x(dd) : Math.min(cx, x(dd)), cy]);
     } else {
-      const bx = x(st), bw = Math.max(3, x(fi) - bx), h = 14, by = y + (RH - h) / 2, rr = Math.min(h / 2, bw / 2);
+      const bx = x(st), bw = Math.max(3, x(fi) - bx), h = 14, by = y + (RH - h) / 2, rr = Math.min(2, bw / 2);
       if (S.view.float && a.late_finish && a.total_float_hours > 0) { const fx = x(a.late_finish); if (fx > bx + bw + 1) s += `<line x1="${bx + bw}" y1="${y + mid}" x2="${fx}" y2="${y + mid}" stroke="var(--ink-3)" stroke-width="1.6" opacity=".45"/><line x1="${fx}" y1="${y + mid - 3.5}" x2="${fx}" y2="${y + mid + 3.5}" stroke="var(--ink-3)" stroke-width="1.6" opacity=".55"/>`; }
       if (S.view.float && a.total_float_hours < 0 && a.late_finish) s += `<rect x="${x(a.late_finish)}" y="${y + mid - 1.5}" width="${Math.max(0, bx + bw - x(a.late_finish))}" height="3" rx="1.5" fill="var(--crit)" opacity=".55"/>`;
       s += `<rect class="hit bar" data-id="${a.id}" x="${bx}" y="${by}" width="${bw}" height="${h}" rx="${rr}" fill="${fill}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
-      if (pct > 0 && pct < 100) s += `<rect x="${bx}" y="${by}" width="${Math.max(rr * 2, bw * pct / 100)}" height="${h}" rx="${rr}" fill="var(--progress)" opacity=".95" pointer-events="none"/>`;
+      if (pct > 0) s += `<rect x="${bx}" y="${by}" width="${Math.max(2, bw * Math.min(100, pct) / 100)}" height="${h}" rx="${rr}" fill="var(--done-ink)" opacity=".34" pointer-events="none"/>`;
       if (a.constraint && a.constraint !== 'none' && a.constraint_date) { const cx = x(a.constraint_date); s += a.constraint.includes('start') ? `<polygon points="${cx},${by - 1} ${cx - 4},${by - 6} ${cx + 4},${by - 6}" fill="var(--warn)"/>` : `<polygon points="${cx},${by + h + 1} ${cx - 4},${by + h + 6} ${cx + 4},${by + h + 6}" fill="var(--warn)"/>`; }
       s += `<rect class="hit handle" data-id="${a.id}" x="${bx + bw - 6}" y="${by}" width="8" height="${h}" fill="transparent"/>`;
       s += `<circle class="hit linkdot" data-id="${a.id}" cx="${bx + bw + 7}" cy="${y + mid}" r="4.5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6" opacity="${S.sel.has(a.id) ? 1 : 0}"/>`;
@@ -2198,9 +2249,18 @@ function renderSummary() {
     `<span><b>${p.activities.length}</b> activities · <b class="${crit ? 'crit' : ''}">${crit}</b> critical</span>`,
     r ? `<button type="button" class="linkish" id="fHealth" title="See the health checks">Health <b style="color:${healthColour(r.score)}">${r.score}</b></button>` : '',
     p.levelled ? '<span class="chip plain">Levelled</span>' : '', p.baselines.length ? `<span class="chip plain">Baseline: ${esc(p.baselines[p.baselines.length - 1].name)}</span>` : '',
-    S.extra && S.extra.schedule_error ? `<span class="crit">${esc(S.extra.schedule_error)}</span>` : ''].join('');
+    S.extra && S.extra.schedule_error ? `<span class="crit">${esc(S.extra.schedule_error)}</span>` : '', chartKey()].join('');
   $('#dataDate').value = (p.data_date || p.start).slice(0, 10);
   const fh = $('#fHealth'); if (fh) fh.onclick = () => go('monitor');
+}
+function chartKey() {
+  const sw = (fill, label, extra = '') => `<span class="k-i"><svg viewBox="0 0 24 12" aria-hidden="true">${fill}</svg>${label}${extra}</span>`;
+  const c = S.view.colour;
+  if (c.startsWith('code:')) {
+    const t = c.slice(5), vals = Object.entries((S.project.code_types || {})[t] || {}).filter(([v]) => S.project.activities.some(a => (a.codes || {})[t] === v));
+    return `<span class="chartkey" aria-label="Key">${vals.slice(0, 12).map(([v, col]) => sw(`<rect x="1" y="2" width="22" height="8" rx="2" fill="${esc(col)}"/>`, esc(v))).join('')}${vals.length > 12 ? `<span class="k-i">+${vals.length - 12} more</span>` : ''}</span>`;
+  }
+  return `<span class="chartkey" aria-label="Key">${sw('<rect x="1" y="2" width="22" height="8" rx="2" fill="var(--bar)"/>', 'Activity')}${sw('<rect x="1" y="2" width="22" height="8" rx="2" fill="var(--crit)"/>', 'Critical')}${sw('<rect x="1" y="2" width="22" height="8" rx="2" fill="var(--bar)"/><rect x="1" y="2" width="12" height="8" rx="2" fill="var(--done-ink)" opacity=".34"/>', 'Done')}${sw('<path d="M12 1l5 5-5 5-5-5z" fill="var(--ms)"/>', 'Milestone')}${sw('<path d="M1 6h20M21 3v6" stroke="var(--ink-3)" stroke-width="1.6"/>', 'Float')}</span>`;
 }
 function renderToolbarState() {
   paintChrome();
@@ -2217,7 +2277,7 @@ function renderToolbarState() {
 }
 
 // ---------- inspector: a side panel for the selected activity ----------
-function openInspector(id) { if (id) { S.sel = new Set([id]); S.active = id; paintSelection(); } toggleInspector(true); }
+function openInspector(id) { if (id) { S.sel = new Set([id]); S.active = id; paintSelection(); } S.sideTab = 'activity'; if (S.inspector) renderInspector(); else toggleInspector(true); }
 function toggleInspector(on) {
   S.inspector = on ?? !S.inspector; const el = $('#inspector');
   $('#btnInspector').classList.toggle('on', S.inspector);
@@ -2226,10 +2286,21 @@ function toggleInspector(on) {
 }
 const CONSTRAINTS = [['none', 'None'], ['start_on_or_after', 'Start on or after'], ['start_on_or_before', 'Start on or before'], ['finish_on_or_after', 'Finish on or after'], ['finish_on_or_before', 'Finish on or before'], ['must_start_on', 'Must start on'], ['must_finish_on', 'Must finish on'], ['as_late_as_possible', 'As late as possible']];
 function renderInspector() {
-  const el = $('#inspector'); if (!S.inspector || !S.project) return;
+  const shell = $('#inspector'); if (!S.inspector || !S.project) return;
+  if (!shell.querySelector('#inspBody')) {
+    shell.innerHTML = `<div class="side-tabs"><div class="miniseg" role="tablist" aria-label="Side panel"><button type="button" role="tab" data-side="activity">Activity</button><button type="button" role="tab" data-side="progress">Progress</button></div><button type="button" class="icon" id="sideClose" aria-label="Close panel"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div><div id="inspBody"></div>`;
+    shell.querySelectorAll('[data-side]').forEach(b => b.onclick = () => { S.sideTab = b.dataset.side; renderInspector(); });
+    shell.querySelector('#sideClose').onclick = () => toggleInspector(false);
+  }
+  shell.querySelectorAll('[data-side]').forEach(b => { b.classList.toggle('on', b.dataset.side === S.sideTab); b.setAttribute('aria-selected', String(b.dataset.side === S.sideTab)); });
+  if (S.sideTab === 'progress') { const body = shell.querySelector('#inspBody'); body.innerHTML = progressVisuals(S.project, S.report, true); drawViz(body); return; }
+  renderActivityPanel();
+}
+function renderActivityPanel() {
+  const el = $('#inspBody');
   const focusId = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
   const a = S.active && byId(S.active);
-  if (!a) { el.innerHTML = `<div class="insp-head"><span style="flex:1"></span><button type="button" class="icon" id="inspClose" aria-label="Close inspector"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div><div class="empty"><b>Select an activity</b>Click a bar or a row to see its dates, logic and progress here.</div>`; $('#inspClose').onclick = () => toggleInspector(false); return; }
+  if (!a) { el.innerHTML = `<div class="empty"><b>Select an activity</b>Click a bar or a row to see its dates, logic and progress here. The Progress tab shows the S-curve, phases and milestones.</div>`; return; }
   const p = S.project; const pct = a.status === 'complete' ? 100 : Math.round(a.percent_complete);
   const tf = a.total_float_hours == null ? null : fmt1(daysOf(a, a.total_float_hours));
   const status = a.status === 'complete' ? '<span class="chip ok">Complete</span>' : a.status === 'in_progress' ? '<span class="chip warn">In progress</span>' : '<span class="chip plain">Not started</span>';
@@ -2242,7 +2313,7 @@ function renderInspector() {
   const codes = Object.keys(p.code_types).map(t => `<label>${esc(t)}<select data-code="${esc(t)}" id="iCode_${esc(t).replace(/\W+/g, '_')}"><option value="">None</option>${Object.keys(p.code_types[t]).map(v => `<option ${(a.codes || {})[t] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`).join('');
   el.innerHTML = `
     <div class="insp-head"><div style="min-width:0;flex:1"><div class="id">${esc(a.id)}</div><h3>${esc(a.name)}</h3><div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${status}${crit}</div></div>
-      <button type="button" class="icon" id="inspClose" aria-label="Close inspector"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>
+</div>
     <div class="insp-dates">
       <div class="cell"><div class="k">${a.actual_start ? 'Actual start' : 'Start'}</div><div class="v">${fmtLong(a.actual_start || a.early_start)}</div></div>
       <div class="cell"><div class="k">${a.actual_finish ? 'Actual finish' : 'Finish'}</div><div class="v">${fmtLong(a.actual_finish || a.early_finish)}</div></div>
@@ -2271,7 +2342,6 @@ function renderInspector() {
       <label>Notes<textarea id="iNotes" rows="3">${esc(a.notes || '')}</textarea></label>
     </div>`;
   const q = s => el.querySelector(s);
-  q('#inspClose').onclick = () => toggleInspector(false);
   wireSteppers(el);
   el.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { const id = b.dataset.goto; S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(r => rowKey(r) === id); if (i >= 0) scrollToRow(i); renderInspector(); });
   q('#iName').onchange = e => { const v = e.target.value.trim(); if (v) mutate(() => { a.name = v; }, null); };
@@ -2279,7 +2349,7 @@ function renderInspector() {
   q('#iCal').onchange = e => mutate(() => { const old = hpd(a); a.calendar_id = e.target.value; a.duration_hours = a.duration_hours / old * hpd(a); }, `${a.id} calendar changed`);
   q('#iPct').oninput = e => { q('#iPctV').textContent = e.target.value + '%'; };
   q('#iPct').onchange = e => mutate(p => setProgress(a, +e.target.value, p.data_date ? new Date(p.data_date) : null), `${a.id} ${+e.target.value}% complete`);
-  q('#iAS').onchange = e => mutate(() => { const v = e.target.value; a.actual_start = v ? v + 'T08:00:00' : null; if (v && a.status === 'not_started') { a.status = 'in_progress'; a.remaining_hours = a.duration_hours; } if (!v && !a.actual_finish) { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; } }, `${a.id} actual start set`);
+  q('#iAS').onchange = e => mutate(() => { const v = e.target.value; a.actual_start = v ? v + 'T08:00:00' : null; actualiseStartMilestones(a); if (v && a.status === 'not_started') { a.status = 'in_progress'; a.remaining_hours = a.duration_hours; } if (!v && !a.actual_finish) { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; } }, `${a.id} actual start set`);
   q('#iAF').onchange = e => mutate(() => { const v = e.target.value; a.actual_finish = v ? v + 'T16:00:00' : null; if (v) { a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start) a.actual_start = a.early_start; } else if (a.status === 'complete') { a.status = 'in_progress'; a.percent_complete = 90; a.remaining_hours = a.duration_hours * .1; } }, `${a.id} actual finish set`);
   q('#iPreds').onchange = e => mutate(() => setPreds(a, e.target.value), `${a.id} logic updated`);
   const setCon = () => mutate(() => { const c = q('#iCon').value, d = q('#iConD').value || (a.early_start || '').slice(0, 10); a.constraint = c; a.constraint_date = c === 'none' || c === 'as_late_as_possible' ? null : (d ? d + (c.includes('finish') ? 'T16:00:00' : 'T08:00:00') : null); if (c !== 'none' && c !== 'as_late_as_possible' && !a.constraint_date) a.constraint = 'none'; }, `${a.id} constraint updated`);
@@ -2774,8 +2844,8 @@ function paintProjects(el, list) {
   el.querySelector('#pImport').onclick = () => $('#fileIn').click();
   const sample = el.querySelector('#pSample'); if (sample) sample.onclick = () => buildFromBrief({ name: 'Sample: two-storey house', building_type: 'house', storeys: 2, units: 0, gross_internal_area_m2: 0, frame: null, foundations: null, envelope: null, roof: null, fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: null, deadline: null, planning_condition_date: null });
   el.querySelectorAll('[data-open]').forEach(c => {
-    c.onclick = e => { if (e.target.closest('[data-del]')) return; openProject(c.dataset.open, 'monitor'); };
-    c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openProject(c.dataset.open, 'monitor'); } };
+    c.onclick = e => { if (e.target.closest('[data-del]')) return; openProject(c.dataset.open, 'plan'); };
+    c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openProject(c.dataset.open, 'plan'); } };
   });
   el.querySelectorAll('[data-del]').forEach(b => b.onclick = async e => {
     e.stopPropagation();
@@ -2807,8 +2877,8 @@ function renderMonitor() {
       <div class="kpi"><div class="k">Progress</div><div class="big">${Math.round(pr.pct)}%</div><div class="meter"><b style="width:${Math.min(100, pr.pct)}%"></b><i style="left:${Math.min(99.5, pr.planned)}%"></i></div><div class="note">${progNote}</div></div>
       <div class="kpi"><div class="k">Critical path</div><div class="big">${crit.length}</div><div class="note">activities still to do with no spare time. Any delay to these moves the finish.</div></div>
     </div>
-    <div class="grid2">
-      <div>
+    <div class="mon-grid">
+      <div class="mon-main">
         <section class="panel" aria-labelledby="hLook"><div class="panel-head"><h2 id="hLook">Next three weeks</h2><span class="hint">Drag to record progress, then save</span></div>
           ${ahead.length ? ahead.map(a => { const v = S.staged[a.id] ?? (a.status === 'complete' ? 100 : Math.round(a.percent_complete)); return `<div class="upd ${S.staged[a.id] != null ? 'changed' : ''}" data-id="${esc(a.id)}"><div style="min-width:0"><div class="t" style="font-weight:600;overflow-wrap:anywhere">${a.critical ? '<span class="swatch" style="background:var(--crit)" title="Critical"></span>' : ''}${esc(a.name)}</div><div class="s hint" style="font-size:12px"><span class="mono">${esc(a.id)}</span> · ${a.status === 'in_progress' ? 'started ' + fmtD(a.actual_start) : 'starts ' + fmtD(a.early_start)} · finishes ${fmtD(a.early_finish)}</div></div><input type="range" min="0" max="100" step="5" value="${v}" aria-label="Percent complete for ${esc(a.name)}" id="upd_${esc(a.id)}"><span class="pct">${v}%</span></div>`; }).join('') : '<div class="empty"><b>Nothing due</b>No activities start or run in the next three weeks.</div>'}
           <div class="upd-foot"><label class="datefield" style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--ink-2)">As of<input type="date" id="updAsOf" value="${(p.data_date || p.start).slice(0, 10)}"></label><span class="hint" id="updCount">${Object.keys(S.staged).length ? Object.keys(S.staged).length + ' unsaved' : ''}</span><button type="button" class="primary" id="updSave" ${Object.keys(S.staged).length ? '' : 'disabled'}>Save progress</button></div>
@@ -2816,8 +2886,6 @@ function renderMonitor() {
         <section class="panel" aria-labelledby="hDrive"><div class="panel-head"><h2 id="hDrive">What is driving the finish</h2><span class="hint">The critical path, in order</span></div>
           <div class="list">${crit.slice(0, 10).map(a => `<div class="li click" data-goto="${esc(a.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s"><span class="mono">${esc(a.id)}</span> · ${fmtD(a.actual_start || a.early_start)} to ${fmtD(a.early_finish)} · ${fmt1(daysOf(a, a.duration_hours))}d</div></div><span class="chip ${a.total_float_hours < 0 ? 'bad' : 'plain'}">${fmt1(daysOf(a, a.total_float_hours || 0))}d float</span></div>`).join('') || '<div class="empty"><b>No critical path</b>Every remaining activity has spare time.</div>'}${crit.length > 10 ? `<div class="li"><span class="hint">and ${crit.length - 10} more</span></div>` : ''}</div>
         </section>
-      </div>
-      <div>
         <section class="panel" aria-labelledby="hHealth"><div class="panel-head"><h2 id="hHealth">Health checks</h2>${failing.length ? '<button type="button" class="primary" id="mFix">Auto-repair</button>' : '<span class="chip ok">All passing</span>'}</div>
           <div class="list">${failing.map(c => `<div class="check fail"><span class="dot"></span><b>${esc(c.title)}</b><span class="hint mono">${c.value != null ? c.value : ''}${c.threshold ? ' · ' + esc(c.threshold) : ''}</span><div class="d">${esc(c.detail)}</div>${c.items && c.items.length ? `<div class="items">${c.items.slice(0, 24).map(i => `<a data-goto="${esc(i.split('->')[0])}">${esc(i)}</a>`).join(', ')}${c.items.length > 24 ? ' …' : ''}</div>` : ''}</div>`).join('')}
           ${r ? `<div class="check"><span class="dot"></span><b>${passing} checks pass</b><span></span><div class="d">${esc(r.checks.filter(c => c.applicable && c.passed).map(c => c.title).join(', '))}</div></div>` : ''}</div>
@@ -2829,8 +2897,9 @@ function renderMonitor() {
           <h3 style="font-size:14px;margin:16px 0 6px">Baselines</h3>${p.baselines.length ? `<div class="list">${p.baselines.map(b => `<div class="li"><div><div class="t">${esc(b.name)}</div><div class="s">saved ${fmtD(b.saved_at)} · finish ${fmtD(b.finish)}</div></div><button type="button" class="btn" data-bl="${esc(b.name)}">Compare</button></div>`).join('')}</div>` : '<p class="hint" style="margin:0">None yet. Set one from Plan, More, before work starts so slippage shows.</p>'}
         </section>
       </div>
+      <aside class="mon-side" aria-label="Progress charts">${progressVisuals(p, r, false)}</aside>
     </div></div>`;
-  el.scrollTop = scroll;
+  el.scrollTop = scroll; drawViz(el);
   if (!S.ringShown[p.id]) { S.ringShown[p.id] = true; requestAnimationFrame(() => requestAnimationFrame(() => { const arc = $('#ringArc'); if (arc) arc.style.strokeDashoffset = C * (1 - score / 100); })); }
   el.querySelector('#mPlan').onclick = () => go('plan');
   const fix = el.querySelector('#mFix'); if (fix) fix.onclick = () => act('/repair');
@@ -2846,6 +2915,123 @@ function renderMonitor() {
     mutate(pp => { if (asOf) pp.data_date = asOf + 'T08:00:00'; Object.entries(staged).forEach(([id, v]) => { const a = byId(id); if (a) setProgress(a, v, asOf ? new Date(asOf + 'T16:00:00') : null); }); }, `Progress saved for ${n} activit${n === 1 ? 'y' : 'ies'}${asOf ? ' as of ' + fmtD(asOf) : ''}`);
   };
 }
+// ---------- progress visuals: S-curve, phases, milestones, three-week look-ahead ----------
+const tasksOf = p => p.activities.filter(a => a.type === 'task' && a.duration_hours > 0);
+const ms = v => new Date(v).getTime();
+function cumAt(list, T, tot) { let s = 0; for (const [d, a, b] of list) s += d * (T <= a ? 0 : T >= b ? 1 : (T - a) / Math.max(1, b - a)); return s / tot * 100; }
+function sCurveData(p) {
+  const tasks = tasksOf(p); const tot = tasks.reduce((s, a) => s + a.duration_hours, 0) || 1;
+  const fc = tasks.filter(a => (a.actual_start || a.early_start) && (a.actual_finish || a.early_finish)).map(a => [a.duration_hours, ms(a.actual_start || a.early_start), ms(a.actual_finish || a.early_finish)]);
+  const bl = tasks.some(a => a.baseline_start) ? tasks.filter(a => a.baseline_start && a.baseline_finish).map(a => [a.duration_hours, ms(a.baseline_start), ms(a.baseline_finish)]) : null;
+  const all = fc.concat(bl || []); if (!all.length) return null;
+  let t0 = Math.min(...all.map(x => x[1]), ms(p.start)), t1 = Math.max(...all.map(x => x[2]));
+  const d0 = new Date(t0); t0 = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() - ((d0.getDay() + 6) % 7)).getTime();
+  const weeks = []; for (let t = t0; t <= t1 + 7 * DAY; t += 7 * DAY) weeks.push(t);
+  return { weeks, fc: weeks.map(t => cumAt(fc, t, tot)), bl: bl ? weeks.map(t => cumAt(bl, t, tot)) : null, dd: ms(p.data_date || p.start), actual: progressOf(p).pct };
+}
+function phaseRows(p) {
+  const dd = ms(p.data_date || p.start); const top = id => { let n = p.wbs.find(x => x.id === id); while (n && n.parent_id) n = p.wbs.find(x => x.id === n.parent_id); return n; };
+  const groups = new Map(); p.wbs.filter(w => !w.parent_id).sort((a, b) => a.seq - b.seq).forEach(w => groups.set(w.id, { w, acts: [] }));
+  tasksOf(p).forEach(a => { const t = top(a.wbs_id); if (t && groups.has(t.id)) groups.get(t.id).acts.push(a); });
+  return [...groups.values()].filter(g => g.acts.length).map(({ w, acts }) => {
+    const tot = acts.reduce((s, a) => s + a.duration_hours, 0) || 1;
+    const done = acts.reduce((s, a) => s + a.duration_hours * (a.status === 'complete' ? 100 : a.percent_complete), 0) / tot;
+    const plan = cumAt(acts.filter(a => (a.baseline_start || a.early_start) && (a.baseline_finish || a.early_finish)).map(a => [a.duration_hours, ms(a.baseline_start || a.early_start), ms(a.baseline_finish || a.early_finish)]), dd, tot);
+    const crit = acts.some(a => a.critical && a.status !== 'complete');
+    return { name: w.name, done, plan, crit, finish: acts.map(a => a.actual_finish || a.early_finish).filter(Boolean).sort().slice(-1)[0] };
+  });
+}
+function lookAhead(p, n = 12) {
+  const dd = new Date(p.data_date || p.start), horizon = new Date(dd.getTime() + 21 * DAY);
+  return p.activities.filter(a => a.type === 'task' && a.status !== 'complete' && (a.status === 'in_progress' || (a.early_start && new Date(a.early_start) <= horizon))).sort((a, b) => (a.actual_start || a.early_start || '').localeCompare(b.actual_start || b.early_start || '')).slice(0, n);
+}
+function milestonesHtml(p) {
+  const cal = p.calendars[p.default_calendar_id] || { working_days: [0, 1, 2, 3, 4], exceptions: {} };
+  const list = p.activities.filter(a => a.type === 'start_milestone' || a.type === 'finish_milestone').map(a => ({ a, f: a.actual_finish || a.actual_start || (a.type === 'start_milestone' ? a.early_start : a.early_finish) })).filter(x => x.f).sort((x, y) => x.f.localeCompare(y.f));
+  if (!list.length) return '<p class="hint" style="margin:0">No milestones in this programme.</p>';
+  const last = list[list.length - 1].a;
+  return `<div class="mlist">${list.slice(0, 9).map(({ a, f }) => {
+    const ref = a.baseline_finish || (a === last && p.must_finish_by) || null; const done = a.status === 'complete';
+    let chip = '<span class="chip plain">No target</span>';
+    if (done) chip = '<span class="chip ok">Achieved</span>';
+    else if (ref) { const v = workingDaysBetween(cal, new Date(ref), new Date(f)); chip = v > 0 ? `<span class="chip bad">${v}d late</span>` : v < 0 ? `<span class="chip ok">${-v}d early</span>` : '<span class="chip ok">On time</span>'; }
+    return `<div class="mrow"><svg viewBox="0 0 12 12" class="mdia" aria-hidden="true"><path d="M6 .8L11.2 6 6 11.2.8 6z" fill="${done ? 'var(--ink-3)' : a.critical ? 'var(--crit)' : 'var(--ms)'}"/></svg><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s">${done ? 'achieved' : 'forecast'} ${fmtD(f)}${ref && !done ? ` · ${a.baseline_finish ? 'baseline' : 'deadline'} ${fmtD(ref)}` : ''}</div></div>${chip}</div>`;
+  }).join('')}</div>${list.length > 9 ? `<p class="hint" style="margin:6px 0 0;font-size:12px">and ${list.length - 9} more</p>` : ''}`;
+}
+function progressVisuals(p, r, compact) {
+  const d = sCurveData(p), pr = progressOf(p), phases = phaseRows(p);
+  const key = (kind, label) => `<span class="lg"><svg viewBox="0 0 22 10" aria-hidden="true">${kind === 'fc' ? '<path d="M1 5h20" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>' : kind === 'bl' ? '<path d="M1 5h20" stroke="var(--ink-3)" stroke-width="2" stroke-dasharray="4 3"/>' : kind === 'act' ? '<circle cx="11" cy="5" r="4" fill="var(--ink)" stroke="var(--surface)" stroke-width="1.5"/>' : '<path d="M11 0v10" stroke="var(--dd)" stroke-width="1.6" stroke-dasharray="2.5 2"/>'}</svg>${label}</span>`;
+  return `
+    <section class="vpanel"><div class="vhead"><h3>S-curve</h3><div class="legend">${d && d.bl ? key('bl', 'Baseline') : ''}${key('fc', 'Forecast')}${key('act', 'Actual')}${key('dd', 'Data date')}</div></div>
+      ${d ? `<div class="viz" data-viz="scurve" role="img" aria-label="Cumulative progress: ${Math.round(pr.pct)} percent complete against ${Math.round(pr.planned)} percent expected by the data date"></div>` : '<p class="hint">Schedule the programme to see its curve.</p>'}
+      <p class="vnote"><b>${Math.round(pr.pct)}%</b> complete against <b>${Math.round(pr.planned)}%</b> ${pr.baselined ? 'planned in the baseline' : 'scheduled'} by the data date${pr.baselined ? '' : '. Set a baseline to compare against the original plan'}.</p></section>
+    <section class="vpanel"><div class="vhead"><h3>Progress by phase</h3><span class="hint" style="font-size:12px">tick marks where it should be by now</span></div>
+      <div class="phases">${phases.map(g => `<div class="ph" data-tip="${esc(`<b>${esc(g.name)}</b><br>${Math.round(g.done)}% complete · ${Math.round(g.plan)}% expected by the data date<br>finishes ${fmtD(g.finish)}${g.crit ? '<br>on the critical path' : ''}`)}"><div class="ph-name">${g.crit ? '<span class="swatch" style="background:var(--crit)" title="On the critical path"></span>' : ''}${esc(g.name)}</div><div class="ph-bar"><b style="width:${Math.min(100, g.done)}%"></b><i style="left:${Math.min(99.4, g.plan)}%"></i></div><div class="ph-v">${Math.round(g.done)}%</div></div>`).join('') || '<p class="hint">No phases yet.</p>'}</div></section>
+    <section class="vpanel"><div class="vhead"><h3>Milestones</h3></div>${milestonesHtml(p)}</section>
+    ${compact ? '' : `<section class="vpanel"><div class="vhead"><h3>Three-week look-ahead</h3><span class="hint" style="font-size:12px">from the data date</span></div><div class="viz" data-viz="ahead" role="img" aria-label="Bar chart of the activities running in the next three weeks"></div></section>`}`;
+}
+function drawViz(root) {
+  if (!S.project) return;
+  root.querySelectorAll('[data-viz]').forEach(el => { const w = el.clientWidth; if (!w) return; if (el.dataset.viz === 'scurve') drawSCurve(el, w); else if (el.dataset.viz === 'ahead') drawAhead(el, w); });
+  root.querySelectorAll('.ph[data-tip]').forEach(n => { n.onpointermove = e => tipText(e, n.dataset.tip); n.onpointerleave = hideTip; });
+}
+function drawSCurve(el, W) {
+  const d = sCurveData(S.project); if (!d) return;
+  const H = 190, m = { l: 36, r: 14, t: 10, b: 24 }, iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const t0 = d.weeks[0], t1 = d.weeks[d.weeks.length - 1]; const X = t => m.l + (t - t0) / Math.max(1, t1 - t0) * iw, Y = v => m.t + ih - v / 100 * ih;
+  let s = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+  [0, 25, 50, 75, 100].forEach(v => { s += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line-2)"/><text x="${m.l - 7}" y="${Y(v) + 3.5}" text-anchor="end" fill="var(--ink-3)" font-size="10.5">${v}%</text>`; });
+  // month ticks, thinned so labels never touch
+  const months = []; for (let dt = new Date(new Date(t0).getFullYear(), new Date(t0).getMonth() + 1, 1); dt.getTime() <= t1; dt.setMonth(dt.getMonth() + 1)) months.push(dt.getTime());
+  const step = Math.max(1, Math.ceil(months.length * 46 / iw));
+  months.forEach((t, i) => { if (i % step) return; const dt = new Date(t); s += `<line x1="${X(t)}" x2="${X(t)}" y1="${m.t + ih}" y2="${m.t + ih + 4}" stroke="var(--line)"/><text x="${X(t)}" y="${H - 6}" text-anchor="middle" fill="var(--ink-3)" font-size="10.5">${dt.toLocaleDateString('en-GB', { month: 'short' })}${dt.getMonth() === 0 || i === 0 ? ' ' + String(dt.getFullYear()).slice(2) : ''}</text>`; });
+  s += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)"/>`;
+  const path = arr => arr.map((v, i) => `${i ? 'L' : 'M'}${X(d.weeks[i]).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+  s += `<path d="${path(d.fc)}L${X(t1)},${Y(0)}L${X(t0)},${Y(0)}Z" fill="var(--accent)" opacity=".1"/>`;
+  if (d.bl) s += `<path d="${path(d.bl)}" fill="none" stroke="var(--ink-3)" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"/>`;
+  s += `<path d="${path(d.fc)}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const ddx = Math.min(W - m.r, Math.max(m.l, X(d.dd)));
+  s += `<line x1="${ddx}" x2="${ddx}" y1="${m.t}" y2="${m.t + ih}" stroke="var(--dd)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+  const ay = Y(d.actual); s += `<circle cx="${ddx}" cy="${ay}" r="5" fill="var(--ink)" stroke="var(--surface)" stroke-width="2"/>`;
+  const lbl = `${Math.round(d.actual)}% done`, right = ddx + 10 + lbl.length * 6.4 < W - m.r;
+  s += `<text x="${right ? ddx + 9 : ddx - 9}" y="${ay - 7}" text-anchor="${right ? 'start' : 'end'}" fill="var(--ink)" font-size="11" font-weight="650">${lbl}</text>`;
+  s += `<line class="xh" x1="0" x2="0" y1="${m.t}" y2="${m.t + ih}" stroke="var(--ink-3)" stroke-width="1" opacity="0"/><circle class="xd" r="4" fill="var(--accent)" stroke="var(--surface)" stroke-width="2" opacity="0"/>`;
+  s += `<rect class="hitbox" x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
+  el.innerHTML = s;
+  const svg = el.querySelector('svg'), xh = svg.querySelector('.xh'), xd = svg.querySelector('.xd');
+  const hit = svg.querySelector('.hitbox');
+  hit.onpointermove = e => {
+    const r = svg.getBoundingClientRect(); const px = e.clientX - r.left; const t = t0 + (px - m.l) / iw * (t1 - t0);
+    const i = Math.max(0, Math.min(d.weeks.length - 1, Math.round((t - t0) / (7 * DAY)))); const x = X(d.weeks[i]);
+    xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('opacity', '.6'); xd.setAttribute('cx', x); xd.setAttribute('cy', Y(d.fc[i])); xd.setAttribute('opacity', '1');
+    tipText(e, `<b>Week of ${fmtD(d.weeks[i])}</b><br><b>${Math.round(d.fc[i])}%</b> forecast${d.bl ? `<br><b>${Math.round(d.bl[i])}%</b> baseline` : ''}${d.weeks[i] >= d.dd && d.weeks[i] - 7 * DAY < d.dd ? `<br><b>${Math.round(d.actual)}%</b> actual at the data date` : ''}`);
+  };
+  hit.onpointerleave = () => { xh.setAttribute('opacity', '0'); xd.setAttribute('opacity', '0'); hideTip(); };
+}
+function drawAhead(el, W) {
+  const p = S.project, acts = lookAhead(p, 12); if (!acts.length) { el.innerHTML = '<p class="hint">Nothing runs in the next three weeks.</p>'; return; }
+  const dd = new Date(p.data_date || p.start); const d0 = new Date(dd.getFullYear(), dd.getMonth(), dd.getDate()).getTime(), days = 21, d1 = d0 + days * DAY;
+  const rowH = 24, top = 22, lw = Math.min(170, Math.round(W * .4)), iw = W - lw - 8, H = top + acts.length * rowH + 4;
+  const X = t => lw + Math.max(0, Math.min(1, (t - d0) / (d1 - d0))) * iw;
+  const cal = p.calendars[p.default_calendar_id];
+  let s = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+  for (let i = 0; i < days; i++) { const t = d0 + i * DAY, dt = new Date(t); if (cal && !isWorking(cal, dt)) s += `<rect x="${X(t)}" y="${top}" width="${iw / days}" height="${H - top}" fill="var(--weekend)"/>`; if (i % 7 === 0) s += `<line x1="${X(t)}" x2="${X(t)}" y1="${top - 4}" y2="${H}" stroke="var(--line)"/><text x="${X(t) + 3}" y="13" fill="var(--ink-3)" font-size="10.5">${dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</text>`; }
+  const maxc = Math.max(4, Math.floor((lw - 8) / 6.3));
+  acts.forEach((a, i) => {
+    const y = top + i * rowH; const s0 = ms(a.actual_start || a.early_start), f0 = ms(a.actual_finish || a.early_finish);
+    s += `<line x1="0" x2="${W}" y1="${y + rowH}" y2="${y + rowH}" stroke="var(--line-2)"/>`;
+    s += `<text x="0" y="${y + 16}" fill="var(--ink-2)" font-size="11.5">${esc(a.name.length > maxc ? a.name.slice(0, maxc - 1) + '…' : a.name)}</text>`;
+    const bx = X(s0), bw = Math.max(3, X(f0) - bx), pct = a.status === 'complete' ? 100 : a.percent_complete;
+    const tip = esc(`<b>${esc(a.id)} ${esc(a.name)}</b><br>${fmtD(a.actual_start || a.early_start)} to ${fmtD(a.early_finish)} · ${Math.round(pct)}% complete${a.critical ? '<br>critical' : ''}`);
+    s += `<rect class="ab" data-tip="${tip}" x="${bx}" y="${y + 6}" width="${bw}" height="12" rx="2" fill="${a.critical ? 'var(--crit)' : 'var(--bar)'}"/>`;
+    if (pct > 0) s += `<rect x="${bx}" y="${y + 6}" width="${bw * Math.min(100, pct) / 100}" height="12" rx="2" fill="#000" opacity=".3" pointer-events="none"/>`;
+  });
+  s += `<line x1="${X(ms(p.data_date || p.start))}" x2="${X(ms(p.data_date || p.start))}" y1="${top - 4}" y2="${H}" stroke="var(--dd)" stroke-width="1.5" stroke-dasharray="4 3"/></svg>`;
+  el.innerHTML = s;
+  el.querySelectorAll('.ab').forEach(b => { b.onpointermove = e => tipText(e, b.dataset.tip); b.onpointerleave = hideTip; });
+}
+let vizResize; addEventListener('resize', () => { clearTimeout(vizResize); vizResize = setTimeout(() => { if (S.screen === 'monitor') drawViz($('#scrMonitor')); if (S.inspector && S.sideTab === 'progress') drawViz($('#inspector')); }, 150); });
+
 // ---------- Start: one guided flow for every new programme ----------
 const TYPES = [['house', 'Single house', 'One home'], ['houses', 'Housing scheme', 'Several homes'], ['apartments', 'Apartments', 'A block of flats'], ['office', 'Office', 'Commercial floors'], ['warehouse', 'Warehouse', 'Industrial or logistics'], ['school', 'School', 'Education building'], ['refurbishment', 'Refurbishment', 'Existing building'], ['generic', 'Something else', 'Mixed use or other']];
 const DEFAULT_GIA = { house: 150, houses: 95, apartments: 75, office: 1200, warehouse: 3000, school: 2500, refurbishment: 800, generic: 800 };
@@ -2940,7 +3126,8 @@ function palActions() {
     S.project && ['Auto-repair failing checks', 'Fix', () => act('/repair')],
     S.project && ['Set a baseline', 'Plan', () => $('#btnBaseline').click()],
     S.project && ['Level to crew limits', 'Plan', () => act('/level')],
-    S.project && ['Show the inspector', 'View', () => { go('plan'); toggleInspector(true); }],
+    S.project && ['Show the inspector', 'View', () => { go('plan'); S.sideTab = 'activity'; toggleInspector(true); }],
+    S.project && ['Progress charts beside the programme', 'View', () => { go('plan'); S.sideTab = 'progress'; if (S.inspector) renderInspector(); else toggleInspector(true); }],
     ['Import from P6, Asta or MS Project', 'File', () => $('#fileIn').click()],
     ['Switch light or dark', 'View', toggleTheme],
   ].filter(Boolean);
@@ -3000,7 +3187,7 @@ function shareSheet() {
 function projectsPop(trigger) {
   const pop = $('#popProjects');
   pop.innerHTML = `<div class="pop-sec">Projects</div>${(S.list || []).map(p => `<button type="button" data-pid="${esc(p.id)}" class="${p.id === S.pid ? 'on' : ''}" role="menuitem">${esc(p.name)}</button>`).join('')}<div class="pop-sec"></div><button type="button" id="ppAll" role="menuitem">All projects</button><button type="button" id="ppNew" role="menuitem">New programme</button>`;
-  pop.querySelectorAll('[data-pid]').forEach(b => b.onclick = () => { closePop(pop); openProject(b.dataset.pid, S.screen === 'projects' ? 'monitor' : S.screen); });
+  pop.querySelectorAll('[data-pid]').forEach(b => b.onclick = () => { closePop(pop); openProject(b.dataset.pid, S.screen === 'projects' ? 'plan' : S.screen); });
   pop.querySelector('#ppAll').onclick = () => { closePop(pop); go('projects'); };
   pop.querySelector('#ppNew').onclick = () => { closePop(pop); startFlow(); };
   openPop(pop, trigger);
