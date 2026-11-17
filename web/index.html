@@ -60,6 +60,7 @@
           <button class="tb" id="btnMore" aria-haspopup="menu" title="Baselines, levelling, calendars, resources, codes"><svg viewBox="0 0 20 20" class="ic"><circle cx="5" cy="10" r="1.2" class="fillc"/><circle cx="10" cy="10" r="1.2" class="fillc"/><circle cx="15" cy="10" r="1.2" class="fillc"/></svg><span>More</span></button>
         </div>
         <div class="tgroup grow" aria-label="View">
+          <div class="miniseg panes" id="paneSeg" role="group" aria-label="Layout"><button type="button" data-pane="table" title="Table only" aria-label="Table only"><svg viewBox="0 0 20 20" class="ic"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M3 8h14M3 12h14"/></svg></button><button type="button" data-pane="both" title="Table and Gantt side by side" aria-label="Table and Gantt"><svg viewBox="0 0 20 20" class="ic"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M8.5 4v12M10.5 8h4.5M11.5 12h3"/></svg></button><button type="button" data-pane="chart" title="Gantt with names" aria-label="Gantt with names"><svg viewBox="0 0 20 20" class="ic"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M6 8h6M8 12h7"/></svg></button></div>
           <div class="miniseg" id="modeSeg"><button data-mode="gantt" class="on">Gantt</button><button data-mode="tl">Time–location</button></div>
           <select id="vTl" hidden aria-label="Locations"><option value="WBS">Locations: WBS</option></select>
           <div class="tracechip" id="traceChip" hidden></div>
@@ -80,6 +81,7 @@
             <div class="rows" id="rows"></div>
           </div>
         </div>
+        <div class="splitbar" id="splitbar" role="separator" aria-orientation="vertical" aria-label="Resize the table and the Gantt chart" tabindex="0" title="Drag to resize. Double-click: table or split" hidden><span class="knob"></span></div>
         <aside class="inspector" id="inspector" aria-label="Activity inspector" hidden></aside>
       </div>
     </section>

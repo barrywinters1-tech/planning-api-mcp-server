@@ -167,7 +167,7 @@ function go(screen) {
   paintChrome();
   const el = { projects: $('#scrProjects'), plan: $('#scrPlan'), monitor: $('#scrMonitor') }[screen];
   if (screen === 'projects') { renderProjects(); loadList(); }
-  else if (screen === 'plan') { render(); if (S.panel === 'histogram' || S.panel === 'cost') refreshPanel(); $('#sheet').focus({ preventScroll: true }); }
+  else if (screen === 'plan') { render(); requestAnimationFrame(() => placeSplitbar()); if (S.panel === 'histogram' || S.panel === 'cost') refreshPanel(); $('#sheet').focus({ preventScroll: true }); }
   else renderMonitor();
   // moving between the two project views slides in the direction of the tab; everything else cross-fades
   if (prev !== screen) {
@@ -495,21 +495,85 @@ function paneWidth() {
 }
 // with a narrow pane the activity name leads, so the table still says what each bar is
 function visibleCols(pw) { return pw < 320 && S.cols.includes('name') ? ['name', ...S.cols.filter(k => k !== 'name')] : S.cols; }
+// ---------- the divider between table and chart ----------
+// A full-height bar you push and pull (mouse, pen or finger; arrow keys when focused). The table pane
+// also scrolls sideways on its own (trackpad, shift-wheel, finger, or the ‹ › buttons) so you can reach
+// every column while the Gantt stays in view, as in Asta.
+const MIN_PANE = 110;
+function maxPane() { return Math.max(MIN_PANE, Math.min(gridWidth(), (($('#sheet') && $('#sheet').clientWidth) || innerWidth) - 60)); }
+function setPane(w, save = true) {
+  w = Math.round(Math.max(MIN_PANE, Math.min(maxPane(), w))); S.paneW = w;
+  if (save) { try { localStorage.setItem('paneW', w); } catch { } }
+  return w;
+}
+function layoutPane(w) {      // cheap live update while dragging: no re-render
+  $$('#hdr .hdr-grid, #rows .cells').forEach(el => { el.style.width = w + 'px'; });
+  const svg = $('svg.chart'); if (svg) svg.style.left = w + 'px';
+  $('#inner').style.width = (w + (S.ganttW || 0)) + 'px';
+  placeSplitbar(w); setGx(S.gx || 0, w);
+}
+function placeSplitbar(w) {
+  const bar = $('#splitbar'), sheet = $('#sheet'); if (!bar || !sheet) return;
+  bar.hidden = !S.project || S.screen !== 'plan';
+  bar.style.left = (w ?? paneWidth()) + 'px';
+  bar.style.height = sheet.clientHeight + 'px';
+  bar.setAttribute('aria-valuenow', String(Math.round(w ?? paneWidth()))); bar.setAttribute('aria-valuemin', String(MIN_PANE)); bar.setAttribute('aria-valuemax', String(maxPane()));
+  const seg = $('#paneSeg'); if (seg) { const pw = w ?? paneWidth(), mode = pw >= maxPane() - 2 ? 'table' : pw <= MIN_PANE + 2 ? 'chart' : 'both'; seg.querySelectorAll('[data-pane]').forEach(b => b.classList.toggle('on', b.dataset.pane === mode)); }
+}
+function setGx(v, pw) {
+  pw = pw ?? paneWidth(); const max = Math.max(0, gridWidth() - pw);
+  S.gx = Math.round(Math.max(0, Math.min(max, v || 0)));
+  const sheet = $('#sheet'); if (sheet) sheet.style.setProperty('--gx', S.gx + 'px');
+  const prev = $('#hdr .colpage.prev'), next = $('#hdr .colpage.next');
+  if (prev) prev.hidden = S.gx <= 0; if (next) next.hidden = S.gx >= max;
+}
+function pageCols(dir) {
+  const pw = paneWidth(), cols = visibleCols(pw); let x = 0; const edges = cols.map(k => { const e = x; x += ALL_COLS[k].w; return e; });
+  const target = dir > 0 ? edges.find(e => e > S.gx + 4) : [...edges].reverse().find(e => e < S.gx - 4);
+  setGx(target ?? (dir > 0 ? x : 0), pw);
+}
+function ensureColVisible(k) {
+  const pw = paneWidth(), cols = visibleCols(pw); let x = 0;
+  for (const c of cols) { const w = ALL_COLS[c].w; if (c === k) { if (x < S.gx) setGx(x, pw); else if (x + w > S.gx + pw) setGx(x + w - pw, pw); return; } x += w; }
+}
 function wireSplitter() {
-  const g = $('#hdr .splitter'); if (!g) return;
-  g.onpointerdown = e => {
-    e.preventDefault(); e.stopPropagation(); g.setPointerCapture(e.pointerId);
-    const x0 = e.clientX, w0 = paneWidth(), full = gridWidth(); let moved = false; document.body.classList.add('splitting');
-    const mv = ev => {
-      if (Math.abs(ev.clientX - x0) > 2) moved = true; if (!moved) return;
-      const w = Math.round(Math.max(110, Math.min(full, $('#sheet').clientWidth - 80, w0 + ev.clientX - x0)));
-      S.paneW = w; $$('#hdr .hdr-grid, #rows .cells').forEach(el => { el.style.width = w + 'px'; });
-      const svg = $('svg.chart'); if (svg) svg.style.left = w + 'px'; $('#inner').style.width = (w + S.ganttW) + 'px';
-    };
-    const up = () => { g.removeEventListener('pointermove', mv); g.removeEventListener('pointerup', up); document.body.classList.remove('splitting'); if (!moved) return; try { localStorage.setItem('paneW', S.paneW); } catch { } render(); };   // a click leaves the DOM alone so double-click works
-    g.addEventListener('pointermove', mv); g.addEventListener('pointerup', up);
+  const bar = $('#splitbar'); if (!bar || bar._wired) return; bar._wired = true;
+  bar.onpointerdown = e => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    e.preventDefault(); try { bar.setPointerCapture(e.pointerId); } catch { } bar.focus({ preventScroll: true });
+    const x0 = e.clientX, w0 = paneWidth(); let moved = false; document.body.classList.add('splitting');
+    const mv = ev => { if (Math.abs(ev.clientX - x0) > 2) moved = true; if (moved) layoutPane(setPane(w0 + ev.clientX - x0, false)); };
+    const up = () => { bar.removeEventListener('pointermove', mv); bar.removeEventListener('pointerup', up); bar.removeEventListener('pointercancel', up); document.body.classList.remove('splitting'); if (!moved) return; setPane(S.paneW); render(); };
+    bar.addEventListener('pointermove', mv); bar.addEventListener('pointerup', up); bar.addEventListener('pointercancel', up);
   };
-  g.ondblclick = e => { e.stopPropagation(); const full = gridWidth(); S.paneW = paneWidth() >= full - 2 ? Math.min(full, Math.max(160, Math.round($('#sheet').clientWidth * .38))) : full; try { localStorage.setItem('paneW', S.paneW); } catch { } render(); };
+  bar.ondblclick = () => paneMode(paneWidth() >= maxPane() - 2 ? 'both' : 'table');
+  bar.onkeydown = e => {
+    const step = e.shiftKey ? 120 : 30, w = paneWidth();
+    const to = { ArrowLeft: w - step, ArrowRight: w + step, Home: MIN_PANE, End: maxPane() }[e.key];
+    if (to == null) return; e.preventDefault(); e.stopPropagation(); setPane(to); render();
+  };
+  // the table pane scrolls sideways by itself
+  const sheet = $('#sheet');
+  sheet.addEventListener('wheel', e => {
+    if (!e.target.closest || !e.target.closest('.cells, .hdr-grid')) return;
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0; if (!d) return;
+    if (gridWidth() <= paneWidth()) return; e.preventDefault(); setGx((S.gx || 0) + d);
+  }, { passive: false });
+  let pan = null;
+  sheet.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse' && e.target.closest && e.target.closest('.cells, .hdr-grid') && gridWidth() > paneWidth()) pan = { x: e.clientX, y: e.clientY, gx: S.gx || 0, on: false, id: e.pointerId }; });
+  sheet.addEventListener('pointermove', e => {
+    if (!pan || e.pointerId !== pan.id) return; const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+    if (!pan.on) { if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) { if (Math.abs(dy) > 8) pan = null; return; } pan.on = true; }
+    setGx(pan.gx - dx);
+  });
+  const end = () => { pan = null; }; sheet.addEventListener('pointerup', end); sheet.addEventListener('pointercancel', end);
+  addEventListener('resize', () => { if (S.screen === 'plan' && S.project) { clearTimeout(S._rz); S._rz = setTimeout(render, 120); } });
+}
+function paneMode(m) {
+  if (!S.project) return;
+  if (m === 'table') setPane(maxPane()); else if (m === 'chart') setPane(MIN_PANE);
+  else { S.paneW = null; try { localStorage.removeItem('paneW'); } catch { } }
+  if (S.screen !== 'plan') go('plan'); else render();
 }
 function timeRange() {
   const p = S.project;
@@ -529,7 +593,7 @@ function render() {
   const px = S.view.pxDay; const W = Math.ceil((t1 - t0) / DAY * px) + 40; S.ganttW = W;
   const x = d => GX + (new Date(d) - t0) / DAY * px; S.x = x;
   // header
-  $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px"><span class="splitter" title="Drag to resize the table; double-click to show all columns or give the chart more room" aria-hidden="true"></span>` + cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${k}">${ALL_COLS[k].t}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
+  $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px"><button type="button" class="colpage prev" aria-label="Earlier columns" hidden>‹</button><button type="button" class="colpage next" aria-label="More columns" hidden>›</button>` + cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${k}">${ALL_COLS[k].t}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
   $$('#hdr .c[data-col]').forEach(el => { const h = document.createElement('span'); h.className = 'colgrip'; el.appendChild(h); h.onmousedown = e => { e.stopPropagation(); e.preventDefault(); const k = el.dataset.col, x0 = e.clientX, w0 = ALL_COLS[k].w; const mv = ev => { ALL_COLS[k].w = Math.max(30, w0 + ev.clientX - x0); el.style.width = ALL_COLS[k].w + 'px'; }; const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); try { localStorage.setItem('colw', JSON.stringify(Object.fromEntries(Object.entries(ALL_COLS).map(([k, c]) => [k, c.w])))); } catch { } render(); }; document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); }; });
   $$('#hdr .c[data-col]').forEach(el => el.onclick = () => { const k = el.dataset.col; S.view.sort = S.view.sort === k ? '' : (['start', 'finish', 'tf', 'id', 'name'].includes(k) ? (k === 'tf' ? 'float' : k) : S.view.sort); $('#vSort').value = S.view.sort; render(); });
   // rows
@@ -568,6 +632,8 @@ function render() {
   $('#rows').innerHTML = html.join('');
   $('#inner').style.width = (gw + W) + 'px';
   wireRows(); wireChart(); wireSplitter();
+  setGx(S.gx || 0, gw); placeSplitbar(gw);
+  $$('#hdr .colpage').forEach(b => b.onclick = e => { e.stopPropagation(); pageCols(b.classList.contains('next') ? 1 : -1); });
   if (band) renderBand();
   renderPanelBody();
   if (S.pendingEdit) { const pe = S.pendingEdit; S.pendingEdit = null; const i = S.rowsCache.findIndex(r => rowKey(r) === pe.key); if (i >= 0) scrollToRow(i); setTimeout(() => startEdit(pe.key, pe.col), 0); }
@@ -724,9 +790,9 @@ function renderSummary() {
   const late = p.must_finish_by && p.finish && new Date(p.finish) > new Date(p.must_finish_by);
   $('#summary').innerHTML = [
     `<span class="pname">${esc(p.name)}</span>`, `<span class="chip ${cls}">${label}</span>`,
-    `<span>Start <b>${fmtD(p.start)}</b></span>`, `<span>Finish <b class="${late ? 'crit' : ''}">${fmtD(p.finish)}</b></span>`,
+    `<span class="f-opt">Start <b>${fmtD(p.start)}</b></span>`, `<span>Finish <b class="${late ? 'crit' : ''}">${fmtD(p.finish)}</b></span>`,
     p.must_finish_by ? `<span>Deadline <b>${fmtD(p.must_finish_by)}</b></span>` : '',
-    `<span><b>${p.activities.length}</b> activities · <b class="${crit ? 'crit' : ''}">${crit}</b> critical</span>`,
+    `<span class="f-opt"><b>${p.activities.length}</b> activities · <b class="${crit ? 'crit' : ''}">${crit}</b> critical</span>`,
     r ? `<button type="button" class="linkish" id="fHealth" title="See the health checks">Health <b style="color:${healthColour(r.score)}">${r.score}</b></button>` : '',
     p.levelled ? '<span class="chip plain">Levelled</span>' : '', p.baselines.length ? `<span class="chip plain">Baseline: ${esc(p.baselines[p.baselines.length - 1].name)}</span>` : '',
     S.extra && S.extra.schedule_error ? `<span class="crit">${esc(S.extra.schedule_error)}</span>` : '', chartKey()].join('');
@@ -900,7 +966,7 @@ function moveActive(dr, dc) {
   const keys = S.rowsCache.map(rowKey); let i = keys.indexOf(S.active); if (i < 0) i = 0;
   i = Math.max(0, Math.min(keys.length - 1, i + dr));
   let ci = S.cols.indexOf(S.activeCol); ci = Math.max(0, Math.min(S.cols.length - 1, ci + dc));
-  S.active = keys[i]; S.activeCol = S.cols[ci]; S.sel = new Set([S.active]); paintSelection(); scrollToRow(i); if (S.inspector) renderInspector();
+  S.active = keys[i]; S.activeCol = S.cols[ci]; S.sel = new Set([S.active]); paintSelection(); scrollToRow(i); ensureColVisible(S.activeCol); if (S.inspector) renderInspector();
 }
 function scrollToRow(i) { const sheet = $('#sheet'); const y = HDR + i * RH; if (y < sheet.scrollTop + HDR) sheet.scrollTop = y - HDR; else if (y + RH > sheet.scrollTop + sheet.clientHeight) sheet.scrollTop = y + RH - sheet.clientHeight; }
 
@@ -1953,6 +2019,7 @@ function wireToolbar() {
   $('#vBarText').onchange = e => { S.view.barText = e.target.value; render(); };
   $('#btnColumns').onclick = () => { closePops(); columnsDialog(); }; $('#btnViews').onclick = () => { closePops(); viewsDialog(); };
   $$('#modeSeg [data-mode]').forEach(b => b.onclick = () => { S.view.mode = b.dataset.mode; render(); });
+  $$('#paneSeg [data-pane]').forEach(b => b.onclick = () => paneMode(b.dataset.pane));
   $('#vTl').onchange = e => { S.view.tlSource = e.target.value; render(); };
   $('#dataDate').onchange = e => { if (e.target.value) mutate(p => { p.data_date = e.target.value + 'T08:00:00'; }, `Data date moved to ${fmtD(e.target.value)}`); };
   $('#btnProgress').onclick = progressDialog; $('#btnConstraint').onclick = constraintDialog;

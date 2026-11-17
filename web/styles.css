@@ -556,9 +556,6 @@ body.dropping::after { content: 'Drop a P6 XER, P6 XML or MS Project / Asta XML 
 /* ---------- table / chart splitter ---------- */
 .hdr-grid, .cells { overflow: hidden; }
 .hdr-grid .c, .cells > .c { flex: none; }
-.hdr-grid .splitter { position: absolute; right: 0; top: 0; bottom: 0; width: 10px; z-index: 8; cursor: col-resize; touch-action: none; }
-.hdr-grid .splitter::after { content: ''; position: absolute; right: 3px; top: 50%; width: 4px; height: 26px; margin-top: -13px; border-radius: 99px; background: var(--line); transition: background .15s; }
-.hdr-grid .splitter:hover::after, body.splitting .hdr-grid .splitter::after { background: var(--accent); }
 body.splitting, body.splitting * { cursor: col-resize !important; user-select: none !important; }
 .hdr-grid { position: sticky; }
 
@@ -571,3 +568,35 @@ svg.chart g.act:hover .linkdot, svg.chart g.act.sel .linkdot { opacity: 1; }
 svg.chart .linkdot:hover { fill: var(--accent); }
 svg.chart .linktarget { stroke: var(--accent) !important; stroke-width: 3px !important; }
 @media (hover: none) { svg.chart g.act.sel .linkdot { opacity: 1; } svg.chart .linkdot { r: 7; } }
+
+/* ---------- divider between table and Gantt; the table pane scrolls sideways on its own ---------- */
+.splitbar { position: absolute; top: 0; z-index: 9; width: 22px; margin-left: -11px; cursor: col-resize; touch-action: none; outline: none; }
+.splitbar::before { content: ''; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .15s; }
+.splitbar .knob { position: absolute; left: 4px; top: 50%; width: 14px; height: 44px; margin-top: -22px; border-radius: 99px; background: var(--raised); box-shadow: var(--shadow-1), 0 0 0 .5px var(--line); display: grid; place-items: center; transition: transform .15s ease, background .15s; }
+.splitbar .knob::after { content: ''; width: 2px; height: 18px; border-left: 2px dotted var(--ink-3); }
+.splitbar:hover::before, .splitbar:focus-visible::before, body.splitting .splitbar::before { background: var(--accent); }
+.splitbar:hover .knob, body.splitting .splitbar .knob { transform: scale(1.08); }
+.splitbar:focus-visible .knob { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 0 1px var(--accent); }
+body.splitting, body.splitting * { cursor: col-resize !important; user-select: none !important; }
+#sheet .cells > .c, #sheet .hdr-grid > .c { transform: translateX(calc(var(--gx, 0px) * -1)); }
+#sheet .cells, #sheet .hdr-grid { touch-action: pan-y; }
+.hdr-grid .colpage { position: absolute; top: 6px; z-index: 3; width: 26px; height: 26px; padding: 0; border-radius: 99px; border: 0; background: var(--raised); box-shadow: var(--shadow-1), 0 0 0 .5px var(--line); color: var(--accent); font: 600 17px/1 var(--font-display, system-ui); cursor: pointer; }
+.hdr-grid .colpage.prev { left: 6px; } .hdr-grid .colpage.next { right: 8px; }
+.hdr-grid .colpage[hidden] { display: none; }
+.miniseg.panes button { padding: 0 7px; display: grid; place-items: center; }
+.miniseg.panes .ic { width: 17px; height: 17px; }
+@media (hover: none) { .splitbar { width: 34px; margin-left: -17px; } .splitbar .knob { left: 9px; height: 56px; margin-top: -28px; } }
+@media print { .splitbar, .colpage { display: none !important; } }
+
+/* ---------- phones: tools on one sideways-scrolling row, short summary, so the plan gets the screen ---------- */
+@media (max-width: 640px) {
+  .planbar { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding-block: 6px; }
+  .planbar::-webkit-scrollbar { display: none; }
+  .planbar .tgroup, .planbar .tgroup.grow { flex: none; flex-wrap: nowrap; }
+  .planbar .search input { width: 104px; }
+  .facts { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; gap: 12px; padding-block: 6px; }
+  .facts::-webkit-scrollbar { display: none; }
+  .facts > * { flex: none; }
+  .facts .pname, .facts .f-opt, .facts .chartkey { display: none; }
+}
+@media (max-width: 640px) { .planbar, .facts { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); } }
