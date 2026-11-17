@@ -14,7 +14,10 @@ def _xml_root_tag(data: bytes) -> str:
     i = head.find("<?xml")
     j = head.find("<", i + 1 if i >= 0 else 0)
     while j >= 0 and head[j:j + 4] in ("<!--", "<!DO"):
-        j = head.find("<", head.find(">", j) + 1)
+        close = head.find(">", j)
+        if close < 0:                    # unterminated comment or DOCTYPE: no root to find (used to loop forever)
+            return ""
+        j = head.find("<", close + 1)
     if j < 0:
         return ""
     tag = head[j + 1:].split()[0].split(">")[0]

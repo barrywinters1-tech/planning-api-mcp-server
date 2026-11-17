@@ -143,12 +143,13 @@ Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real 
 - Progress uses retained logic only.
 - Lags use the predecessor's calendar (P6's default); there is no per-link or project lag-calendar option yet.
 - `must_finish_by` has no MSPDI field, so it does not survive an XML round trip.
+- In the browser, calendars with number-like IDs (P6 ObjectIds such as `178`) are held in numeric rather than file order. Dates and the default calendar are unaffected; calendar numbering on re-export can differ from the Python app.
 - The brief parser is keyword-based. If it misreads something, correct the form before generating.
 - Generator rates are generic UK tender figures, not your firm's. Tune them.
 
 ## Browser build (no backend)
 
-`web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, risk, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. `tests/test_parity.py` holds the two engines to identical output in four timezones (see Tests); the engine keeps dates as naive wall-clock times in UTC-pinned `Date`s so daylight saving cannot shift them. Python also reads back the browser-written XER and MSPDI. The browser build imports its own JSON export; Primavera XER, P6 XML and Asta .pp import stay in the full local app.
+`web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, risk, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. `tests/test_parity.py` holds the two engines to identical output in four timezones (see Tests); the engine keeps dates as naive wall-clock times in UTC-pinned `Date`s so daylight saving cannot shift them. Python also reads back the browser-written XER and MSPDI. The browser build imports Primavera XER, P6 XML and MS Project XML (what Asta Powerproject exports) through `web/import_xer.js`, `web/import_xml.js` (with its own XML parser, matched against Python's ElementTree and expat) and `web/import_any.js`; `tests/test_import_parity_xer.py`, `tests/test_import_parity_xml.py` and `tests/test_import_any.py` hold them to Python's readers byte for byte. Binary `.pp` and `.mpp` files need the MPXJ bridge in the full local app; the browser explains how to export XER or XML instead.
 
 ## Guided setup and one-click interoperability
 
