@@ -4,8 +4,10 @@
 const E = window.PlannerEngine;
 const LSK = 'planner:projects';
 const undoStacks = {}, redoStacks = {}, LIMIT = 60;
-function loadAll() { try { return JSON.parse(localStorage.getItem(LSK) || '{}'); } catch { return {}; } }
-function saveAll(o) { try { localStorage.setItem(LSK, JSON.stringify(o)); } catch (e) { } }
+// localStorage can be blocked (private windows, previews): keep an in-memory copy so the session still works
+let MEM = null;
+function loadAll() { try { const s = localStorage.getItem(LSK); if (s != null) return JSON.parse(s); } catch { } return MEM ? JSON.parse(JSON.stringify(MEM)) : {}; }
+function saveAll(o) { MEM = JSON.parse(JSON.stringify(o)); try { localStorage.setItem(LSK, JSON.stringify(o)); } catch (e) { } }
 function load(pid) { const a = loadAll(); if (!(pid in a)) throw { status: 404, detail: 'no such project' }; return a[pid]; }
 function store(p) { const a = loadAll(); a[p.id] = p; saveAll(a); }
 function del(pid) { const a = loadAll(); const had = pid in a; delete a[pid]; saveAll(a); delete undoStacks[pid]; delete redoStacks[pid]; return had; }

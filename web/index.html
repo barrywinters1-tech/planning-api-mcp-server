@@ -2,101 +2,147 @@
 <html lang="en-GB">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Planner</title>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-<div class="app">
-  <div class="ribbon" id="ribbon">
-    <div class="rgroup">
-      <select id="projSel" title="Open project"><option value="">— open —</option></select>
-      <button id="btnNew" title="New blank project">New</button>
-      <button id="btnWizard" class="primary" title="Answer a few questions and get a full programme">Guided setup…</button>
-      <button id="btnGenerate" title="Generate a programme from a brief">Generate…</button>
-      <label class="btn" title="Import XER, P6 XML, MS Project XML, .pp, .mpp">Import<input type="file" id="fileIn" accept=".xer,.xml,.pmxml,.json,.pp,.mpp,.mpx" hidden></label>
-      <div class="menu"><button>Export ▾</button><div class="menu-items"><a data-x="bundle"><b>All three (P6 + Asta + MS Project) · .zip</b></a><a data-x="xer">Primavera P6 (XER)</a><a data-x="xml">Asta / MS Project (XML)</a><a data-x="json">JSON (re-import here)</a></div></div>
-      <button id="btnPrint" title="Print (Ctrl+P)">Print</button>
-      <span class="rlabel">File</span>
+<div class="app" id="app">
+  <header class="topbar" id="topbar">
+    <div class="tb-left">
+      <button class="brand" id="btnHome" title="All projects" aria-label="All projects">
+        <svg viewBox="0 0 24 24" class="mark" aria-hidden="true"><rect x="3" y="4.5" width="9" height="3.2" rx="1.6"/><rect x="8" y="10.4" width="11" height="3.2" rx="1.6"/><rect x="5" y="16.3" width="7" height="3.2" rx="1.6"/></svg>
+        <span class="brand-name" id="brandName">Planner</span>
+      </button>
+      <span class="crumb-sep" id="crumbSep" hidden>/</span>
+      <button class="crumb" id="crumbProject" hidden aria-haspopup="menu"><span id="crumbName"></span><svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg></button>
     </div>
-    <div class="rgroup">
-      <button id="btnUndo" title="Undo (Ctrl+Z)">↶</button><button id="btnRedo" title="Redo (Ctrl+Y)">↷</button>
-      <button id="btnInsert" title="Insert activity below (Insert)">+ Activity</button>
-      <button id="btnSummary" title="Insert summary (WBS) below">+ Summary</button>
-      <button id="btnDelete" title="Delete selected (Del)">Delete</button>
-      <button id="btnOutdent" title="Outdent (Shift+Tab)">⇤</button><button id="btnIndent" title="Indent (Tab)">⇥</button>
-      <button id="btnUp" title="Move up (Alt+↑)">↑</button><button id="btnDown" title="Move down (Alt+↓)">↓</button>
-      <button id="btnLink" title="Link selected in order, finish-to-start (Ctrl+L)">Link</button>
-      <button id="btnUnlink" title="Remove links between selected (Ctrl+U)">Unlink</button>
-      <span class="rlabel">Edit</span>
+    <nav class="seg" id="seg" role="tablist" aria-label="Project view" hidden>
+      <span class="seg-thumb" id="segThumb"></span>
+      <button role="tab" id="tabPlan" data-screen="plan">Plan</button>
+      <button role="tab" id="tabMonitor" data-screen="monitor">Monitor</button>
+    </nav>
+    <div class="tb-right">
+      <button class="cmdk" id="btnCmd" title="Commands and actions (Ctrl+K)"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><span class="cmdk-label">Type a command</span><kbd>⌘K</kbd></button>
+      <span class="status" id="saveStatus" role="status" aria-live="polite" hidden></span>
+      <button class="icon" id="btnUndo" title="Undo (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 20 20" class="ic"><path d="M7 5L3.5 8.5 7 12"/><path d="M4 8.5h7.5a4.5 4.5 0 010 9H9"/></svg></button>
+      <button class="icon" id="btnRedo" title="Redo (Ctrl+Y)" aria-label="Redo"><svg viewBox="0 0 20 20" class="ic"><path d="M13 5l3.5 3.5L13 12"/><path d="M16 8.5H8.5a4.5 4.5 0 000 9H11"/></svg></button>
+      <button class="icon" id="btnTheme" title="Light or dark" aria-label="Switch light or dark"><svg viewBox="0 0 20 20" class="ic"><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5a6.5 6.5 0 000 13z" class="fillc"/></svg></button>
+      <button class="primary" id="btnShare"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><path d="M10 12.5V3M6.5 6.5L10 3l3.5 3.5"/><path d="M5 9.5H4v7.5h12V9.5h-1"/></svg><span>Share &amp; export</span></button>
     </div>
-    <div class="rgroup">
-      <select id="vMode" title="Chart type"><option value="gantt">Gantt</option><option value="tl">Time–location</option></select>
-      <select id="vTl" hidden><option value="WBS">Location: WBS</option></select>
-      <button id="btnZoomOut" title="Zoom out">−</button><button id="btnZoomIn" title="Zoom in">+</button><button id="btnFit" title="Fit to window">Fit</button>
-      <label class="tog"><input type="checkbox" id="vLinks" checked> links</label>
-      <label class="tog"><input type="checkbox" id="vFloat" checked> float</label>
-      <label class="tog"><input type="checkbox" id="vBaseline"> baseline</label>
-      <label class="tog"><input type="checkbox" id="vProgress"> progress line</label>
-      <label class="tog"><input type="checkbox" id="vCritical"> critical only</label>
-      <select id="vColour" title="Colour bars by"><option value="critical">Colour: critical</option><option value="none">Colour: plain</option></select>
-      <select id="vGroup" title="Group rows by"><option value="">Group: WBS</option></select>
-      <select id="vSort" title="Sort within groups"><option value="">Sort: sequence</option><option value="start">Sort: start</option><option value="finish">Sort: finish</option><option value="float">Sort: float</option><option value="id">Sort: ID</option><option value="name">Sort: name</option></select>
-      <input id="vFilter" placeholder="filter…" title="Filter by text, or Trade=Bricklayers">
-      <button id="btnColumns" title="Choose columns">Columns…</button>
-      <button id="btnViews" title="Save and apply named views">Views…</button>
-      <button id="btnToday" title="Scroll to the data date">Data date</button>
-      <span class="rlabel">View</span>
-    </div>
-    <div class="rgroup">
-      <label class="tog">Data date <input type="date" id="dataDate"></label>
-      <button id="btnProgress" title="Enter progress for selected activities">Progress…</button>
-      <button id="btnConstraint" title="Set a constraint on the selected activity">Constraint…</button>
-      <button id="btnMilestone" title="Toggle milestone">Milestone</button>
-      <span class="rlabel">Progress</span>
-    </div>
-    <div class="rgroup">
-      <button id="btnBaseline" title="Store current dates as the baseline">Set baseline</button>
-      <button id="btnBaselineClear">Clear</button>
-      <button id="btnLevel" title="Delay activities so no resource exceeds its limit">Level</button>
-      <button id="btnUnlevel">Unlevel</button>
-      <button id="btnCalendars">Calendars…</button>
-      <button id="btnResources">Resources…</button>
-      <button id="btnCodes">Codes…</button>
-      <span class="rlabel">Plan</span>
-    </div>
-    <div class="rgroup">
-      <button id="btnAssistant" class="primary" title="Ask the AI to plan or change the programme (full app + API key)">Assistant</button>
-      <button data-panel="histogram">Histogram</button>
-      <button data-panel="cost">Cost / EV</button>
-      <button data-panel="health">Health</button>
-      <button data-panel="notes">Notes</button>
-      <button id="btnRepair" title="Run the DCMA auto-repairer">Auto-repair</button>
-      <span class="rlabel">Analyse</span>
-    </div>
-  </div>
-  <div class="summary" id="summary"><span>No project open. Open one, press New, Generate… or Import.</span></div>
-  <div class="work">
-    <div id="sheet" tabindex="0">
-      <div id="inner">
-        <div class="hdr" id="hdr"></div>
-        <div class="rows" id="rows"></div>
+  </header>
+
+  <main class="screens" id="screens">
+    <!-- Projects: the portfolio. Rendered by app.js -->
+    <section class="screen" id="scrProjects" aria-label="Projects"></section>
+
+    <!-- Plan: spreadsheet + Gantt -->
+    <section class="screen screen-plan" id="scrPlan" aria-label="Plan" hidden>
+      <div class="planbar" id="planbar">
+        <div class="tgroup" aria-label="Edit">
+          <button class="tb" id="btnInsert" title="Insert activity below (Insert)"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M4 10h12"/></svg><span>Activity</span></button>
+          <button class="tb only-ic" id="btnSummary" title="Insert summary (WBS) below" aria-label="Insert summary"><svg viewBox="0 0 20 20" class="ic"><path d="M3 5h14M6 10h11M6 15h11"/></svg></button>
+          <button class="tb only-ic" id="btnDelete" title="Delete selected (Del)" aria-label="Delete"><svg viewBox="0 0 20 20" class="ic"><path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10"/></svg></button>
+          <span class="tdiv"></span>
+          <button class="tb only-ic" id="btnOutdent" title="Outdent (Shift+Tab)" aria-label="Outdent"><svg viewBox="0 0 20 20" class="ic"><path d="M8 5h9M8 10h9M8 15h9M5.5 7.5L3 10l2.5 2.5"/></svg></button>
+          <button class="tb only-ic" id="btnIndent" title="Indent (Tab)" aria-label="Indent"><svg viewBox="0 0 20 20" class="ic"><path d="M8 5h9M8 10h9M8 15h9M3 7.5L5.5 10 3 12.5"/></svg></button>
+          <button class="tb only-ic" id="btnUp" title="Move up (Alt+Up)" aria-label="Move up"><svg viewBox="0 0 20 20" class="ic"><path d="M10 16V4M5.5 8.5L10 4l4.5 4.5"/></svg></button>
+          <button class="tb only-ic" id="btnDown" title="Move down (Alt+Down)" aria-label="Move down"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M5.5 11.5L10 16l4.5-4.5"/></svg></button>
+          <span class="tdiv"></span>
+          <button class="tb only-ic" id="btnLink" title="Link selected in order, finish-to-start (Ctrl+L)" aria-label="Link selected"><svg viewBox="0 0 20 20" class="ic"><path d="M8.5 11.5l3-3M7 9.5L5.5 11a2.5 2.5 0 003.5 3.5l1.5-1.5M13 10.5l1.5-1.5A2.5 2.5 0 0011 5.5L9.5 7"/></svg></button>
+          <button class="tb only-ic" id="btnUnlink" title="Remove links between selected (Ctrl+U)" aria-label="Unlink"><svg viewBox="0 0 20 20" class="ic"><path d="M7 9.5L5.5 11a2.5 2.5 0 003.5 3.5l1.5-1.5M13 10.5l1.5-1.5A2.5 2.5 0 0011 5.5L9.5 7M4 4l12 12"/></svg></button>
+          <button class="tb only-ic" id="btnMilestone" title="Toggle milestone" aria-label="Toggle milestone"><svg viewBox="0 0 20 20" class="ic"><path d="M10 3.5l6.5 6.5-6.5 6.5L3.5 10z"/></svg></button>
+        </div>
+        <div class="tgroup" aria-label="Schedule">
+          <button class="tb" id="btnProgress" title="Record progress for the selected activities"><svg viewBox="0 0 20 20" class="ic"><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5V10l4.5 4.5" /></svg><span>Progress</span></button>
+          <button class="tb" id="btnConstraint" title="Constrain the selected activity"><svg viewBox="0 0 20 20" class="ic"><path d="M5 17V3.5M5 4h9l-2 3 2 3H5"/></svg><span>Constraint</span></button>
+          <label class="tb datefield" title="Data date: progress is measured to this date"><span class="dd-dot"></span><span class="dd-l">Data date</span><input type="date" id="dataDate" aria-label="Data date"></label>
+          <button class="tb" id="btnMore" aria-haspopup="menu" title="Baselines, levelling, calendars, resources, codes"><svg viewBox="0 0 20 20" class="ic"><circle cx="5" cy="10" r="1.2" class="fillc"/><circle cx="10" cy="10" r="1.2" class="fillc"/><circle cx="15" cy="10" r="1.2" class="fillc"/></svg><span>More</span></button>
+        </div>
+        <div class="tgroup grow" aria-label="View">
+          <div class="miniseg" id="modeSeg"><button data-mode="gantt" class="on">Gantt</button><button data-mode="tl">Time–location</button></div>
+          <select id="vTl" hidden aria-label="Locations"><option value="WBS">Locations: WBS</option></select>
+          <div class="search"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="vFilter" placeholder="Filter, or Trade=Bricklayers" aria-label="Filter activities"></div>
+          <button class="tb only-ic" id="btnZoomOut" title="Zoom out (-)" aria-label="Zoom out"><svg viewBox="0 0 20 20" class="ic"><path d="M5 10h10"/></svg></button>
+          <button class="tb only-ic" id="btnZoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 20 20" class="ic"><path d="M10 5v10M5 10h10"/></svg></button>
+          <button class="tb" id="btnFit" title="Fit the programme to the window">Fit</button>
+          <button class="tb" id="btnToday" title="Scroll to the data date">Today</button>
+          <button class="tb" id="btnView" aria-haspopup="dialog" title="Bars, colours, grouping and columns"><svg viewBox="0 0 20 20" class="ic"><path d="M3 6h14M3 14h14"/><circle cx="7" cy="6" r="1.8" class="fillbg"/><circle cx="13" cy="14" r="1.8" class="fillbg"/></svg><span>View</span></button>
+          <button class="tb only-ic" id="btnInspector" title="Show the activity inspector" aria-label="Activity inspector"><svg viewBox="0 0 20 20" class="ic"><rect x="3" y="4" width="14" height="12" rx="2.5"/><path d="M12 4v12"/></svg></button>
+        </div>
       </div>
-    </div>
-    <div class="panel" id="panel" hidden></div>
-  </div>
-  <form class="cmdbar" id="cmdForm"><span class="hint">Command</span><input id="cmdIn" placeholder="add 2 weeks to Piling · link A1010 -> A1020 SS+2d · finish by 1 Nov 2026 · progress A1010 50% as of 20 Apr 2026 · fix · help" autocomplete="off"><button class="primary">Run</button><span id="cmdOut" class="hint"></span></form>
+      <div class="facts" id="summary"></div>
+      <div class="work" id="work">
+        <div id="sheet" tabindex="0" aria-label="Programme">
+          <div id="inner">
+            <div class="hdr" id="hdr"></div>
+            <div class="rows" id="rows"></div>
+          </div>
+        </div>
+        <aside class="inspector" id="inspector" aria-label="Activity inspector" hidden></aside>
+      </div>
+    </section>
+
+    <!-- Monitor: forecast, health, look-ahead, progress -->
+    <section class="screen" id="scrMonitor" aria-label="Monitor" hidden></section>
+  </main>
 </div>
+
+<!-- popovers that hold persistent controls -->
+<div class="pop" id="popMore" role="menu" hidden>
+  <div class="pop-sec">Baseline</div>
+  <button id="btnBaseline" role="menuitem">Set baseline…</button>
+  <button id="btnBaselineClear" role="menuitem">Clear baseline bars</button>
+  <div class="pop-sec">Resources</div>
+  <button id="btnLevel" role="menuitem">Level to crew limits</button>
+  <button id="btnUnlevel" role="menuitem">Remove levelling</button>
+  <button data-panel="histogram" role="menuitem">Resource histogram</button>
+  <button data-panel="cost" role="menuitem">Cost and earned value</button>
+  <div class="pop-sec">Set-up</div>
+  <button id="btnCalendars" role="menuitem">Calendars…</button>
+  <button id="btnResources" role="menuitem">Resources and crews…</button>
+  <button id="btnCodes" role="menuitem">Activity codes…</button>
+  <div class="pop-sec">Fix and assist</div>
+  <button id="btnRepair" role="menuitem">Auto-repair failing checks</button>
+  <button id="btnAssistant" role="menuitem">AI assistant</button>
+</div>
+<div class="pop pop-view" id="popView" role="dialog" aria-label="View options" hidden>
+  <div class="pop-sec">Show on bars</div>
+  <label class="sw"><span>Links</span><input type="checkbox" id="vLinks" checked><i></i></label>
+  <label class="sw"><span>Float</span><input type="checkbox" id="vFloat" checked><i></i></label>
+  <label class="sw"><span>Baseline</span><input type="checkbox" id="vBaseline"><i></i></label>
+  <label class="sw"><span>Progress line</span><input type="checkbox" id="vProgress"><i></i></label>
+  <label class="sw"><span>Critical path only</span><input type="checkbox" id="vCritical"><i></i></label>
+  <div class="pop-sec">Arrange</div>
+  <label class="fld"><span>Colour</span><select id="vColour"><option value="critical">Critical path</option></select></label>
+  <label class="fld"><span>Group</span><select id="vGroup"><option value="">WBS</option></select></label>
+  <label class="fld"><span>Sort</span><select id="vSort"><option value="">Sequence</option><option value="start">Start</option><option value="finish">Finish</option><option value="float">Float</option><option value="id">ID</option><option value="name">Name</option></select></label>
+  <div class="pop-row"><button id="btnColumns">Columns…</button><button id="btnViews">Saved views…</button></div>
+</div>
+<div class="pop" id="popProjects" role="menu" hidden></div>
+
+<!-- command palette -->
+<div class="scrim" id="palBack" hidden>
+  <form class="palette" id="cmdForm" autocomplete="off">
+    <div class="pal-in"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="cmdIn" placeholder="add 2 weeks to piling · finish by 1 Nov 2026 · fix" aria-label="Command"><kbd>esc</kbd></div>
+    <div class="pal-list" id="palList" role="listbox"></div>
+    <div class="pal-out" id="cmdOut" role="status" aria-live="polite"></div>
+  </form>
+</div>
+
+<!-- sheets (dialogs) -->
+<div class="scrim" id="modalBack" hidden><div class="sheet" id="modal" role="dialog" aria-modal="true"></div></div>
+
+<div class="ai" id="ai" hidden>
+  <header><b>Assistant</b><span class="spacer"></span><button id="aiClear" title="New conversation">Clear</button><button id="aiClose" class="icon" title="Close" aria-label="Close"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></header>
+  <div class="log" id="aiLog"><div class="msg">Tell me what to build or change. For example: <i>"Plan a 20-unit two-storey housing scheme, brick, start April 2026, finish by next Christmas"</i>, then <i>"compress it by three weeks"</i>.</div></div>
+  <form id="aiForm"><input id="aiIn" placeholder="Describe or change the programme" autocomplete="off" aria-label="Message"><button class="primary">Send</button></form>
+</div>
+<input type="file" id="fileIn" accept=".xer,.xml,.pmxml,.json,.pp,.mpp,.mpx" hidden>
 <div class="print-title" id="printTitle"></div>
 <div class="tip" id="tip"></div>
-<div class="ai" id="ai" hidden>
-  <header><b>AI assistant</b><span class="spacer"></span><button id="aiClear" title="New conversation">clear</button><button id="aiClose" title="Close">×</button></header>
-  <div class="log" id="aiLog"><div class="msg">Tell me what to build or change. For example: <i>"Plan a 20-unit two-storey housing scheme, brick, start April 2026, finish by next Christmas"</i>, then <i>"compress it by three weeks"</i> or <i>"what's driving the finish?"</i></div></div>
-  <form id="aiForm"><input id="aiIn" placeholder="Describe or change the programme…" autocomplete="off"><button class="primary">Send</button></form>
-</div>
 <div class="ctx" id="ctx" hidden></div>
-<div class="modal-back" id="modalBack" hidden><div class="modal" id="modal"></div></div>
-<div class="toast" id="toast" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

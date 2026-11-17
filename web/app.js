@@ -1,4 +1,5 @@
-/* Planner UI: spreadsheet + Gantt, pure client logic over the JSON project model. */
+/* Planner UI: portfolio, spreadsheet + Gantt, and monitor, as pure client logic over the JSON project model.
+   Runs against the FastAPI server, or entirely in the browser when local_backend.js has set window.__local. */
 'use strict';
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -6,16 +7,20 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const pad = n => String(n).padStart(2, '0');
 const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const fmtD = s => s ? new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '';
+const fmtD = s => s ? new Date(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }) : '';
+const fmtLong = s => s ? new Date(s).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '';
 const DAY = 864e5;
-const RH = 26, HDR = 44, GX = 20;
+const RH = 30, HDR = 48, GX = 20;
+const LOCAL = window.__local || null;          // in-browser backend (shareable single page)
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 
 const S = {
-  pid: null, project: null, report: null, history: { undo: 0, redo: 0 },
+  screen: 'projects', pid: null, project: null, report: null, history: { undo: 0, redo: 0 },
   sel: new Set(), active: null, activeCol: 'name', collapsed: new Set(), selLink: null,
   view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '' },
   cols: ['id', 'name', 'dur', 'start', 'finish', 'tf', 'preds', 'pct'],
   panel: null, histRes: '', hist: null, costs: null, editing: null, drag: null, rowsCache: [],
+  inspector: false, list: [], details: {}, staged: {}, ringShown: {},
 };
 const ALL_COLS = {
   id: { t: 'ID', w: 68, get: a => a.id },
@@ -87,33 +92,233 @@ function setProgress(a, pct, asOf) {
   else if (pct > 0) { a.status = 'in_progress'; a.percent_complete = pct; a.remaining_hours = a.duration_hours * (1 - pct / 100); if (!a.actual_start) a.actual_start = a.early_start; a.actual_finish = null; }
   else { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; a.actual_start = a.actual_finish = null; }
 }
-
-// ---------- api ----------
-async function api(path, opts = {}) { const r = await fetch(path, opts); if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch { } throw new Error(m); } return r.json(); }
-const post = (path, body) => api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
-function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(t._t); t._t = setTimeout(() => t.hidden = true, ms); }
-async function loadList() {
-  const list = await api('/api/projects'); const sel = $('#projSel');
-  sel.innerHTML = '<option value="">— open —</option>' + list.map(p => `<option value="${esc(p.id)}">${esc(p.name)} (${p.activities})</option>`).join('');
-  sel.value = S.pid || '';
+// ---------- data: the server API, or the in-browser backend ----------
+async function api(path, opts = {}) {
+  if (LOCAL) {
+    const method = opts.method || 'GET'; let body = opts.body;
+    if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = null; } }
+    try { return await LOCAL.route(method, path, body); } catch (e) { throw new Error(e && e.detail ? e.detail : ((e && e.message) || 'Something went wrong')); }
+  }
+  const r = await fetch(path, opts); if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch { } throw new Error(m); } return r.json();
 }
-async function openProject(pid) { if (!pid) return; show(await api('/api/projects/' + encodeURIComponent(pid))); }
+const post = (path, body) => api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+const pidPath = (sub = '') => '/api/projects/' + encodeURIComponent(S.pid) + sub;
+async function importFile(f) {
+  if (LOCAL) return LOCAL.importFile(f);
+  const fd = new FormData(); fd.append('file', f); return api('/api/import', { method: 'POST', body: fd });
+}
+async function exportAs(fmt) {
+  if (!S.pid) return;
+  if (LOCAL) { try { await LOCAL.download(S.pid, fmt); } catch (e) { toast((e && e.detail) || e.message, { ms: 6000 }); } return; }
+  location.href = pidPath('/export.' + fmt);
+}
+function setStatus(kind, text) { const el = $('#saveStatus'); el.hidden = !kind; el.className = 'status ' + (kind || ''); el.textContent = text || ''; }
+async function loadList() {
+  try { S.list = await api('/api/projects'); } catch (e) { S.list = []; toast(e.message); }
+  if (S.screen === 'projects') renderProjects();
+}
+async function openProject(pid, screen = 'monitor') {
+  if (!pid) return;
+  try { const v = await api('/api/projects/' + encodeURIComponent(pid)); if (pid !== S.pid) S.staged = {}; S.sel = new Set(); S.active = null; show(v); go(screen); } catch (e) { toast(e.message, { ms: 5000 }); }
+}
 function show(v) {
   if (!v || !v.project) return;
   S.project = v.project; S.report = v.report; S.pid = v.project.id; S.history = v.history || S.history; S.extra = v;
-  $('#projSel').value = S.pid; try { localStorage.setItem('pid', S.pid); } catch { }
-  if (v.message) toast(v.message + (v.still_open && v.still_open.length ? ' Left open: ' + v.still_open[0] : ''), 5000);
+  S.details[S.pid] = { project: v.project, report: v.report };
+  try { localStorage.setItem('pid', S.pid); } catch { }
+  if (v.message) toast(v.message + (v.still_open && v.still_open.length ? ' Left open: ' + v.still_open[0] : ''), { ms: 7000 });
   S.sel = new Set([...S.sel].filter(id => byId(id) || wbsById(id)));
-  render();
-  if (S.panel === 'histogram' || S.panel === 'cost') refreshPanel();
+  paintChrome();
+  if (S.screen === 'plan') { render(); if (S.panel === 'histogram' || S.panel === 'cost') refreshPanel(); }
+  else if (S.screen === 'monitor') renderMonitor();
+  if (S.inspector) renderInspector();
 }
 async function save(label) {
-  try { const v = await api('/api/projects/' + encodeURIComponent(S.pid), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: S.project }) }); show(v); if (label) toast(label, 1500); }
-  catch (e) { toast('Not saved: ' + e.message, 5000); await openProject(S.pid); }
+  setStatus('saving', 'Saving');
+  try {
+    const v = await api(pidPath(), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: S.project }) });
+    show(v); setStatus('ok', 'Saved'); if (label) toast(label, { ms: 3200, undo: true });
+  } catch (e) { setStatus('error', 'Not saved'); toast('Not saved: ' + e.message, { ms: 6000 }); await openProject(S.pid, S.screen); }
 }
 function mutate(fn, label) { if (!S.project) return; const r = fn(S.project); if (r === false) return; save(label); }
-async function act(path, body, method = 'POST') { try { show(await api('/api/projects/' + encodeURIComponent(S.pid) + path, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })); } catch (e) { toast(e.message, 4000); } }
+async function act(path, body, method = 'POST') {
+  setStatus('saving', 'Working');
+  try { show(await api(pidPath(path), { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })); setStatus('ok', 'Saved'); }
+  catch (e) { setStatus('ok', 'Saved'); toast(e.message, { ms: 4000 }); }
+}
 
+// ---------- navigation ----------
+function go(screen) {
+  if (screen !== 'projects' && !S.project) screen = 'projects';
+  const prev = S.screen; S.screen = screen;
+  $('#scrProjects').hidden = screen !== 'projects'; $('#scrPlan').hidden = screen !== 'plan'; $('#scrMonitor').hidden = screen !== 'monitor';
+  closePops();
+  paintChrome();
+  const el = { projects: $('#scrProjects'), plan: $('#scrPlan'), monitor: $('#scrMonitor') }[screen];
+  if (screen === 'projects') { renderProjects(); loadList(); }
+  else if (screen === 'plan') { render(); if (S.panel === 'histogram' || S.panel === 'cost') refreshPanel(); $('#sheet').focus({ preventScroll: true }); }
+  else renderMonitor();
+  // moving between the two project views slides in the direction of the tab; everything else cross-fades
+  if (prev !== screen) {
+    const order = { projects: 0, plan: 1, monitor: 2 };
+    const dx = prev === 'projects' || screen === 'projects' ? 0 : (order[screen] > order[prev] ? 24 : -24);
+    animate(el, { x: 0, opacity: 1 }, { from: { x: dx, opacity: 0 }, response: .34, done: () => { el.style.transform = ''; springs.delete(el); } });
+  }
+}
+function paintChrome() {
+  const inProject = !!S.project && S.screen !== 'projects';
+  $('#crumbSep').hidden = $('#crumbProject').hidden = !inProject;
+  if (S.project) $('#crumbName').textContent = S.project.name;
+  $('#seg').hidden = !inProject;
+  $$('#seg [data-screen]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.screen === S.screen)));
+  if (inProject) requestAnimationFrame(() => moveThumb());
+  $('#btnUndo').disabled = !inProject || !S.history.undo; $('#btnRedo').disabled = !inProject || !S.history.redo;
+  $('#btnShare').disabled = !S.project;
+}
+function moveThumb(instant) {
+  const b = $(`#seg [data-screen="${S.screen}"]`), th = $('#segThumb'); if (!b || !b.offsetWidth) return;
+  th.style.width = b.offsetWidth + 'px';
+  animate(th, { x: b.offsetLeft - 3 }, { response: .32, damping: .82, instant: instant || !th.style.transform });
+}
+
+// ---------- motion: interruptible springs (damping ratio + response, as UIKit uses) ----------
+// Every animation starts from the element's live value and keeps its live velocity, so a sheet,
+// popover or panel can be redirected mid-flight without a jump.
+const springs = new WeakMap();
+function animate(el, targets, o = {}) {
+  let st = springs.get(el);
+  if (!st) { st = { v: { x: 0, y: 0, scale: 1, opacity: 1 }, vel: { x: 0, y: 0, scale: 0, opacity: 0 }, raf: 0, to: {} }; springs.set(el, st); }
+  if (o.from) { Object.assign(st.v, o.from); Object.keys(o.from).forEach(k => { st.vel[k] = 0; }); }
+  if (o.velocity) Object.assign(st.vel, o.velocity);
+  Object.assign(st.to, targets);
+  const apply = () => { el.style.transform = `translate3d(${st.v.x}px,${st.v.y}px,0) scale(${st.v.scale})`; el.style.opacity = st.v.opacity; };
+  cancelAnimationFrame(st.raf);
+  if (o.instant || REDUCED.matches) {
+    // reduced motion: no travel, just the end state (opacity changes still read as feedback)
+    Object.assign(st.v, st.to); Object.keys(st.vel).forEach(k => { st.vel[k] = 0; }); apply(); if (o.done) o.done(); return;
+  }
+  const zeta = o.damping ?? 1, w0 = 2 * Math.PI / (o.response ?? .35);
+  let last = performance.now();
+  const step = now => {
+    const dt = Math.min(.064, (now - last) / 1000); last = now;
+    const n = Math.max(1, Math.ceil(dt / .004)), h = dt / n; let settled = true;
+    for (const k of Object.keys(st.to)) {
+      for (let i = 0; i < n; i++) { const acc = -w0 * w0 * (st.v[k] - st.to[k]) - 2 * zeta * w0 * st.vel[k]; st.vel[k] += acc * h; st.v[k] += st.vel[k] * h; }
+      const eps = (k === 'scale' || k === 'opacity') ? .001 : .1;
+      if (Math.abs(st.v[k] - st.to[k]) > eps || Math.abs(st.vel[k]) > eps * 10) settled = false;
+    }
+    if (settled) { Object.assign(st.v, st.to); Object.keys(st.vel).forEach(k => { st.vel[k] = 0; }); apply(); if (o.done) o.done(); return; }
+    apply(); st.raf = requestAnimationFrame(step);
+  };
+  st.raf = requestAnimationFrame(step);
+}
+const project = (v, d = .998) => (v / 1000) * d / (1 - d);                      // where a flick will come to rest
+const rubberband = (o, dim, c = .55) => (o * dim * c) / (dim + c * Math.abs(o));  // resistance past an edge
+
+// ---------- sheets, popovers, toasts ----------
+let lastTrigger = null;
+document.addEventListener('pointerdown', e => { const b = e.target.closest('button, .tile, .card, [role=button]'); if (b) lastTrigger = b; }, true);
+function presentSheet(back, el) {
+  const narrow = innerWidth <= 640;
+  back.hidden = false; back.style.pointerEvents = '';
+  back.style.transition = 'background-color .28s ease'; back.style.backgroundColor = 'transparent';
+  requestAnimationFrame(() => { back.style.backgroundColor = ''; });
+  // a sheet grows out of the control that opened it; on a phone it rises from the bottom edge
+  if (!narrow && lastTrigger && document.contains(lastTrigger)) {
+    const r = lastTrigger.getBoundingClientRect(), s = el.getBoundingClientRect();
+    el.style.transformOrigin = `${Math.round(r.left + r.width / 2 - s.left)}px ${Math.round(r.top + r.height / 2 - s.top)}px`;
+  } else el.style.transformOrigin = '50% 100%';
+  const live = springs.has(el);
+  animate(el, { x: 0, y: 0, scale: 1, opacity: 1 }, { from: live ? undefined : (narrow ? { y: el.offsetHeight || 520, scale: 1, opacity: 1 } : { y: 10, scale: .93, opacity: 0 }), response: .4, damping: narrow ? .88 : 1 });
+}
+function dismissSheet(back, el, velocity, after) {
+  if (back.hidden || back._closing) return;
+  const narrow = innerWidth <= 640; back._closing = true; back.style.pointerEvents = 'none'; back.style.backgroundColor = 'transparent';
+  animate(el, narrow ? { y: el.offsetHeight + 40 } : { scale: .95, opacity: 0, y: 8 }, {
+    response: .3, velocity: velocity ? { y: velocity } : undefined,
+    done: () => { back.hidden = true; back._closing = false; back.style.pointerEvents = ''; back.style.backgroundColor = ''; el.style.transform = ''; el.style.opacity = ''; springs.delete(el); if (after) after(); },
+  });
+}
+// drag a sheet down to dismiss (phones): tracks 1:1, resists upward, and decides from the projected rest point
+function enableSheetDrag(el, getClose) {
+  if (el._drag) return; el._drag = true;
+  el.addEventListener('pointerdown', e => {
+    if (innerWidth > 640 || e.button !== 0) return;
+    if (!(e.target.closest('.grab') || e.target.closest('h2') || e.target.closest('.q') || e.target.closest('.steps'))) return;
+    const y0 = e.clientY, base = (springs.get(el) || { v: { y: 0 } }).v.y; const hist = [{ y: e.clientY, t: performance.now() }]; let dragging = false;
+    el.setPointerCapture(e.pointerId);
+    const mv = ev => {
+      const dy = ev.clientY - y0; if (!dragging && Math.abs(dy) < 8) return; dragging = true;
+      hist.push({ y: ev.clientY, t: performance.now() }); if (hist.length > 6) hist.shift();
+      const raw = base + dy; animate(el, { y: raw < 0 ? -rubberband(-raw, el.offsetHeight) : raw }, { instant: true });
+    };
+    const up = () => {
+      el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
+      if (!dragging) return;
+      const a = hist[0], b = hist[hist.length - 1]; const v = (b.y - a.y) / Math.max(1, b.t - a.t) * 1000;
+      const y = springs.get(el).v.y;
+      if (y + project(v) > el.offsetHeight * .45) getClose()(v); else animate(el, { y: 0 }, { damping: .8, response: .3, velocity: { y: v } });
+    };
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  });
+}
+let modalClose = () => { };
+function modal(title, bodyHtml, onOk, okLabel = 'OK', o = {}) {
+  const back = $('#modalBack'), m = $('#modal');
+  m.className = 'sheet' + (o.wide ? ' wide' : '');
+  m.innerHTML = `<div class="grab" aria-hidden="true"></div><button type="button" class="icon x" id="mX" aria-label="Close"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button>${title ? `<h2>${esc(title)}</h2>` : ''}<div class="mbody">${bodyHtml}</div>` +
+    (o.noActions ? '' : `<div class="actions"><button type="button" id="mCancel">${onOk ? 'Cancel' : 'Done'}</button>${onOk ? `<button type="button" class="primary" id="mOk">${esc(okLabel)}</button>` : ''}</div>`);
+  m.setAttribute('aria-label', title || o.label || 'Dialog');
+  const close = v => dismissSheet(back, m, v, () => { if (S.screen === 'plan') $('#sheet').focus({ preventScroll: true }); });
+  modalClose = close;
+  presentSheet(back, m); enableSheetDrag(m, () => modalClose);
+  $('#mX').onclick = () => close(); if ($('#mCancel')) $('#mCancel').onclick = () => close();
+  if (onOk) $('#mOk').onclick = async () => { const r = await onOk(m); if (r !== false) close(); };
+  back.onpointerdown = e => { if (e.target === back) close(); };
+  m.onkeydown = e => { if (e.key === 'Escape') close(); e.stopPropagation(); };
+  const first = m.querySelector('.mbody input:not([type=hidden]):not([type=range]), .mbody select, .mbody textarea');
+  if (first && innerWidth > 640) first.focus(); else m.setAttribute('tabindex', '-1'), m.focus({ preventScroll: true });
+  return { m, close };
+}
+function openPop(pop, trigger, align = 'left') {
+  if (pop._open) { closePop(pop); return; }
+  closePops(pop);
+  pop.hidden = false; pop._open = true;
+  const r = trigger.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = align === 'right' ? r.right - w : r.left; left = Math.max(12, Math.min(left, innerWidth - w - 12));
+  let top = r.bottom + 6; const below = top + h <= innerHeight - 12; if (!below) top = Math.max(12, r.top - h - 6);
+  pop.style.left = left + 'px'; pop.style.top = top + 'px';
+  pop.style.transformOrigin = `${Math.round(r.left + r.width / 2 - left)}px ${below ? 0 : h}px`;
+  animate(pop, { scale: 1, opacity: 1, y: 0 }, { from: springs.has(pop) ? undefined : { scale: .88, opacity: 0, y: below ? -6 : 6 }, response: .3 });
+}
+function closePop(pop) { if (!pop._open) return; pop._open = false; animate(pop, { scale: .94, opacity: 0 }, { response: .22, done: () => { pop.hidden = true; springs.delete(pop); } }); }
+function closePops(except) { $$('.pop').forEach(p => { if (p !== except) closePop(p); }); }
+document.addEventListener('pointerdown', e => { if (!e.target.closest('.pop') && !e.target.closest('[aria-haspopup]')) closePops(); });
+function toast(msg, o = {}) {
+  if (typeof o === 'number') o = { ms: o };
+  const t = $('#toast'); clearTimeout(t._t);
+  t.innerHTML = `<span>${esc(msg)}</span>` + (o.undo && S.pid ? '<button type="button" id="tUndo">Undo</button>' : '') + (o.action ? `<button type="button" id="tAct">${esc(o.action.label)}</button>` : '');
+  const fresh = t.hidden; t.hidden = false;
+  animate(t, { y: 0, opacity: 1, scale: 1 }, { from: fresh ? { y: 28, opacity: 0, scale: .98 } : undefined, response: .36, damping: .9 });
+  if ($('#tUndo')) $('#tUndo').onclick = () => { hideToast(); act('/undo'); };
+  if ($('#tAct')) $('#tAct').onclick = () => { hideToast(); o.action.fn(); };
+  t._t = setTimeout(hideToast, o.ms || 2800);
+}
+function hideToast() { const t = $('#toast'); if (t.hidden) return; clearTimeout(t._t); animate(t, { y: 28, opacity: 0 }, { response: .3, done: () => { t.hidden = true; springs.delete(t); } }); }
+function stepper(id, v, step = 1, min = 0) { return `<span class="stepper"><button type="button" data-step="${-step}" data-for="${id}" aria-label="Less">−</button><input id="${id}" type="number" step="${step}" min="${min}" value="${v}"><button type="button" data-step="${step}" data-for="${id}" aria-label="More">+</button></span>`; }
+function wireSteppers(root) {
+  root.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
+    const inp = root.querySelector('#' + b.dataset.for); const min = +inp.min || 0;
+    inp.value = Math.max(min, Math.round(((+inp.value || 0) + (+b.dataset.step)) * 10) / 10);
+    inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true }));
+    if (navigator.vibrate) try { navigator.vibrate(5); } catch { }
+  });
+}
+function toggleTheme() {
+  const root = document.documentElement; const cur = root.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  root.dataset.theme = cur === 'dark' ? 'light' : 'dark'; try { localStorage.setItem('theme', root.dataset.theme); } catch { }
+  if (S.screen === 'plan') render();
+}
 // ---------- rows ----------
 function rows() {
   const p = S.project, out = [], f = S.view.filter.trim().toLowerCase();
@@ -229,78 +434,86 @@ function colourOf(a) {
 }
 function hashColour(s) { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) & 0xffff; return `hsl(${h % 360},55%,55%)`; }
 function timescale(t0, t1, W) {
-  const px = S.view.pxDay, x = S.x; let s = `<svg width="${W}" height="${HDR}">`;
+  const px = S.view.pxDay, x = S.x, p = S.project; let s = `<svg width="${W}" height="${HDR}">`;
   const tier = px >= 18 ? 'day' : px >= 4 ? 'week' : 'month';
   for (let d = new Date(t0.getFullYear(), t0.getMonth(), 1); d < t1; d.setMonth(d.getMonth() + 1)) {
     const nx = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${HDR}" stroke="var(--line)"/>`;
-    const w = x(nx) - x(d); const label = w > 70 ? d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : w > 34 ? d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : w > 14 ? d.toLocaleDateString('en-GB', { month: 'short' })[0] : '';
-    s += `<text x="${x(d) + 4}" y="14" fill="var(--ink)" font-weight="600">${label}</text>`;
+    const w = x(nx) - x(d); const label = w > 80 ? d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) : w > 36 ? d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : w > 14 ? d.toLocaleDateString('en-GB', { month: 'short' })[0] : '';
+    s += `<text x="${x(d) + 6}" y="18" fill="var(--ink)" font-weight="650" letter-spacing="-.01em">${label}</text>`;
   }
   if (tier !== 'month') for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7)) {
-    s += `<line x1="${x(d)}" y1="20" x2="${x(d)}" y2="${HDR}" stroke="var(--grid)"/>`;
-    s += `<text x="${x(d) + 2}" y="${tier === 'day' ? 30 : 38}" fill="var(--muted)">${tier === 'day' ? 'w/c ' : ''}${d.getDate()}${tier === 'day' ? ' ' + d.toLocaleDateString('en-GB', { month: 'short' }) : ''}</text>`;
+    s += `<line x1="${x(d)}" y1="27" x2="${x(d)}" y2="${HDR}" stroke="var(--line-2)"/>`;
+    s += `<text x="${x(d) + 3}" y="${tier === 'day' ? 34 : 41}" fill="var(--ink-3)" font-size="10.5">${d.getDate()}${tier === 'day' ? ' ' + d.toLocaleDateString('en-GB', { month: 'short' }) : ''}</text>`;
   }
-  if (tier === 'day') for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) s += `<text x="${x(d) + px / 2}" y="41" fill="var(--muted)" text-anchor="middle" font-size="9">${'MTWTFSS'[(d.getDay() + 6) % 7]}</text>`;
+  if (tier === 'day') for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) s += `<text x="${x(d) + px / 2}" y="45" fill="var(--ink-3)" text-anchor="middle" font-size="9">${'MTWTFSS'[(d.getDay() + 6) % 7]}</text>`;
+  // the data date and the deadline get their own tags in the timescale
+  const tag = (d, label, col) => { const cx = x(d), w = label.length * 6 + 14; return `<g><rect x="${cx - w / 2}" y="22" width="${w}" height="15" rx="7.5" fill="${col}"/><text x="${cx}" y="32.5" text-anchor="middle" fill="#fff" font-size="10" font-weight="650">${label}</text></g>`; };
+  s += tag(p.data_date || p.start, 'Data date', 'var(--dd)');
+  if (p.must_finish_by) s += tag(p.must_finish_by, 'Deadline', 'var(--crit)');
   return s + '</svg>';
 }
 function chart(rs, t0, t1, W, H, bandH) {
   const p = S.project, x = S.x, px = S.view.pxDay; let s = '';
-  // non-working shading (weekends) when zoomed in
   const cal = p.calendars[p.default_calendar_id];
-  if (px >= 6 && cal) for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) if (!isWorking(cal, d)) s += `<rect x="${x(d)}" y="0" width="${px}" height="${H - bandH}" fill="var(--grid)" opacity=".55"/>`;
-  for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7)) s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--grid)"/>`;
+  if (px >= 5 && cal) for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 1)) if (!isWorking(cal, d)) s += `<rect x="${x(d)}" y="0" width="${px}" height="${H - bandH}" fill="var(--weekend)"/>`;
+  for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7)) s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--line-2)"/>`;
   for (let d = new Date(t0.getFullYear(), t0.getMonth(), 1); d < t1; d.setMonth(d.getMonth() + 1)) s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--line)"/>`;
-  // row backgrounds (hit targets)
   rs.forEach((r, i) => { const key = rowKey(r); s += `<rect class="hit rowbg" data-key="${esc(key)}" x="0" y="${i * RH}" width="${W}" height="${RH}" fill="${S.sel.has(key) ? 'var(--sel)' : (r.wbs || r.group) ? 'var(--grid)' : 'transparent'}" opacity="${S.sel.has(key) ? .6 : .5}"/>`; });
   const dd = new Date(p.data_date || p.start);
-  s += `<line x1="${x(dd)}" y1="0" x2="${x(dd)}" y2="${H}" stroke="var(--today)" stroke-dasharray="4 3" stroke-width="1.5"/>`;
-  if (p.must_finish_by) s += `<line x1="${x(p.must_finish_by)}" y1="0" x2="${x(p.must_finish_by)}" y2="${H - bandH}" stroke="var(--crit)" stroke-dasharray="2 3"/>`;
+  s += `<line x1="${x(dd)}" y1="0" x2="${x(dd)}" y2="${H}" stroke="var(--dd)" stroke-dasharray="5 4" stroke-width="1.6"/>`;
+  if (p.must_finish_by) s += `<line x1="${x(p.must_finish_by)}" y1="0" x2="${x(p.must_finish_by)}" y2="${H - bandH}" stroke="var(--crit)" stroke-dasharray="2 4" stroke-width="1.4"/>`;
   const yOf = {}; rs.forEach((r, i) => { if (r.act) yOf[r.act.id] = i * RH; });
   const ids = Object.fromEntries(p.activities.map(a => [a.id, a]));
-  if (S.view.links) p.relationships.forEach((r, li) => {
+  const mid = RH / 2;
+  if (S.view.links) p.relationships.forEach(r => {
     const a = ids[r.predecessor_id], b = ids[r.successor_id]; if (!a || !b || yOf[a.id] == null || yOf[b.id] == null) return;
     const ax = x(r.type[0] === 'S' ? (a.actual_start || a.early_start) : (a.actual_finish || a.early_finish));
     const bx = x(r.type[1] === 'S' ? (b.actual_start || b.early_start) : (b.actual_finish || b.early_finish));
-    const ay = yOf[a.id] + RH / 2, by = yOf[b.id] + RH / 2, crit = a.critical && b.critical;
+    const ay = yOf[a.id] + mid, by = yOf[b.id] + mid, crit = a.critical && b.critical;
     const selL = S.selLink && S.selLink.p === a.id && S.selLink.s === b.id;
-    const mid = r.type === 'FS' ? (bx >= ax + 12 ? ax + 6 : ax + 6) : ax - 6;
-    const pts = r.type === 'FS' && bx < ax + 12 ? `${ax},${ay} ${ax + 6},${ay} ${ax + 6},${ay + RH / 2} ${bx - 8},${ay + RH / 2} ${bx - 8},${by} ${bx},${by}` : `${ax},${ay} ${mid},${ay} ${mid},${by} ${bx},${by}`;
-    s += `<polyline class="hit link ${selL ? 'sel' : ''}" data-p="${a.id}" data-s="${b.id}" points="${pts}" fill="none" stroke="${selL ? 'var(--accent)' : crit ? 'var(--crit)' : 'var(--muted)'}" stroke-width="${selL ? 2.5 : 1.2}" opacity=".75" style="cursor:pointer"/>`;
-    s += `<polygon points="${bx},${by} ${bx - 6},${by - 3.5} ${bx - 6},${by + 3.5}" fill="${selL ? 'var(--accent)' : crit ? 'var(--crit)' : 'var(--muted)'}"/>`;
+    const col = selL ? 'var(--accent)' : crit ? 'var(--crit)' : 'var(--ink-3)';
+    const dn = by >= ay ? 1 : -1;
+    const pts = r.type === 'FS' && bx < ax + 12 ? `${ax},${ay} ${ax + 6},${ay} ${ax + 6},${ay + dn * mid} ${bx - 8},${ay + dn * mid} ${bx - 8},${by} ${bx},${by}` : r.type === 'FS' ? `${ax},${ay} ${ax + 6},${ay} ${ax + 6},${by} ${bx},${by}` : `${ax},${ay} ${ax - 6},${ay} ${ax - 6},${by} ${bx},${by}`;
+    s += `<polyline class="hit link ${selL ? 'sel' : ''}" data-p="${a.id}" data-s="${b.id}" points="${pts}" fill="none" stroke="${col}" stroke-width="${selL ? 2.4 : 1.15}" stroke-linejoin="round" opacity="${crit || selL ? .9 : .6}" style="cursor:pointer"/>`;
+    s += `<polygon points="${bx},${by} ${bx - 5.5},${by - 3.2} ${bx - 5.5},${by + 3.2}" fill="${col}"/>`;
   });
   const progressPts = [];
   rs.forEach((r, i) => {
     const y = i * RH;
     if (r.wbs || r.group) {
-      if (r.start && r.finish) { const bx = x(r.start), bw = Math.max(2, x(r.finish) - bx); s += `<path d="M${bx},${y + 8} h${bw} v7 l-5,5 l-5,-5 h${-(bw - 20)} l-5,5 l-5,-5 z" fill="${r.colour || (r.crit ? 'var(--crit)' : 'var(--summary)')}" opacity=".85"/>`; }
+      if (r.start && r.finish) {
+        const bx = x(r.start), bw = Math.max(2, x(r.finish) - bx), col = r.colour || (r.crit ? 'var(--crit)' : 'var(--summary)');
+        s += bw > 22 ? `<path d="M${bx},${y + 10} h${bw} v7 l-5,5 l-5,-5 h${-(bw - 20)} l-5,5 l-5,-5 z" fill="${col}" opacity=".88"/>` : `<rect x="${bx}" y="${y + 10}" width="${bw}" height="7" rx="2" fill="${col}"/>`;
+        if (r.pct > 0) s += `<rect x="${bx}" y="${y + 12}" width="${bw * Math.min(100, r.pct) / 100}" height="3" rx="1.5" fill="var(--progress)"/>`;
+      }
       return;
     }
     const a = r.act, st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (!st) return;
-    const fill = colourOf(a) || (S.view.colour === 'critical' && a.critical ? 'var(--crit)' : 'var(--bar)');
-    if (S.view.baseline && a.baseline_start && a.baseline_finish) s += `<rect x="${x(a.baseline_start)}" y="${y + 20}" width="${Math.max(2, x(a.baseline_finish) - x(a.baseline_start))}" height="4" fill="var(--baseline)"/>`;
+    const pct = a.status === 'complete' ? 100 : a.percent_complete;
+    const fill = colourOf(a) || (a.status === 'complete' ? 'var(--progress)' : S.view.colour === 'critical' && a.critical ? 'var(--crit)' : 'var(--bar)');
+    if (S.view.baseline && a.baseline_start && a.baseline_finish) s += `<rect x="${x(a.baseline_start)}" y="${y + 23}" width="${Math.max(2, x(a.baseline_finish) - x(a.baseline_start))}" height="3.5" rx="1.75" fill="var(--baseline)"/>`;
     if (a.type !== 'task' || a.duration_hours === 0) {
-      const cx = x(a.type === 'finish_milestone' ? fi : st), cy = y + RH / 2;
-      s += `<polygon class="hit bar" data-id="${a.id}" points="${cx},${cy - 7} ${cx + 7},${cy} ${cx},${cy + 7} ${cx - 7},${cy}" fill="${a.status === 'complete' ? 'var(--progress)' : (colourOf(a) || (a.critical ? 'var(--crit)' : 'var(--ms)'))}"/>`;
-      s += `<text x="${cx + 10}" y="${cy + 4}" fill="var(--muted)">${esc(a.name)}</text>`;
+      const cx = x(a.type === 'finish_milestone' ? fi : st), cy = y + mid;
+      s += `<polygon class="hit bar" data-id="${a.id}" points="${cx},${cy - 7.5} ${cx + 7.5},${cy} ${cx},${cy + 7.5} ${cx - 7.5},${cy}" fill="${a.status === 'complete' ? 'var(--progress)' : (colourOf(a) || (a.critical ? 'var(--crit)' : 'var(--ms)'))}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
+      s += `<text x="${cx + 11}" y="${cy + 4}" fill="var(--ink-2)" font-weight="600">${esc(a.name)}</text>`;
       if (S.view.progress) progressPts.push([a.status === 'complete' ? x(dd) : Math.min(cx, x(dd)), cy]);
     } else {
-      const bx = x(st), bw = Math.max(2, x(fi) - bx);
-      if (S.view.float && a.late_finish && a.total_float_hours > 0) s += `<rect x="${bx + bw}" y="${y + 11}" width="${Math.max(0, x(a.late_finish) - (bx + bw))}" height="4" fill="var(--muted)" opacity=".35"/>`;
-      if (S.view.float && a.total_float_hours < 0 && a.late_finish) s += `<rect x="${x(a.late_finish)}" y="${y + 11}" width="${Math.max(0, bx + bw - x(a.late_finish))}" height="4" fill="var(--crit)" opacity=".5"/>`;
-      s += `<rect class="hit bar" data-id="${a.id}" x="${bx}" y="${y + 6}" width="${bw}" height="14" rx="2" fill="${fill}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
-      const pct = a.status === 'complete' ? 100 : a.percent_complete;
-      if (pct > 0) s += `<rect x="${bx}" y="${y + 10}" width="${bw * Math.min(100, pct) / 100}" height="6" fill="var(--progress)"/>`;
-      if (a.constraint && a.constraint !== 'none' && a.constraint_date) s += `<text x="${x(a.constraint_date)}" y="${y + 24}" font-size="10" fill="var(--warn)" text-anchor="middle">${a.constraint.includes('start') ? '▲' : '▼'}</text>`;
-      s += `<rect class="hit handle" data-id="${a.id}" x="${bx + bw - 5}" y="${y + 6}" width="6" height="14" fill="transparent"/>`;
-      s += `<circle class="hit linkdot" data-id="${a.id}" cx="${bx + bw + 5}" cy="${y + 13}" r="4" fill="var(--panel)" stroke="var(--accent)" opacity="${S.sel.has(a.id) ? 1 : 0}"/>`;
-      s += `<text x="${bx + bw + 12}" y="${y + 17}" fill="var(--muted)">${esc(a.name)}${(a.codes || {}).Trade && S.view.colour === 'none' ? '' : ''}</text>`;
-      if (S.view.progress) { const exp = a.status === 'complete' ? x(dd) : a.status === 'in_progress' ? bx + bw * pct / 100 : Math.min(bx, x(dd)); progressPts.push([exp, y + RH / 2]); }
+      const bx = x(st), bw = Math.max(3, x(fi) - bx), h = 14, by = y + (RH - h) / 2, rr = Math.min(h / 2, bw / 2);
+      if (S.view.float && a.late_finish && a.total_float_hours > 0) { const fx = x(a.late_finish); if (fx > bx + bw + 1) s += `<line x1="${bx + bw}" y1="${y + mid}" x2="${fx}" y2="${y + mid}" stroke="var(--ink-3)" stroke-width="1.6" opacity=".45"/><line x1="${fx}" y1="${y + mid - 3.5}" x2="${fx}" y2="${y + mid + 3.5}" stroke="var(--ink-3)" stroke-width="1.6" opacity=".55"/>`; }
+      if (S.view.float && a.total_float_hours < 0 && a.late_finish) s += `<rect x="${x(a.late_finish)}" y="${y + mid - 1.5}" width="${Math.max(0, bx + bw - x(a.late_finish))}" height="3" rx="1.5" fill="var(--crit)" opacity=".55"/>`;
+      s += `<rect class="hit bar" data-id="${a.id}" x="${bx}" y="${by}" width="${bw}" height="${h}" rx="${rr}" fill="${fill}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
+      if (pct > 0 && pct < 100) s += `<rect x="${bx}" y="${by}" width="${Math.max(rr * 2, bw * pct / 100)}" height="${h}" rx="${rr}" fill="var(--progress)" opacity=".95" pointer-events="none"/>`;
+      if (a.constraint && a.constraint !== 'none' && a.constraint_date) { const cx = x(a.constraint_date); s += a.constraint.includes('start') ? `<polygon points="${cx},${by - 1} ${cx - 4},${by - 6} ${cx + 4},${by - 6}" fill="var(--warn)"/>` : `<polygon points="${cx},${by + h + 1} ${cx - 4},${by + h + 6} ${cx + 4},${by + h + 6}" fill="var(--warn)"/>`; }
+      s += `<rect class="hit handle" data-id="${a.id}" x="${bx + bw - 6}" y="${by}" width="8" height="${h}" fill="transparent"/>`;
+      s += `<circle class="hit linkdot" data-id="${a.id}" cx="${bx + bw + 7}" cy="${y + mid}" r="4.5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6" opacity="${S.sel.has(a.id) ? 1 : 0}"/>`;
+      s += `<text x="${bx + bw + 14}" y="${y + mid + 4}" fill="var(--ink-2)">${esc(a.name)}</text>`;
+      if (S.view.progress) { const exp = a.status === 'complete' ? x(dd) : a.status === 'in_progress' ? bx + bw * pct / 100 : Math.min(bx, x(dd)); progressPts.push([exp, y + mid]); }
     }
   });
   if (S.view.progress && progressPts.length) {
-    let d = `M${x(dd)},0`; progressPts.forEach(([px_, py]) => d += ` L${px_},${py}`); d += ` L${x(dd)},${H - bandH}`;
-    s += `<path d="${d}" fill="none" stroke="var(--today)" stroke-width="1.5" opacity=".9"/>`;
+    let d = `M${x(dd)},0`; progressPts.forEach(([px_, py]) => { d += ` L${px_},${py}`; }); d += ` L${x(dd)},${H - bandH}`;
+    s += `<path d="${d}" fill="none" stroke="var(--dd)" stroke-width="1.6" stroke-linejoin="round" opacity=".9"/>`;
   }
   return s;
 }
@@ -338,28 +551,112 @@ function renderTimeLocation(gw, W, t0, t1) {
     `<svg class="chart" style="left:${gw}px" width="${W}" height="${H}">${sv}</svg>` +
     `<div class="bandrow" style="height:auto"><div class="cells" style="width:${gw}px;height:auto;padding:4px 8px" ><span class="hint">Time–location: each activity runs from its start (bottom of its location band) to its finish (top). Dashed lines follow a trade from location to location. A steeper line is a faster trade; crossing lines are clashes.</span></div><div style="padding:4px 8px;font-size:12px;display:flex;gap:10px;flex-wrap:wrap">${leg}</div></div>`;
   $('#inner').style.width = (gw + W) + 'px';
-  $$('svg.chart .bar[data-id]').forEach(b => { b.onmousemove = e => tipFor(e, byId(b.dataset.id)); b.onmouseleave = hideTip; b.ondblclick = () => activityDialog(b.dataset.id); b.onclick = () => { S.sel = new Set([b.dataset.id]); S.active = b.dataset.id; }; });
+  $$('svg.chart .bar[data-id]').forEach(b => { b.onmousemove = e => tipFor(e, byId(b.dataset.id)); b.onmouseleave = hideTip; b.ondblclick = () => openInspector(b.dataset.id); b.onclick = () => { S.sel = new Set([b.dataset.id]); S.active = b.dataset.id; }; });
   renderPanelBody();
 }
+function healthColour(score) { return score >= 90 ? 'var(--ok)' : score >= 70 ? 'var(--warn)' : 'var(--crit)'; }
 function renderSummary() {
-  const p = S.project, r = S.report, crit = p.activities.filter(a => a.critical).length;
-  $('#summary').innerHTML = [`<span><b>${esc(p.name)}</b> <span class="hint">${esc(p.id)}</span></span>`, `<span>Start <b>${fmtD(p.start)}</b></span>`, `<span>Finish <b>${fmtD(p.finish)}</b></span>`,
-    p.must_finish_by ? `<span>Must finish <b>${fmtD(p.must_finish_by)}</b></span>` : '', `<span>Data date <b>${fmtD(p.data_date || p.start)}</b></span>`,
-    `<span><b>${p.activities.length}</b> activities · <b>${p.relationships.length}</b> links · <b class="${crit ? 'crit' : ''}">${crit}</b> critical</span>`,
-    r ? `<span>Health <b style="color:${r.score >= 90 ? 'var(--ok)' : r.score >= 70 ? 'var(--warn)' : 'var(--crit)'}">${r.score}</b></span>` : '',
-    p.levelled ? '<span class="hint">levelled</span>' : '', p.baselines.length ? `<span class="hint">baseline: ${esc(p.baselines[p.baselines.length - 1].name)}</span>` : '',
+  const p = S.project, r = S.report, crit = p.activities.filter(a => a.critical && a.status !== 'complete').length;
+  const [cls, label] = statusOf(p, r);
+  const late = p.must_finish_by && p.finish && new Date(p.finish) > new Date(p.must_finish_by);
+  $('#summary').innerHTML = [
+    `<span class="pname">${esc(p.name)}</span>`, `<span class="chip ${cls}">${label}</span>`,
+    `<span>Start <b>${fmtD(p.start)}</b></span>`, `<span>Finish <b class="${late ? 'crit' : ''}">${fmtD(p.finish)}</b></span>`,
+    p.must_finish_by ? `<span>Deadline <b>${fmtD(p.must_finish_by)}</b></span>` : '',
+    `<span><b>${p.activities.length}</b> activities · <b class="${crit ? 'crit' : ''}">${crit}</b> critical</span>`,
+    r ? `<button type="button" class="linkish" id="fHealth" title="See the health checks">Health <b style="color:${healthColour(r.score)}">${r.score}</b></button>` : '',
+    p.levelled ? '<span class="chip plain">Levelled</span>' : '', p.baselines.length ? `<span class="chip plain">Baseline: ${esc(p.baselines[p.baselines.length - 1].name)}</span>` : '',
     S.extra && S.extra.schedule_error ? `<span class="crit">${esc(S.extra.schedule_error)}</span>` : ''].join('');
   $('#dataDate').value = (p.data_date || p.start).slice(0, 10);
+  const fh = $('#fHealth'); if (fh) fh.onclick = () => go('monitor');
 }
 function renderToolbarState() {
-  $('#btnUndo').disabled = !S.history.undo; $('#btnRedo').disabled = !S.history.redo;
+  paintChrome();
   const types = Object.keys(S.project.code_types || {});
-  const vc = $('#vColour'); const cur = vc.value; vc.innerHTML = '<option value="critical">Colour: critical</option><option value="none">Colour: plain</option><option value="resource">Colour: resource</option>' + types.map(t => `<option value="code:${esc(t)}">Colour: ${esc(t)}</option>`).join(''); vc.value = [...vc.options].some(o => o.value === cur) ? cur : 'critical'; S.view.colour = vc.value;
-  const vg = $('#vGroup'); const cg = vg.value; vg.innerHTML = '<option value="">Group: WBS</option>' + types.map(t => `<option value="${esc(t)}">Group: ${esc(t)}</option>`).join(''); vg.value = [...vg.options].some(o => o.value === cg) ? cg : ''; S.view.group = vg.value;
+  const vc = $('#vColour'); vc.innerHTML = '<option value="critical">Critical path</option><option value="none">Plain</option><option value="resource">Resource</option>' + types.map(t => `<option value="code:${esc(t)}">${esc(t)}</option>`).join('');
+  vc.value = [...vc.options].some(o => o.value === S.view.colour) ? S.view.colour : 'critical'; S.view.colour = vc.value;
+  const vg = $('#vGroup'); vg.innerHTML = '<option value="">WBS</option>' + types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  vg.value = [...vg.options].some(o => o.value === S.view.group) ? S.view.group : ''; S.view.group = vg.value;
   $$('[data-panel]').forEach(b => b.classList.toggle('on', b.dataset.panel === S.panel));
-  const vt = $('#vTl'); const ct = vt.value; vt.innerHTML = '<option value="WBS">Location: WBS</option>' + types.map(t => `<option value="${esc(t)}">Location: ${esc(t)}</option>`).join(''); vt.value = [...vt.options].some(o => o.value === ct) ? ct : 'WBS'; S.view.tlSource = vt.value; vt.hidden = S.view.mode !== 'tl';
+  const vt = $('#vTl'); vt.innerHTML = '<option value="WBS">Locations: WBS</option>' + types.map(t => `<option value="${esc(t)}">Locations: ${esc(t)}</option>`).join('');
+  vt.value = [...vt.options].some(o => o.value === S.view.tlSource) ? S.view.tlSource : 'WBS'; S.view.tlSource = vt.value; vt.hidden = S.view.mode !== 'tl';
+  $$('#modeSeg [data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === S.view.mode));
+  $('#btnInspector').classList.toggle('on', S.inspector);
 }
 
+// ---------- inspector: a side panel for the selected activity ----------
+function openInspector(id) { if (id) { S.sel = new Set([id]); S.active = id; paintSelection(); } toggleInspector(true); }
+function toggleInspector(on) {
+  S.inspector = on ?? !S.inspector; const el = $('#inspector');
+  $('#btnInspector').classList.toggle('on', S.inspector);
+  if (S.inspector) { el.hidden = false; renderInspector(); animate(el, { x: 0, opacity: 1 }, { from: springs.has(el) ? undefined : { x: 48, opacity: 0 }, response: .36 }); }
+  else animate(el, { x: 48, opacity: 0 }, { response: .26, done: () => { el.hidden = true; el.style.transform = ''; springs.delete(el); } });
+}
+const CONSTRAINTS = [['none', 'None'], ['start_on_or_after', 'Start on or after'], ['start_on_or_before', 'Start on or before'], ['finish_on_or_after', 'Finish on or after'], ['finish_on_or_before', 'Finish on or before'], ['must_start_on', 'Must start on'], ['must_finish_on', 'Must finish on'], ['as_late_as_possible', 'As late as possible']];
+function renderInspector() {
+  const el = $('#inspector'); if (!S.inspector || !S.project) return;
+  const focusId = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
+  const a = S.active && byId(S.active);
+  if (!a) { el.innerHTML = `<div class="insp-head"><span style="flex:1"></span><button type="button" class="icon" id="inspClose" aria-label="Close inspector"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div><div class="empty"><b>Select an activity</b>Click a bar or a row to see its dates, logic and progress here.</div>`; $('#inspClose').onclick = () => toggleInspector(false); return; }
+  const p = S.project; const pct = a.status === 'complete' ? 100 : Math.round(a.percent_complete);
+  const tf = a.total_float_hours == null ? null : fmt1(daysOf(a, a.total_float_hours));
+  const status = a.status === 'complete' ? '<span class="chip ok">Complete</span>' : a.status === 'in_progress' ? '<span class="chip warn">In progress</span>' : '<span class="chip plain">Not started</span>';
+  const crit = a.critical ? '<span class="chip bad">Critical</span>' : (tf != null ? `<span class="chip plain">${tf}d float</span>` : '');
+  const preds = p.relationships.filter(r => r.successor_id === a.id), succs = p.relationships.filter(r => r.predecessor_id === a.id);
+  const lag = r => r.lag_hours ? ` ${r.lag_hours > 0 ? '+' : ''}${fmt1(daysOf(byId(r.predecessor_id) || a, r.lag_hours))}d` : '';
+  const chipFor = (id, extra) => `<button type="button" class="linkchip" data-goto="${esc(id)}" title="${esc((byId(id) || {}).name || '')}">${esc(id)}${esc(extra)}</button>`;
+  const cals = Object.values(p.calendars).map(c => `<option value="${esc(c.id)}" ${(a.calendar_id || p.default_calendar_id) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const cons = CONSTRAINTS.map(([v, l]) => `<option value="${v}" ${a.constraint === v ? 'selected' : ''}>${l}</option>`).join('');
+  const codes = Object.keys(p.code_types).map(t => `<label>${esc(t)}<select data-code="${esc(t)}" id="iCode_${esc(t).replace(/\W+/g, '_')}"><option value="">None</option>${Object.keys(p.code_types[t]).map(v => `<option ${(a.codes || {})[t] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`).join('');
+  el.innerHTML = `
+    <div class="insp-head"><div style="min-width:0;flex:1"><div class="id">${esc(a.id)}</div><h3>${esc(a.name)}</h3><div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${status}${crit}</div></div>
+      <button type="button" class="icon" id="inspClose" aria-label="Close inspector"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>
+    <div class="insp-dates">
+      <div class="cell"><div class="k">${a.actual_start ? 'Actual start' : 'Start'}</div><div class="v">${fmtLong(a.actual_start || a.early_start)}</div></div>
+      <div class="cell"><div class="k">${a.actual_finish ? 'Actual finish' : 'Finish'}</div><div class="v">${fmtLong(a.actual_finish || a.early_finish)}</div></div>
+      <div class="cell"><div class="k">Latest start</div><div class="v">${fmtD(a.late_start)}</div></div>
+      <div class="cell"><div class="k">Latest finish</div><div class="v">${fmtD(a.late_finish)}</div></div>
+    </div>
+    <div class="form">
+      <label>Name<input id="iName" value="${esc(a.name)}"></label>
+      <div class="row2">
+        <label>Duration, working days${a.type === 'task' ? stepper('iDur', fmt1(daysOf(a, a.duration_hours)), .5) : '<input disabled value="Milestone" id="iDurMs">'}</label>
+        <label>Calendar<select id="iCal">${cals}</select></label>
+      </div>
+      <div class="insp-sec">Progress</div>
+      <label>Complete <b id="iPctV" style="color:var(--ink)">${pct}%</b><input type="range" id="iPct" min="0" max="100" step="5" value="${pct}" aria-label="Percent complete"></label>
+      <div class="row2"><label>Actual start<input type="date" id="iAS" value="${(a.actual_start || '').slice(0, 10)}"></label><label>Actual finish<input type="date" id="iAF" value="${(a.actual_finish || '').slice(0, 10)}"></label></div>
+      <div class="insp-sec">Logic</div>
+      <div class="hint" style="font-size:12px">Waits for</div>
+      <div class="links-list">${preds.map(r => chipFor(r.predecessor_id, (r.type === 'FS' ? '' : ' ' + r.type) + lag(r))).join('') || '<span class="hint" style="font-size:12.5px">Nothing. It can start on day one.</span>'}</div>
+      <label>Predecessors<input id="iPreds" value="${esc(predsText(a))}" placeholder="A1010, A1020SS+2"></label>
+      <div class="hint" style="font-size:12px">Holds up</div>
+      <div class="links-list">${succs.map(r => chipFor(r.successor_id, r.type === 'FS' ? '' : ' ' + r.type)).join('') || '<span class="hint" style="font-size:12.5px">Nothing waits for it.</span>'}</div>
+      <div class="insp-sec">Constraint and resources</div>
+      <div class="row2"><label>Constraint<select id="iCon">${cons}</select></label><label>Date<input type="date" id="iConD" value="${a.constraint_date ? a.constraint_date.slice(0, 10) : ''}"></label></div>
+      <label>Resources<input id="iRes" value="${esc(ALL_COLS.res.get(a))}" placeholder="Bricklayers, Scaffolders"></label>
+      ${codes}
+      <label>Notes<textarea id="iNotes" rows="3">${esc(a.notes || '')}</textarea></label>
+    </div>`;
+  const q = s => el.querySelector(s);
+  q('#inspClose').onclick = () => toggleInspector(false);
+  wireSteppers(el);
+  el.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { const id = b.dataset.goto; S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(r => rowKey(r) === id); if (i >= 0) scrollToRow(i); renderInspector(); });
+  q('#iName').onchange = e => { const v = e.target.value.trim(); if (v) mutate(() => { a.name = v; }, null); };
+  if (q('#iDur')) q('#iDur').onchange = e => mutate(() => { a.duration_hours = Math.max(0, +e.target.value || 0) * hpd(a); if (a.status === 'in_progress') a.remaining_hours = a.duration_hours * (1 - a.percent_complete / 100); }, `${a.id} is now ${fmt1(+e.target.value || 0)} days`);
+  q('#iCal').onchange = e => mutate(() => { const old = hpd(a); a.calendar_id = e.target.value; a.duration_hours = a.duration_hours / old * hpd(a); }, `${a.id} calendar changed`);
+  q('#iPct').oninput = e => { q('#iPctV').textContent = e.target.value + '%'; };
+  q('#iPct').onchange = e => mutate(p => setProgress(a, +e.target.value, p.data_date ? new Date(p.data_date) : null), `${a.id} ${+e.target.value}% complete`);
+  q('#iAS').onchange = e => mutate(() => { const v = e.target.value; a.actual_start = v ? v + 'T08:00:00' : null; if (v && a.status === 'not_started') { a.status = 'in_progress'; a.remaining_hours = a.duration_hours; } if (!v && !a.actual_finish) { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; } }, `${a.id} actual start set`);
+  q('#iAF').onchange = e => mutate(() => { const v = e.target.value; a.actual_finish = v ? v + 'T16:00:00' : null; if (v) { a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start) a.actual_start = a.early_start; } else if (a.status === 'complete') { a.status = 'in_progress'; a.percent_complete = 90; a.remaining_hours = a.duration_hours * .1; } }, `${a.id} actual finish set`);
+  q('#iPreds').onchange = e => mutate(() => setPreds(a, e.target.value), `${a.id} logic updated`);
+  const setCon = () => mutate(() => { const c = q('#iCon').value, d = q('#iConD').value || (a.early_start || '').slice(0, 10); a.constraint = c; a.constraint_date = c === 'none' || c === 'as_late_as_possible' ? null : (d ? d + (c.includes('finish') ? 'T16:00:00' : 'T08:00:00') : null); if (c !== 'none' && c !== 'as_late_as_possible' && !a.constraint_date) a.constraint = 'none'; }, `${a.id} constraint updated`);
+  q('#iCon').onchange = setCon; q('#iConD').onchange = setCon;
+  q('#iRes').onchange = e => mutate(() => setResources(a, e.target.value), `${a.id} resources updated`);
+  el.querySelectorAll('[data-code]').forEach(sel => sel.onchange = () => mutate(() => { a.codes = a.codes || {}; if (sel.value) a.codes[sel.dataset.code] = sel.value; else delete a.codes[sel.dataset.code]; }, null));
+  q('#iNotes').onchange = e => mutate(() => { a.notes = e.target.value; }, null);
+  if (focusId && q('#' + CSS.escape(focusId))) q('#' + CSS.escape(focusId)).focus({ preventScroll: true });
+}
 // ---------- row + cell wiring ----------
 function wireRows() {
   $$('#rows .row[data-key]').forEach(row => {
@@ -378,7 +675,7 @@ function selectRow(key, e, col) {
   else if (e && (e.ctrlKey || e.metaKey)) { if (S.sel.has(key)) S.sel.delete(key); else S.sel.add(key); S.active = key; }
   else { S.sel = new Set([key]); S.active = key; }
   if (col) S.activeCol = col; S.selLink = null;
-  paintSelection();
+  paintSelection(); if (S.inspector) renderInspector();
 }
 function paintSelection() {
   $$('#rows .row[data-key]').forEach(r => { r.classList.toggle('sel', S.sel.has(r.dataset.key)); r.querySelectorAll('.c').forEach(c => c.classList.toggle('active', S.active === r.dataset.key && S.activeCol === c.dataset.col)); });
@@ -418,7 +715,7 @@ function moveActive(dr, dc) {
   const keys = S.rowsCache.map(rowKey); let i = keys.indexOf(S.active); if (i < 0) i = 0;
   i = Math.max(0, Math.min(keys.length - 1, i + dr));
   let ci = S.cols.indexOf(S.activeCol); ci = Math.max(0, Math.min(S.cols.length - 1, ci + dc));
-  S.active = keys[i]; S.activeCol = S.cols[ci]; S.sel = new Set([S.active]); paintSelection(); scrollToRow(i);
+  S.active = keys[i]; S.activeCol = S.cols[ci]; S.sel = new Set([S.active]); paintSelection(); scrollToRow(i); if (S.inspector) renderInspector();
 }
 function scrollToRow(i) { const sheet = $('#sheet'); const y = HDR + i * RH; if (y < sheet.scrollTop + HDR) sheet.scrollTop = y - HDR; else if (y + RH > sheet.scrollTop + sheet.clientHeight) sheet.scrollTop = y + RH - sheet.clientHeight; }
 
@@ -427,13 +724,13 @@ function wireChart() {
   const svg = $('svg.chart'); if (!svg) return;
   svg.querySelectorAll('.rowbg').forEach(r => { r.onmousedown = e => { if (e.button === 0) selectRow(r.dataset.key, e); }; r.oncontextmenu = e => { e.preventDefault(); if (!S.sel.has(r.dataset.key)) selectRow(r.dataset.key, e); contextMenu(e.clientX, e.clientY); }; });
   svg.querySelectorAll('.bar[data-id]').forEach(b => {
-    b.onmousedown = e => { if (e.button !== 0) return; e.stopPropagation(); if (!S.sel.has(b.dataset.id)) selectRow(b.dataset.id, e); startDrag(e, 'move', b.dataset.id, b); };
+    b.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); if (!S.sel.has(b.dataset.id)) selectRow(b.dataset.id, e); startDrag(e, 'move', b.dataset.id, b); };
     b.onmousemove = e => tipFor(e, byId(b.dataset.id)); b.onmouseleave = hideTip;
     b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (!S.sel.has(b.dataset.id)) selectRow(b.dataset.id, e); contextMenu(e.clientX, e.clientY); };
-    b.ondblclick = () => activityDialog(b.dataset.id);
+    b.ondblclick = () => openInspector(b.dataset.id);
   });
-  svg.querySelectorAll('.handle').forEach(h => h.onmousedown = e => { if (e.button !== 0) return; e.stopPropagation(); selectRow(h.dataset.id, e); startDrag(e, 'resize', h.dataset.id, h.previousElementSibling && h.previousElementSibling.classList.contains('bar') ? h.previousElementSibling : svg.querySelector(`.bar[data-id="${CSS.escape(h.dataset.id)}"]`)); });
-  svg.querySelectorAll('.linkdot').forEach(d => d.onmousedown = e => { if (e.button !== 0) return; e.stopPropagation(); startDrag(e, 'link', d.dataset.id, d); });
+  svg.querySelectorAll('.handle').forEach(h => h.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); selectRow(h.dataset.id, e); startDrag(e, 'resize', h.dataset.id, h.previousElementSibling && h.previousElementSibling.classList.contains('bar') ? h.previousElementSibling : svg.querySelector(`.bar[data-id="${CSS.escape(h.dataset.id)}"]`)); });
+  svg.querySelectorAll('.linkdot').forEach(d => d.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); startDrag(e, 'link', d.dataset.id, d); });
   svg.querySelectorAll('.link').forEach(l => { l.onmousedown = e => { e.stopPropagation(); S.selLink = { p: l.dataset.p, s: l.dataset.s }; S.sel = new Set(); paintSelection(); }; l.ondblclick = e => { e.stopPropagation(); linkDialog(l.dataset.p, l.dataset.s); }; });
 }
 function startDrag(e, kind, id, el) {
@@ -450,19 +747,20 @@ function startDrag(e, kind, id, el) {
     if (d.kind !== 'link') { const days = Math.round(dx / S.view.pxDay); tipText(ev, d.kind === 'move' ? `${days >= 0 ? '+' : ''}${days} days` : `${fmt1(daysOf(a, a.duration_hours)) + Math.round(dx / S.view.pxDay * 5 / 7)}d approx`); }
   };
   const onUp = ev => {
-    document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); hideTip();
+    document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp); document.removeEventListener('pointercancel', onUp); hideTip();
     const d = S.drag; S.drag = null; if (!d) return;
     if (d.kind === 'link') { d.line.remove(); const target = document.elementFromPoint(ev.clientX, ev.clientY); const tid = target && target.dataset && target.dataset.id; const tkey = target && target.dataset && target.dataset.key; const sid = tid || (tkey && byId(tkey) ? tkey : null); if (sid && sid !== id) addLink(id, sid, 'FS', 0); return; }
-    if (!d.moved) { render(); return; }
+    if (!d.moved) { if (d.kind === 'move' && d.el.tagName === 'rect') { d.el.setAttribute('x', d.bx); d.el.classList.remove('drag'); } else if (d.kind === 'move') d.el.removeAttribute('transform'); else if (d.kind === 'resize') d.el.setAttribute('width', d.bw); return; }
     const dx = ev.clientX - d.x0; const days = Math.round(dx / S.view.pxDay); if (!days) { render(); return; }
     if (d.kind === 'move') {
       if (a.status !== 'not_started') { toast('Started activities move by their actual dates'); render(); return; }
-      mutate(p => { const s = new Date(a.early_start); s.setDate(s.getDate() + days); const nw = nextWorking(calOf(a), s); nw.setHours(8, 0, 0, 0); if (days < 0 && a.constraint === 'start_on_or_after') { a.constraint = 'none'; a.constraint_date = null; } a.constraint = 'start_on_or_after'; a.constraint_date = iso(nw); }, `${a.id} start on or after ${fmtD(a.constraint_date)}`);
+      const s = new Date(a.early_start); s.setDate(s.getDate() + days); const nw = nextWorking(calOf(a), s); const hm = String(calOf(a).day_start || '08:00').split(':'); nw.setHours(+hm[0] || 8, +hm[1] || 0, 0, 0);
+      mutate(() => { a.constraint = 'start_on_or_after'; a.constraint_date = iso(nw); }, `${a.id} now held to start on or after ${fmtD(iso(nw))}. Dragging adds this constraint.`);
     } else {
       mutate(p => { const f = new Date(a.actual_finish || a.early_finish); f.setDate(f.getDate() + days); const wd = workingDaysBetween(calOf(a), new Date(a.actual_start || a.early_start), f); if (wd < 0.5) return false; a.duration_hours = Math.max(0.5, wd) * hpd(a); if (a.status === 'in_progress') a.remaining_hours = a.duration_hours * (1 - a.percent_complete / 100); }, `${a.id} duration changed`);
     }
   };
-  document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+  document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp); document.addEventListener('pointercancel', onUp);
 }
 function svgPoint(svg, ev) { const r = svg.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; }
 function addLink(p, s, type, lagDays) {
@@ -570,7 +868,7 @@ function contextMenu(x, y) {
     ['Copy', copySelected], ['Paste below', pasteClip], null,
     ['Indent', () => indent(1)], ['Outdent', () => indent(-1)], ['Move up', () => moveRow(-1)], ['Move down', () => moveRow(1)], null,
     ['Link selected (FS)', linkSelected], ['Unlink selected', unlinkSelected], null,
-    one ? ['Edit…', () => activityDialog(one.id)] : null,
+    one ? ['Inspect…', () => openInspector(one.id)] : null,
     acts.length ? ['Progress…', progressDialog] : null,
     acts.length ? ['Constraint…', constraintDialog] : null,
     one && one.constraint !== 'none' ? ['Clear constraint', () => mutate(p => { one.constraint = 'none'; one.constraint_date = null; }, 'Constraint cleared')] : null,
@@ -582,53 +880,6 @@ function contextMenu(x, y) {
   m.hidden = false; m.style.left = Math.min(x, innerWidth - 240) + 'px'; m.style.top = Math.min(y, innerHeight - m.offsetHeight - 10) + 'px';
 }
 document.addEventListener('mousedown', e => { if (!e.target.closest('#ctx')) $('#ctx').hidden = true; });
-
-// ---------- dialogs ----------
-function modal(title, bodyHtml, onOk, okLabel = 'OK') {
-  const back = $('#modalBack'), m = $('#modal');
-  m.innerHTML = `<h2>${esc(title)}</h2><div class="mbody">${bodyHtml}</div><div class="actions"><button id="mCancel">Cancel</button>${onOk ? `<button class="primary" id="mOk">${esc(okLabel)}</button>` : ''}</div>`;
-  back.hidden = false; const close = () => { back.hidden = true; $('#sheet').focus(); };
-  $('#mCancel').onclick = close; if (onOk) $('#mOk').onclick = () => { if (onOk(m) !== false) close(); };
-  m.onkeydown = e => { if (e.key === 'Escape') close(); e.stopPropagation(); };
-  const first = m.querySelector('input,select,textarea'); if (first) first.focus();
-  return { m, close };
-}
-function activityDialog(id) {
-  const a = byId(id); if (!a) return; const p = S.project;
-  const cals = Object.values(p.calendars).map(c => `<option value="${esc(c.id)}" ${(a.calendar_id || p.default_calendar_id) === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
-  const cons = ['none', 'start_on_or_after', 'start_on_or_before', 'finish_on_or_after', 'finish_on_or_before', 'must_start_on', 'must_finish_on', 'as_late_as_possible'].map(c => `<option ${a.constraint === c ? 'selected' : ''}>${c}</option>`).join('');
-  const codes = Object.keys(p.code_types).map(t => `<label>${esc(t)}<select name="code:${esc(t)}"><option value="">—</option>${Object.keys(p.code_types[t]).map(v => `<option ${(a.codes || {})[t] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`).join('');
-  modal(`${a.id}`, `<div class="grid">
-    <label>Name<input name="name" value="${esc(a.name)}"></label>
-    <label>Type<select name="type"><option ${a.type === 'task' ? 'selected' : ''}>task</option><option ${a.type === 'start_milestone' ? 'selected' : ''}>start_milestone</option><option ${a.type === 'finish_milestone' ? 'selected' : ''}>finish_milestone</option></select></label>
-    <label>Duration (days)<input name="dur" type="number" step="0.5" value="${fmt1(daysOf(a, a.duration_hours))}"></label>
-    <label>Calendar<select name="cal">${cals}</select></label>
-    <label>Predecessors<input name="preds" value="${esc(predsText(a))}"></label>
-    <label>Resources<input name="res" value="${esc(ALL_COLS.res.get(a))}"></label>
-    <label>Constraint<select name="con">${cons}</select></label>
-    <label>Constraint date<input name="cond" type="date" value="${a.constraint_date ? a.constraint_date.slice(0, 10) : ''}"></label>
-    <label>% complete<input name="pct" type="number" min="0" max="100" value="${a.status === 'not_started' ? 0 : a.percent_complete}"></label>
-    <label>Actual start<input name="as" type="date" value="${a.actual_start ? a.actual_start.slice(0, 10) : ''}"></label>
-    <label>Actual finish<input name="af" type="date" value="${a.actual_finish ? a.actual_finish.slice(0, 10) : ''}"></label>
-    <label>Priority<input name="prio" type="number" value="${a.priority}"></label>
-    ${codes}
-    <label style="grid-column:1/-1">Notes<textarea name="notes" rows="3">${esc(a.notes || '')}</textarea></label>
-  </div><p class="hint">ES ${fmtD(a.early_start)} · EF ${fmtD(a.early_finish)} · LS ${fmtD(a.late_start)} · LF ${fmtD(a.late_finish)} · TF ${fmt1(daysOf(a, a.total_float_hours || 0))}d</p>`, m => {
-    const f = n => m.querySelector(`[name="${n}"]`).value;
-    mutate(p => {
-      a.name = f('name'); a.type = f('type'); const oldH = hpd(a); a.calendar_id = f('cal'); a.duration_hours = a.type === 'task' ? (+f('dur') || 0) * hpd(a) : 0;
-      setPreds(a, f('preds')); setResources(a, f('res'));
-      a.constraint = f('con'); a.constraint_date = a.constraint === 'none' || !f('cond') ? null : f('cond') + (a.constraint.includes('finish') ? 'T16:00:00' : 'T08:00:00'); if (a.constraint !== 'none' && !a.constraint_date) a.constraint = 'none';
-      a.priority = +f('prio') || 500; a.notes = f('notes');
-      Object.keys(p.code_types).forEach(t => { const v = f('code:' + t); if (v) a.codes[t] = v; else delete a.codes[t]; });
-      a.actual_start = f('as') ? f('as') + 'T08:00:00' : null; a.actual_finish = f('af') ? f('af') + 'T16:00:00' : null;
-      const pct = +f('pct') || 0;
-      if (a.actual_finish) { a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start) a.actual_start = a.actual_finish; }
-      else if (a.actual_start || pct > 0) { a.status = 'in_progress'; a.percent_complete = pct; a.remaining_hours = a.duration_hours * (1 - pct / 100); if (!a.actual_start) a.actual_start = a.early_start; }
-      else { a.status = 'not_started'; a.percent_complete = 0; a.remaining_hours = null; }
-    }, `${a.id} updated`);
-  }, 'Save');
-}
 function linkDialog(pid, sid) {
   const r = S.project.relationships.find(r => r.predecessor_id === pid && r.successor_id === sid); if (!r) return;
   const a = byId(pid);
@@ -712,7 +963,7 @@ function viewsDialog() {
   modal('Views', `<p class="hint">A view remembers columns, widths, zoom, chart type, toggles, colour, group, sort, filter and panel.</p><table>${Object.keys(views).map(n => `<tr><td>${esc(n)}</td><td><button type="button" data-apply="${esc(n)}">Apply</button> <button type="button" data-del="${esc(n)}">×</button></td></tr>`).join('') || '<tr><td class="hint" colspan="2">No saved views yet</td></tr>'}</table><p><input name="vn" placeholder="Name for the current view"> <button type="button" id="vSave">Save current</button></p>`, null);
   const m = $('#modal');
   const wire = () => {
-    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => { const v = load()[b.dataset.apply]; if (!v) return; S.cols = v.cols; Object.entries(v.widths || {}).forEach(([k, w]) => { if (ALL_COLS[k]) ALL_COLS[k].w = w; }); Object.assign(S.view, v.view); S.panel = v.panel; ['links', 'float', 'baseline', 'progress', 'critical'].forEach(k => { $('#v' + k[0].toUpperCase() + k.slice(1)).checked = !!S.view[k]; }); $('#vMode').value = S.view.mode; $('#vSort').value = S.view.sort; $('#vFilter').value = S.view.filter; $('#mCancel').click(); render(); refreshPanel(); });
+    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => { const v = load()[b.dataset.apply]; if (!v) return; S.cols = v.cols; Object.entries(v.widths || {}).forEach(([k, w]) => { if (ALL_COLS[k]) ALL_COLS[k].w = w; }); Object.assign(S.view, v.view); S.panel = v.panel; ['links', 'float', 'baseline', 'progress', 'critical'].forEach(k => { $('#v' + k[0].toUpperCase() + k.slice(1)).checked = !!S.view[k]; }); $('#vSort').value = S.view.sort; $('#vFilter').value = S.view.filter; $('#mCancel').click(); render(); refreshPanel(); });
     m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const v = load(); delete v[b.dataset.del]; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); });
     m.querySelector('#vSave').onclick = () => { const n = m.querySelector('[name=vn]').value.trim(); if (!n) return; const v = load(); v[n] = { cols: S.cols, widths: Object.fromEntries(S.cols.map(k => [k, ALL_COLS[k].w])), view: { ...S.view }, panel: S.panel }; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); toast('View saved'); };
   };
@@ -720,81 +971,6 @@ function viewsDialog() {
 }
 function columnsDialog() {
   modal('Columns', `<div class="days">${Object.entries(ALL_COLS).map(([k, c]) => `<label class="row"><input type="checkbox" name="${k}" ${S.cols.includes(k) ? 'checked' : ''}>${esc(c.t)}</label>`).join('')}</div>`, m => { S.cols = Object.keys(ALL_COLS).filter(k => m.querySelector(`[name=${k}]`).checked); if (!S.cols.includes('name')) S.cols.unshift('name'); try { localStorage.setItem('cols', JSON.stringify(S.cols)); } catch { } render(); }, 'Apply');
-}
-function newProjectDialog() {
-  modal('New project', `<div class="grid"><label>Name<input name="name" value="New project"></label><label>Start on site<input name="start" type="date" value="${ymd(new Date())}"></label></div>`, async m => {
-    try { show(await post('/api/projects', { name: m.querySelector('[name=name]').value, start: m.querySelector('[name=start]').value })); await loadList(); } catch (e) { toast(e.message); }
-  }, 'Create');
-}
-function wizard() {
-  const w = { name: '', building_type: 'generic', storeys: 2, units: 0, gia: 0, frame: '', foundations: '', envelope: '', roof: '', fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: '', deadline: '', planning_condition_date: '' };
-  let step = 0;
-  const sel = (n, v, opts) => `<select name="${n}">` + opts.map(o => { const val = Array.isArray(o) ? o[0] : o, lab = Array.isArray(o) ? o[1] : o; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('') + '</select>';
-  const chk = (n, v, lab) => `<label class="row"><input type="checkbox" name="${n}" ${v ? 'checked' : ''}> ${esc(lab)}</label>`;
-  const sizeLabel = () => ['house', 'houses', 'apartments'].includes(w.building_type) ? 'Number of units / dwellings' : 'Gross internal area (m²)';
-  const steps = [
-    { title: 'What are you building?', sub: "Pick the closest type. I'll choose sensible defaults you can change in the next steps.",
-      body: () => `<div class="grid"><label>Project name<input name="name" value="${esc(w.name)}" placeholder="e.g. Victoria Road apartments"></label><label>Type${sel('building_type', w.building_type, [['house', 'Single house'], ['houses', 'Housing (multiple)'], ['apartments', 'Apartment block'], ['office', 'Office'], ['warehouse', 'Warehouse / industrial'], ['school', 'School'], ['refurbishment', 'Refurbishment'], ['generic', 'Other / mixed']])}</label></div>` },
-    { title: 'How big is it?', sub: 'Leave area at 0 to let me estimate it from the type and storeys.',
-      body: () => `<div class="grid"><label>Storeys<input name="storeys" type="number" min="1" value="${w.storeys}"></label><label>${sizeLabel()}<input name="${['house','houses','apartments'].includes(w.building_type) ? 'units' : 'gia'}" type="number" min="0" value="${['house','houses','apartments'].includes(w.building_type) ? w.units : w.gia}"></label><label>Gross internal area (m²), 0 = auto<input name="gia" type="number" min="0" value="${w.gia}"></label></div>` },
-    { title: 'Structure', sub: 'Auto picks what a planner would choose for this building.',
-      body: () => `<div class="grid"><label>Frame${sel('frame', w.frame, [['', 'Auto'], ['masonry', 'Masonry (brick & block)'], ['rc', 'Reinforced concrete'], ['steel', 'Steel'], ['timber', 'Timber / CLT']])}</label><label>Foundations${sel('foundations', w.foundations, [['', 'Auto'], ['strip', 'Strip footings'], ['raft', 'Raft'], ['piled', 'Piled']])}</label></div>` },
-    { title: 'Envelope, roof and fit-out', sub: '',
-      body: () => `<div class="grid"><label>Envelope${sel('envelope', w.envelope, [['', 'Auto'], ['brick', 'Brick'], ['render', 'Render'], ['cladding', 'Cladding / rainscreen'], ['curtain_wall', 'Curtain wall']])}</label><label>Roof${sel('roof', w.roof, [['', 'Auto'], ['pitched', 'Pitched / tiled'], ['flat', 'Flat / membrane']])}</label><label>Fit-out${sel('fit_out', w.fit_out, [['full', 'Full fit-out'], ['basic', 'Basic / Cat A'], ['shell', 'Shell & core']])}</label></div>` },
-    { title: 'Site conditions', sub: 'Tick anything that applies. Each one adds the right activities.',
-      body: () => `<div class="days">${chk('demolition', w.demolition, 'Demolition / soft strip first')}${chk('contaminated_ground', w.contaminated_ground, 'Contaminated / brownfield ground')}${chk('service_diversion', w.service_diversion, 'Service diversions (cables, mains)')}${chk('basement', w.basement, 'Basement')}${chk('external_works', w.external_works, 'External works (roads, landscaping)')}${chk('six_day_week', w.six_day_week, 'Six-day working week')}</div>` },
-    { title: 'Dates', sub: 'All optional. Leave start blank to begin next Monday.',
-      body: () => `<div class="grid"><label>Start on site<input name="start_date" type="date" value="${w.start_date}"></label><label>Must finish by<input name="deadline" type="date" value="${w.deadline}"></label><label>Planning conditions discharged<input name="planning_condition_date" type="date" value="${w.planning_condition_date}"></label></div>` },
-    { title: 'Ready', sub: 'I will build the full programme, schedule it, and run the DCMA health check.',
-      body: () => { const parts = [`${w.storeys}-storey ${w.building_type}`, w.gia ? `${w.gia} m²` : (w.units ? `${w.units} units` : 'size auto'), 'frame: ' + (w.frame || 'auto'), 'foundations: ' + (w.foundations || 'auto'), w.fit_out + ' fit-out']; const flags = ['demolition', 'contaminated_ground', 'service_diversion', 'basement', 'six_day_week'].filter(k => w[k]).map(k => k.replace(/_/g, ' ')); return `<p>${esc(w.name || 'New programme')}</p><p class="hint">${esc(parts.join(' · '))}${flags.length ? '<br>' + esc(flags.join(', ')) : ''}${w.start_date ? '<br>start ' + w.start_date : ''}${w.deadline ? ' · finish by ' + w.deadline : ''}</p><p class="hint">Press Build. You can refine everything afterwards with commands, drag-and-drop, or the ribbon.</p>`; } },
-  ];
-  const readStep = () => { const m = $('#modal'); m.querySelectorAll('input,select').forEach(el => { const n = el.name; if (!n) return; if (el.type === 'checkbox') w[n] = el.checked; else if (el.type === 'number') w[n] = +el.value || 0; else w[n] = el.value; }); };
-  function draw() {
-    const s = steps[step]; const back = $('#modalBack'), m = $('#modal');
-    m.innerHTML = `<h2>${esc(s.title)} <span class="hint" style="font-weight:400">· step ${step + 1} of ${steps.length}</span></h2>` + (s.sub ? `<p class="hint">${esc(s.sub)}</p>` : '') + `<div class="mbody">${s.body()}</div><div class="actions"><button id="wCancel">Cancel</button>${step > 0 ? '<button id="wBack">Back</button>' : ''}<button class="primary" id="wNext">${step === steps.length - 1 ? 'Build programme' : 'Next →'}</button></div>`;
-    back.hidden = false;
-    $('#wCancel').onclick = () => { back.hidden = true; };
-    if ($('#wBack')) $('#wBack').onclick = () => { readStep(); step--; draw(); };
-    $('#wNext').onclick = async () => {
-      readStep();
-      if (step < steps.length - 1) { step++; draw(); return; }
-      const brief = { name: w.name || 'New programme', building_type: w.building_type, storeys: w.storeys || 1, units: w.units || 0, gross_internal_area_m2: w.gia || 0, frame: w.frame || null, foundations: w.foundations || null, envelope: w.envelope || null, roof: w.roof || null, fit_out: w.fit_out, basement: w.basement, demolition: w.demolition, service_diversion: w.service_diversion, contaminated_ground: w.contaminated_ground, external_works: w.external_works, six_day_week: w.six_day_week, start_date: w.start_date || null, deadline: w.deadline || null, planning_condition_date: w.planning_condition_date || null };
-      $('#wNext').disabled = true; $('#wNext').textContent = 'Building…';
-      try { const v = await post('/api/generate', { brief }); back.hidden = true; show(v); await loadList(); toast(`Built ${v.project.activities.length} activities, finish ${fmtD(v.project.finish)}. Export sends it to P6, Asta and MS Project.`, 6000); }
-      catch (e) { toast(e.message, 6000); $('#wNext').disabled = false; $('#wNext').textContent = 'Build programme'; }
-    };
-    const first = m.querySelector('input,select'); if (first) first.focus();
-    m.querySelectorAll('[name=building_type]').forEach(el => el.onchange = () => { readStep(); draw(); });
-  }
-  draw();
-}
-function generateDialog() {
-  const sel = (n, opts, v) => `<select name="${n}"><option value="">auto</option>${opts.map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
-  modal('Generate a programme', `<textarea name="text" rows="4" style="width:100%" placeholder="Paste the brief, e.g. New-build 24-unit three-storey apartment block in Leeds, RC frame on CFA piles, brick envelope. Start on site 6 April 2026, handover before Christmas 2027. Brownfield site with a live 11kV cable to divert."></textarea>
-  <div class="bar-row"><button type="button" id="gParse">Read brief into form</button><span class="hint">keyword rules, no AI</span></div>
-  <div class="grid" id="gForm">
-    <label>Name<input name="name"></label><label>Type<select name="building_type">${['house', 'houses', 'apartments', 'office', 'warehouse', 'school', 'refurbishment', 'generic'].map(o => `<option ${o === 'generic' ? 'selected' : ''}>${o}</option>`).join('')}</select></label>
-    <label>Storeys<input name="storeys" type="number" min="1" value="2"></label><label>GIA m²<input name="gross_internal_area_m2" type="number" min="0" value="0"></label><label>Units<input name="units" type="number" min="0" value="0"></label>
-    <label>Frame${sel('frame', ['masonry', 'rc', 'steel', 'timber'])}</label><label>Foundations${sel('foundations', ['strip', 'raft', 'piled'])}</label><label>Envelope${sel('envelope', ['brick', 'render', 'cladding', 'curtain_wall'])}</label><label>Roof${sel('roof', ['pitched', 'flat'])}</label>
-    <label>Fit-out<select name="fit_out"><option>shell</option><option>basic</option><option selected>full</option></select></label><label>Location<input name="location"></label>
-    <label>Start<input name="start_date" type="date"></label><label>Must finish by<input name="deadline" type="date"></label><label>Planning conditions discharged<input name="planning_condition_date" type="date"></label>
-    <div class="days" style="grid-column:1/-1">${['basement', 'demolition', 'service_diversion', 'contaminated_ground', 'external_works', 'six_day_week'].map(f => `<label class="row"><input type="checkbox" name="${f}" ${f === 'external_works' ? 'checked' : ''}>${f.replaceAll('_', ' ')}</label>`).join('')}</div>
-  </div>`, async m => {
-    const brief = {}; m.querySelectorAll('#gForm input,#gForm select').forEach(el => { if (el.type === 'checkbox') brief[el.name] = el.checked; else if (el.type === 'number') brief[el.name] = +el.value || 0; else if (el.value !== '') brief[el.name] = el.value; else if (el.type === 'date' || el.tagName === 'SELECT') brief[el.name] = null; });
-    const text = m.querySelector('[name=text]').value.trim(); if (!brief.name) brief.name = text.slice(0, 60) || 'New project';
-    try { const v = await post('/api/generate', { text: text || null, brief }); show(v); await loadList(); toast(`${v.project.activities.length} activities generated, finish ${fmtD(v.project.finish)}`); } catch (e) { toast(e.message); return false; }
-  }, 'Generate');
-  $('#gParse').onclick = async () => { const text = $('#modal [name=text]').value.trim(); if (!text) return; try { const b = await post('/api/brief/parse', { text }); $$('#gForm input,#gForm select').forEach(el => { if (!(el.name in b)) return; const v = b[el.name]; if (el.type === 'checkbox') el.checked = !!v; else el.value = v == null ? '' : v; }); } catch (e) { toast(e.message); } };
-}
-
-// ---------- panels ----------
-function setPanel(name) { S.panel = S.panel === name ? null : name; $('#panel').hidden = !(S.panel === 'health' || S.panel === 'notes'); render(); refreshPanel(); }
-async function refreshPanel() {
-  if (!S.pid) return;
-  try {
-    if (S.panel === 'histogram') { S.hist = await api('/api/projects/' + encodeURIComponent(S.pid) + '/histogram'); renderBand(); }
-    if (S.panel === 'cost') { S.costs = await api('/api/projects/' + encodeURIComponent(S.pid) + '/costs'); renderBand(); }
-  } catch (e) { toast(e.message); }
 }
 function renderBand() {
   const g = $('#bandSvg'); const label = $('#bandLabel'); if (!g || !label) return;
@@ -809,8 +985,8 @@ function renderBand() {
       r.days.forEach(d => { const dt = new Date(d.date); const k = weekly ? ymd(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - ((dt.getDay() + 6) % 7))) : d.date; buckets[k] = (buckets[k] || 0) + d.units; });
       const div = weekly ? 5 : 1; const maxv = Math.max(r.limit || 0, ...Object.values(buckets).map(v => v / div)) || 1; const sc = (H - 30) / maxv;
       Object.entries(buckets).forEach(([k, v]) => { const avg = v / div; const bx = x(k), bw = Math.max(1, px * (weekly ? 7 : 1) - 1); const h = avg * sc; const over = r.limit && avg > r.limit + 1e-6; s += `<rect x="${bx}" y="${H - 10 - h}" width="${bw}" height="${h}" fill="var(--hist)"/>`; if (over) s += `<rect x="${bx}" y="${H - 10 - h}" width="${bw}" height="${(avg - r.limit) * sc}" fill="var(--over)"/>`; });
-      if (r.limit) s += `<line x1="0" y1="${H - 10 - r.limit * sc}" x2="${W}" y2="${H - 10 - r.limit * sc}" stroke="var(--crit)" stroke-dasharray="3 3"/><text x="4" y="${H - 14 - r.limit * sc}" fill="var(--crit)">limit ${r.limit}</text>`;
-      s += `<text x="4" y="14" fill="var(--muted)">${esc(r.name)} · ${weekly ? 'average per day, by week' : 'people per day'}</text>`;
+      if (r.limit) { const ly = H - 10 - r.limit * sc; s += `<line x1="0" y1="${ly}" x2="${W}" y2="${ly}" stroke="var(--crit)" stroke-dasharray="3 3"/><text x="4" y="${ly < 28 ? ly + 13 : ly - 4}" fill="var(--crit)" font-weight="600">crew limit ${r.limit}</text>`; }
+      s += `<text x="120" y="14" fill="var(--muted)">${esc(r.name)} · ${weekly ? 'average per day, by week' : 'people per day'}</text>`;
     }
   } else if (S.panel === 'cost' && S.costs) {
     const c = S.costs, mt = c.metrics; const max = Math.max(1, ...c.weeks.map(w => Math.max(w.planned, w.baseline, w.earned, w.actual))); const sc = (H - 30) / max;
@@ -822,59 +998,6 @@ function renderBand() {
   }
   g.innerHTML = s;
 }
-function renderPanelBody() {
-  const el = $('#panel'); if (S.panel !== 'health' && S.panel !== 'notes') { el.hidden = true; return; } el.hidden = false;
-  const p = S.project, x = S.extra || {};
-  if (S.panel === 'health') {
-    const r = S.report; if (!r) { el.innerHTML = '<p class="hint">Schedule did not calculate.</p>'; return; }
-    el.innerHTML = `<div class="bar-row"><h3 style="margin:0">Health ${r.score}/100</h3><span class="hint">${esc(r.summary)}</span><button id="pFix" class="primary">Auto-repair</button></div>` + r.checks.map(c => `<div class="check ${!c.applicable ? 'na' : c.passed ? '' : 'fail'}"><span class="dot"></span><b>${esc(c.title)}</b> <span class="hint">${c.value != null ? c.value : ''} ${c.threshold ? '· ' + esc(c.threshold) : ''}</span><div class="d">${esc(c.detail)}</div>${c.items && c.items.length ? `<div class="items">${c.items.slice(0, 40).map(i => `<a data-i="${esc(i)}">${esc(i)}</a>`).join(', ')}${c.items.length > 40 ? ' …' : ''}</div>` : ''}</div>`).join('');
-    $('#pFix').onclick = () => act('/repair');
-    el.querySelectorAll('a[data-i]').forEach(a => a.onclick = () => { const id = a.dataset.i.split('->')[0]; S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(r => rowKey(r) === id); if (i >= 0) scrollToRow(i); });
-  } else {
-    el.innerHTML = `<h3>Notes</h3>${p.description ? `<p style="white-space:pre-wrap">${esc(p.description)}</p>` : ''}<h3>Assumptions</h3><ul>${(p.assumptions || []).map(a => `<li>${esc(a)}</li>`).join('') || '<li class="hint">none</li>'}</ul>${x.draft && x.draft.questions_for_client ? `<h3>Questions for the client</h3><ul>${x.draft.questions_for_client.map(q => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${x.still_open && x.still_open.length ? `<h3>Left open by the repairer</h3><ul>${x.still_open.map(q => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}${x.log ? `<h3>Log</h3><pre class="hint">${esc(x.log.join('\n'))}</pre>` : ''}<h3>Baselines</h3><ul>${p.baselines.map(b => `<li>${esc(b.name)} · saved ${fmtD(b.saved_at)} · finish ${fmtD(b.finish)} <button data-bl="${esc(b.name)}">use</button></li>`).join('') || '<li class="hint">none</li>'}</ul>`;
-    el.querySelectorAll('[data-bl]').forEach(b => b.onclick = () => act('/baseline/use', { name: b.dataset.bl }));
-  }
-}
-
-// ---------- toolbar wiring ----------
-function wireToolbar() {
-  $('#projSel').onchange = e => openProject(e.target.value);
-  $('#btnNew').onclick = newProjectDialog; $('#btnGenerate').onclick = generateDialog; $('#btnWizard').onclick = wizard;
-  $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (!f) return; const fd = new FormData(); fd.append('file', f); toast('Importing ' + f.name + '…'); try { show(await api('/api/import', { method: 'POST', body: fd })); await loadList(); toast(`Imported ${f.name}: ${S.project.activities.length} activities`); } catch (err) { toast(err.message, 6000); } e.target.value = ''; };
-  $$('[data-x]').forEach(a => a.onclick = () => { if (S.pid) location.href = '/api/projects/' + encodeURIComponent(S.pid) + '/export.' + a.dataset.x; });
-  $('#btnPrint').onclick = () => window.print();
-  $('#btnUndo').onclick = () => act('/undo'); $('#btnRedo').onclick = () => act('/redo');
-  $('#btnInsert').onclick = insertActivity; $('#btnSummary').onclick = insertSummary; $('#btnDelete').onclick = deleteSelected;
-  $('#btnIndent').onclick = () => indent(1); $('#btnOutdent').onclick = () => indent(-1); $('#btnUp').onclick = () => moveRow(-1); $('#btnDown').onclick = () => moveRow(1);
-  $('#btnLink').onclick = linkSelected; $('#btnUnlink').onclick = unlinkSelected;
-  $('#btnZoomIn').onclick = () => zoom(1.5); $('#btnZoomOut').onclick = () => zoom(1 / 1.5);
-  $('#btnFit').onclick = () => { if (!S.project) return; const [t0, t1] = timeRange(); S.view.pxDay = Math.max(1, ($('#sheet').clientWidth - gridWidth() - 60) / ((t1 - t0) / DAY)); render(); };
-  ['links', 'float', 'baseline', 'progress', 'critical'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); el.onchange = () => { S.view[k] = el.checked; render(); }; });
-  $('#vColour').onchange = e => { S.view.colour = e.target.value; render(); }; $('#vGroup').onchange = e => { S.view.group = e.target.value; render(); }; $('#vSort').onchange = e => { S.view.sort = e.target.value; render(); };
-  $('#vFilter').oninput = e => { S.view.filter = e.target.value; render(); };
-  $('#btnColumns').onclick = columnsDialog;
-  $('#btnToday').onclick = () => { if (!S.project) return; const sheet = $('#sheet'); sheet.scrollLeft = Math.max(0, gridWidth() + S.x(S.project.data_date || S.project.start) - 300 - gridWidth()); };
-  $('#btnViews').onclick = viewsDialog;
-  $('#vMode').onchange = e => { S.view.mode = e.target.value; $('#vTl').hidden = S.view.mode !== 'tl'; render(); };
-  $('#vTl').onchange = e => { S.view.tlSource = e.target.value; render(); };
-  $('#dataDate').onchange = e => mutate(p => { p.data_date = e.target.value + 'T08:00:00'; }, 'Data date moved');
-  $('#btnProgress').onclick = progressDialog; $('#btnConstraint').onclick = constraintDialog; $('#btnMilestone').onclick = toggleMilestone;
-  $('#btnBaseline').onclick = () => modal('Set baseline', `<label>Name<input name="n" value="Baseline ${S.project ? S.project.baselines.length + 1 : 1}"></label>`, m => act('/baseline', { name: m.querySelector('[name=n]').value || 'Baseline' }), 'Store');
-  $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
-  $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
-  $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
-  $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
-  $('#btnRepair').onclick = () => act('/repair');
-  $('#btnAssistant').onclick = () => { const el = $('#ai'); el.hidden = !el.hidden; if (!el.hidden) $('#aiIn').focus(); };
-  $('#aiClose').onclick = () => $('#ai').hidden = true;
-  $('#aiClear').onclick = () => { S.aiHistory = []; $('#aiLog').innerHTML = ''; addAi('New conversation. What should I build or change?'); };
-  $('#aiForm').onsubmit = async e => { e.preventDefault(); const t = $('#aiIn').value.trim(); if (!t) return; $('#aiIn').value = ''; sendAi(t); };
-  $('#cmdForm').onsubmit = async e => { e.preventDefault(); const t = $('#cmdIn').value.trim(); if (!t || !S.pid) return; $('#cmdIn').value = ''; try { const v = await post('/api/projects/' + encodeURIComponent(S.pid) + '/command', { text: t }); if (v.project) show(v); $('#cmdOut').textContent = v.message.split('\n')[0]; if (v.message.includes('\n')) modal('Commands', `<pre style="white-space:pre-wrap;font-size:12px">${esc(v.message)}</pre>`); } catch (err) { $('#cmdOut').textContent = err.message; } };
-  $('#sheet').addEventListener('keydown', onKey);
-  $('#sheet').addEventListener('wheel', e => { if (e.ctrlKey) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.25 : 0.8); } }, { passive: false });
-  document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !S.editing && !e.target.matches('input,textarea,select')) { e.preventDefault(); act(e.shiftKey ? '/redo' : '/undo'); } if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y' && !e.target.matches('input,textarea,select')) { e.preventDefault(); act('/redo'); } });
-}
-function zoom(f) { S.view.pxDay = Math.max(1, Math.min(40, S.view.pxDay * f)); render(); }
 function onKey(e) {
   if (S.editing || !S.project) return;
   const k = e.key;
@@ -905,15 +1028,437 @@ async function sendAi(text) {
     const v = await post(path, { message: text, history: S.aiHistory || [] });
     clearInterval(tick); busy.remove();
     S.aiHistory = v.history || S.aiHistory || [];
-    if (v.project) { show(v); await loadList(); $('#projSel').value = v.project.id; }
+    if (v.project) { show(v); await loadList(); if (S.screen === 'projects') go('plan'); }
     addAi(esc(v.reply || '(no reply)').replace(/\n/g, '<br>'), '', v.tool_calls);
   } catch (e) { clearInterval(tick); busy.remove(); addAi('<span class="crit">' + esc((e && e.message) || 'error') + '</span>'); }
 }
-// ---------- init ----------
+// ---------- status: the same judgement on the portfolio card, the plan header and the monitor ----------
+function progressOf(p) {
+  const tasks = p.activities.filter(a => a.type === 'task' && a.duration_hours > 0);
+  const total = tasks.reduce((s, a) => s + a.duration_hours, 0) || 1;
+  const done = tasks.reduce((s, a) => s + a.duration_hours * (a.status === 'complete' ? 100 : a.percent_complete) / 100, 0);
+  const dd = new Date(p.data_date || p.start); const baselined = tasks.some(a => a.baseline_start);
+  const planned = tasks.reduce((s, a) => {
+    const st = a.baseline_start || a.early_start, fi = a.baseline_finish || a.early_finish; if (!st || !fi) return s;
+    const t0 = new Date(st), t1 = new Date(fi); const f = dd <= t0 ? 0 : dd >= t1 ? 1 : (dd - t0) / Math.max(1, t1 - t0);
+    return s + a.duration_hours * f;
+  }, 0);
+  return { pct: done / total * 100, planned: planned / total * 100, baselined };
+}
+function spareDays(p) {
+  if (!p.must_finish_by || !p.finish) return null;
+  const cal = p.calendars[p.default_calendar_id] || { working_days: [0, 1, 2, 3, 4], exceptions: {} };
+  return workingDaysBetween(cal, new Date(p.finish), new Date(p.must_finish_by));
+}
+function statusOf(p, r) {
+  const neg = p.activities.some(a => a.status !== 'complete' && a.total_float_hours != null && a.total_float_hours < -1e-6);
+  const spare = spareDays(p); const pr = progressOf(p);
+  if (pr.pct >= 99.5) return ['ok', 'Complete'];
+  if ((spare != null && spare < 0) || neg) return ['bad', 'Late'];
+  if (spare != null && spare < 10) return ['warn', 'At risk'];
+  if (pr.baselined && pr.planned - pr.pct > 10) return ['warn', 'Behind plan'];
+  if (r && r.score < 70) return ['warn', 'Needs checking'];
+  return ['ok', 'On track'];
+}
+
+// ---------- Projects: the portfolio ----------
+const TYPE_ICONS = {
+  house: '<path d="M5 13l9-7 9 7v10H5z"/><path d="M11 23v-6h6v6"/>',
+  houses: '<path d="M2 15l6-5 6 5v8H2z"/><path d="M14 15l6-5 6 5v8h-12"/><path d="M6 23v-4h4v4"/>',
+  apartments: '<path d="M7 4h14v20H7z"/><path d="M11 8h2M15 8h2M11 12h2M15 12h2M11 16h2M15 16h2M13 24v-4h2v4"/>',
+  office: '<path d="M5 24V8l9-4v20"/><path d="M14 10h9v14"/><path d="M8 10h3M8 14h3M8 18h3M17 14h3M17 18h3"/>',
+  warehouse: '<path d="M3 24V12l11-6 11 6v12z"/><path d="M8 24v-7h12v7M8 20.5h12"/>',
+  school: '<path d="M4 24V12h20v12z"/><path d="M2 12l12-7 12 7"/><path d="M12 24v-5h4v5"/>',
+  refurbishment: '<path d="M7 23V11l7-5.5L21 11v12"/><path d="M3 23h22M4 8v15M24 8v15M4 13h20"/>',
+  generic: '<path d="M5 8l9-4 9 4v12l-9 4-9-4z"/><path d="M5 8l9 4 9-4M14 12v12"/>',
+};
+function sparkSvg(p, w = 300, h = 64) {
+  const tops = p.wbs.filter(x => !x.parent_id).sort((a, b) => a.seq - b.seq).slice(0, 7);
+  const t0 = new Date(p.start).getTime(), t1 = new Date(p.finish || p.start).getTime() || t0 + DAY; const span = Math.max(DAY, t1 - t0);
+  const X = t => 6 + (new Date(t).getTime() - t0) / span * (w - 12);
+  const inW = {}; const parent = id => { let n = p.wbs.find(x => x.id === id); while (n && n.parent_id) n = p.wbs.find(x => x.id === n.parent_id); return n ? n.id : null; };
+  p.activities.forEach(a => { const k = parent(a.wbs_id); if (k) (inW[k] = inW[k] || []).push(a); });
+  const rowH = (h - 10) / Math.max(1, tops.length); let s = `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">`;
+  tops.forEach((wb, i) => {
+    const acts = inW[wb.id] || []; const st = acts.map(a => a.actual_start || a.early_start).filter(Boolean).sort()[0], fi = acts.map(a => a.actual_finish || a.early_finish).filter(Boolean).sort().slice(-1)[0];
+    if (!st || !fi) return; const y = 5 + i * rowH + rowH * .2, bh = Math.max(3, rowH * .6);
+    const crit = acts.some(a => a.critical && a.status !== 'complete');
+    const tot = acts.reduce((t, a) => t + a.duration_hours, 0) || 1; const pc = acts.reduce((t, a) => t + a.duration_hours * (a.status === 'complete' ? 100 : a.percent_complete), 0) / tot;
+    const x0 = X(st), bw = Math.max(3, X(fi) - x0);
+    s += `<rect x="${x0}" y="${y}" width="${bw}" height="${bh}" rx="${bh / 2}" fill="${crit ? 'var(--crit)' : 'var(--bar)'}" opacity="${crit ? .85 : .7}"/>`;
+    if (pc > 0) s += `<rect x="${x0}" y="${y}" width="${Math.max(bh, bw * pc / 100)}" height="${bh}" rx="${bh / 2}" fill="var(--progress)"/>`;
+  });
+  const ddx = X(p.data_date || p.start); s += `<line x1="${ddx}" y1="2" x2="${ddx}" y2="${h - 2}" stroke="var(--dd)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+  if (p.must_finish_by) { const mx = Math.min(w - 2, X(p.must_finish_by)); s += `<line x1="${mx}" y1="2" x2="${mx}" y2="${h - 2}" stroke="var(--crit)" stroke-width="1.5" stroke-dasharray="2 3"/>`; }
+  return s + '</svg>';
+}
+function heroArt() {
+  // a stylised programme: a staircase of bars, the critical chain in red, the data date in purple
+  const rows = [[4, 16, 0], [14, 30, 1], [26, 22, 1], [34, 26, 0], [44, 30, 1], [58, 18, 0], [66, 22, 1], [80, 14, 1]];
+  let s = '<svg viewBox="0 0 400 230" role="img" aria-label="Illustration of a Gantt chart with a critical path">';
+  for (let i = 0; i < 6; i++) s += `<line x1="${20 + i * 72}" y1="10" x2="${20 + i * 72}" y2="220" stroke="var(--line-2)"/>`;
+  rows.forEach(([x, w, c], i) => { const y = 18 + i * 25; s += `<rect x="${20 + x * 3.6}" y="${y}" width="${w * 3.6}" height="13" rx="6.5" fill="${c ? 'var(--crit)' : 'var(--bar)'}" opacity="${c ? .9 : .65}"/>`; if (i < 3) s += `<rect x="${20 + x * 3.6}" y="${y}" width="${w * 3.6 * (i === 2 ? .45 : 1)}" height="13" rx="6.5" fill="var(--progress)"/>`; });
+  s += '<line x1="128" y1="8" x2="128" y2="222" stroke="var(--dd)" stroke-width="2" stroke-dasharray="5 4"/><rect x="98" y="0" width="60" height="16" rx="8" fill="var(--dd)"/><text x="128" y="11.5" text-anchor="middle" fill="#fff" font-size="10" font-weight="650">Data date</text>';
+  s += '<path d="M352 212l8-8 8 8-8 8z" fill="var(--ms)"/>';
+  return s + '</svg>';
+}
+async function renderProjects() {
+  const el = $('#scrProjects'); const list = S.list || [];
+  const missing = list.filter(p => !S.details[p.id] || S.details[p.id].project.scheduled_at !== p.scheduled_at);
+  paintProjects(el, list);
+  if (missing.length) {
+    await Promise.all(missing.slice(0, 30).map(async p => { try { const v = await api('/api/projects/' + encodeURIComponent(p.id)); S.details[p.id] = { project: v.project, report: v.report }; } catch { } }));
+    if (S.screen === 'projects') paintProjects(el, S.list || []);
+  }
+}
+function paintProjects(el, list) {
+  const scroll = el.scrollTop;
+  const card = item => {
+    const d = S.details[item.id]; const p = d && d.project;
+    if (!p) return `<div class="card" role="button" tabindex="0" data-open="${esc(item.id)}"><div class="card-top"><div><h3>${esc(item.name)}</h3><div class="sub mono">${esc(item.id)}</div></div></div><div class="spark"></div><div class="hint">${item.activities} activities</div></div>`;
+    const [cls, label] = statusOf(p, d.report); const pr = progressOf(p); const crit = p.activities.filter(a => a.critical && a.status !== 'complete').length;
+    const spare = spareDays(p);
+    return `<div class="card" role="button" tabindex="0" data-open="${esc(item.id)}" aria-label="Open ${esc(p.name)}">
+      <div class="card-top"><div style="min-width:0"><h3>${esc(p.name)}</h3><div class="sub"><span class="mono">${esc(p.id)}</span> · ${p.activities.length} activities</div></div><span class="chip ${cls}">${label}</span></div>
+      ${sparkSvg(p)}
+      <div class="card-facts">
+        <div class="fact"><div class="k">Finish</div><div class="v" ${spare != null && spare < 0 ? 'style="color:var(--crit)"' : ''}>${fmtD(p.finish)}</div></div>
+        <div class="fact"><div class="k">Health</div><div class="v" style="color:${d.report ? healthColour(d.report.score) : 'inherit'}">${d.report ? d.report.score : '–'}</div></div>
+        <div class="fact"><div class="k">Critical</div><div class="v">${crit}</div></div>
+      </div>
+      <div><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-2);margin-bottom:5px"><span>${Math.round(pr.pct)}% complete</span><span>${spare == null ? 'No deadline' : spare >= 0 ? `${spare} days spare` : `${-spare} days over`}</span></div>
+      <div class="meter" title="Complete, with a tick at where the programme says it should be by the data date"><b style="width:${Math.min(100, pr.pct)}%"></b><i style="left:${Math.min(99.5, pr.planned)}%"></i></div></div>
+      <button type="button" class="icon card-del" data-del="${esc(p.id)}" title="Delete project" aria-label="Delete ${esc(p.name)}"><svg viewBox="0 0 20 20" class="ic"><path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10"/></svg></button>
+    </div>`;
+  };
+  el.innerHTML = `<div class="page">
+    <div class="page-head"><div><h1 class="display">Projects</h1><p class="lede">${list.length ? `${list.length} programme${list.length > 1 ? 's' : ''}. Status compares each forecast with its deadline and with the progress expected by its data date.` : 'Plan a building in a minute, then keep it on track week by week.'}</p></div>
+      <div class="head-actions"><button type="button" class="btn" id="pImport">Import from P6, Asta or MS Project</button><button type="button" class="primary" id="pNew">New programme</button></div></div>
+    ${list.length ? '' : `<div class="hero"><div><h2>Describe the job. Get the programme.</h2><p>Answer six questions and Planner lays out the activities, links them, sizes them from production rates, finds the critical path and runs the 14-point DCMA health check. It opens in Primavera P6, Asta Powerproject and Microsoft Project.</p><div class="head-actions"><button type="button" class="primary" id="pNew3">Start a programme</button><button type="button" class="btn" id="pSample">Open a sample</button></div></div><div class="hero-art">${heroArt()}</div></div>`}
+    <div class="cards">${list.map(card).join('')}<button type="button" class="card new" id="pNew2"><span class="plus"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M4 10h12"/></svg></span><b style="color:var(--ink)">New programme</b><span class="hint" style="max-width:30ch">Six questions to a linked, scheduled and health-checked programme.</span></button></div>
+  </div>`;
+  el.scrollTop = scroll;
+  ['#pNew', '#pNew2', '#pNew3'].forEach(s => { const b = el.querySelector(s); if (b) b.onclick = () => startFlow(); });
+  el.querySelector('#pImport').onclick = () => $('#fileIn').click();
+  const sample = el.querySelector('#pSample'); if (sample) sample.onclick = () => buildFromBrief({ name: 'Sample: two-storey house', building_type: 'house', storeys: 2, units: 0, gross_internal_area_m2: 0, frame: null, foundations: null, envelope: null, roof: null, fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: null, deadline: null, planning_condition_date: null });
+  el.querySelectorAll('[data-open]').forEach(c => {
+    c.onclick = e => { if (e.target.closest('[data-del]')) return; openProject(c.dataset.open, 'monitor'); };
+    c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openProject(c.dataset.open, 'monitor'); } };
+  });
+  el.querySelectorAll('[data-del]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if (!b.classList.contains('armed')) { b.classList.add('armed'); b.style.color = 'var(--crit)'; b.title = 'Click again to delete'; toast('Click the bin again to delete this project. This cannot be undone.', { ms: 3500 }); setTimeout(() => { b.classList.remove('armed'); b.style.color = ''; }, 3500); return; }
+    try { await api('/api/projects/' + encodeURIComponent(b.dataset.del), { method: 'DELETE' }); delete S.details[b.dataset.del]; if (S.pid === b.dataset.del) { S.pid = null; S.project = null; } toast('Project deleted'); loadList(); } catch (err) { toast(err.message); }
+  });
+}
+
+// ---------- Monitor: forecast, health, look-ahead and progress ----------
+function renderMonitor() {
+  const p = S.project, r = S.report, el = $('#scrMonitor'); if (!p) return;
+  const scroll = el.scrollTop;
+  const [cls, label] = statusOf(p, r); const pr = progressOf(p); const spare = spareDays(p);
+  const dd = new Date(p.data_date || p.start), horizon = new Date(dd.getTime() + 21 * DAY);
+  const crit = p.activities.filter(a => a.critical && a.status !== 'complete' && a.early_start).sort((a, b) => a.early_start.localeCompare(b.early_start));
+  const ahead = p.activities.filter(a => a.type === 'task' && a.status !== 'complete' && (a.status === 'in_progress' || (a.early_start && new Date(a.early_start) <= horizon))).sort((a, b) => (a.actual_start || a.early_start || '').localeCompare(b.actual_start || b.early_start || '')).slice(0, 16);
+  const C = 2 * Math.PI * 27, score = r ? r.score : 0, ringFrom = S.ringShown[p.id] ? C * (1 - score / 100) : C;
+  const failing = r ? r.checks.filter(c => c.applicable && !c.passed) : []; const passing = r ? r.checks.filter(c => c.applicable && c.passed).length : 0;
+  const x = S.extra || {};
+  const questions = x.draft && x.draft.questions_for_client ? x.draft.questions_for_client : [];
+  const finishNote = spare == null ? 'No deadline set. Type “finish by 30 Oct 2026” to add one.' : spare >= 0 ? `${spare} working days inside the ${fmtD(p.must_finish_by)} deadline` : `${-spare} working days past the ${fmtD(p.must_finish_by)} deadline`;
+  const progNote = pr.baselined ? `${Math.round(pr.planned)}% expected by the data date against the baseline` : `${Math.round(pr.planned)}% scheduled by the data date. Set a baseline to track slippage.`;
+  el.innerHTML = `<div class="page">
+    <div class="page-head"><div style="min-width:0"><h1 class="display">${esc(p.name)}</h1><p class="lede">Data date ${fmtLong(p.data_date || p.start)} · <span class="chip ${cls}">${label}</span></p></div>
+      <div class="head-actions"><button type="button" class="btn" id="mPlan">Open the programme</button></div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="k">Forecast finish</div><div class="big" ${spare != null && spare < 0 ? 'style="color:var(--crit)"' : ''}>${fmtD(p.finish)}</div><div class="note">${finishNote}</div></div>
+      <div class="kpi"><div class="k">Schedule health</div><div class="kpi-ring"><svg class="ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="track" cx="32" cy="32" r="27"/><circle id="ringArc" cx="32" cy="32" r="27" stroke="${healthColour(score)}" stroke-dasharray="${C}" stroke-dashoffset="${ringFrom}" style="transition:stroke-dashoffset .9s cubic-bezier(.2,.8,.2,1)"/></svg><div><div class="big">${r ? score : '–'}</div><div class="note">${failing.length ? `${failing.length} of ${failing.length + passing} checks failing` : 'All DCMA checks pass'}</div></div></div></div>
+      <div class="kpi"><div class="k">Progress</div><div class="big">${Math.round(pr.pct)}%</div><div class="meter"><b style="width:${Math.min(100, pr.pct)}%"></b><i style="left:${Math.min(99.5, pr.planned)}%"></i></div><div class="note">${progNote}</div></div>
+      <div class="kpi"><div class="k">Critical path</div><div class="big">${crit.length}</div><div class="note">activities still to do with no spare time. Any delay to these moves the finish.</div></div>
+    </div>
+    <div class="grid2">
+      <div>
+        <section class="panel" aria-labelledby="hLook"><div class="panel-head"><h2 id="hLook">Next three weeks</h2><span class="hint">Drag to record progress, then save</span></div>
+          ${ahead.length ? ahead.map(a => { const v = S.staged[a.id] ?? (a.status === 'complete' ? 100 : Math.round(a.percent_complete)); return `<div class="upd ${S.staged[a.id] != null ? 'changed' : ''}" data-id="${esc(a.id)}"><div style="min-width:0"><div class="t" style="font-weight:600;overflow-wrap:anywhere">${a.critical ? '<span class="swatch" style="background:var(--crit)" title="Critical"></span>' : ''}${esc(a.name)}</div><div class="s hint" style="font-size:12px"><span class="mono">${esc(a.id)}</span> · ${a.status === 'in_progress' ? 'started ' + fmtD(a.actual_start) : 'starts ' + fmtD(a.early_start)} · finishes ${fmtD(a.early_finish)}</div></div><input type="range" min="0" max="100" step="5" value="${v}" aria-label="Percent complete for ${esc(a.name)}" id="upd_${esc(a.id)}"><span class="pct">${v}%</span></div>`; }).join('') : '<div class="empty"><b>Nothing due</b>No activities start or run in the next three weeks.</div>'}
+          <div class="upd-foot"><label class="datefield" style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--ink-2)">As of<input type="date" id="updAsOf" value="${(p.data_date || p.start).slice(0, 10)}"></label><span class="hint" id="updCount">${Object.keys(S.staged).length ? Object.keys(S.staged).length + ' unsaved' : ''}</span><button type="button" class="primary" id="updSave" ${Object.keys(S.staged).length ? '' : 'disabled'}>Save progress</button></div>
+        </section>
+        <section class="panel" aria-labelledby="hDrive"><div class="panel-head"><h2 id="hDrive">What is driving the finish</h2><span class="hint">The critical path, in order</span></div>
+          <div class="list">${crit.slice(0, 10).map(a => `<div class="li click" data-goto="${esc(a.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s"><span class="mono">${esc(a.id)}</span> · ${fmtD(a.actual_start || a.early_start)} to ${fmtD(a.early_finish)} · ${fmt1(daysOf(a, a.duration_hours))}d</div></div><span class="chip ${a.total_float_hours < 0 ? 'bad' : 'plain'}">${fmt1(daysOf(a, a.total_float_hours || 0))}d float</span></div>`).join('') || '<div class="empty"><b>No critical path</b>Every remaining activity has spare time.</div>'}${crit.length > 10 ? `<div class="li"><span class="hint">and ${crit.length - 10} more</span></div>` : ''}</div>
+        </section>
+      </div>
+      <div>
+        <section class="panel" aria-labelledby="hHealth"><div class="panel-head"><h2 id="hHealth">Health checks</h2>${failing.length ? '<button type="button" class="primary" id="mFix">Auto-repair</button>' : '<span class="chip ok">All passing</span>'}</div>
+          <div class="list">${failing.map(c => `<div class="check fail"><span class="dot"></span><b>${esc(c.title)}</b><span class="hint mono">${c.value != null ? c.value : ''}${c.threshold ? ' · ' + esc(c.threshold) : ''}</span><div class="d">${esc(c.detail)}</div>${c.items && c.items.length ? `<div class="items">${c.items.slice(0, 24).map(i => `<a data-goto="${esc(i.split('->')[0])}">${esc(i)}</a>`).join(', ')}${c.items.length > 24 ? ' …' : ''}</div>` : ''}</div>`).join('')}
+          ${r ? `<div class="check"><span class="dot"></span><b>${passing} checks pass</b><span></span><div class="d">${esc(r.checks.filter(c => c.applicable && c.passed).map(c => c.title).join(', '))}</div></div>` : ''}</div>
+        </section>
+        <section class="panel" aria-labelledby="hNotes"><div class="panel-head"><h2 id="hNotes">Assumptions and open questions</h2></div>
+          ${(p.assumptions || []).length ? `<ul class="bullets">${p.assumptions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : '<p class="hint">No assumptions recorded.</p>'}
+          ${questions.length ? `<h3 style="font-size:14px;margin:16px 0 6px">Ask the client</h3><ul class="bullets">${questions.map(q => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
+          ${x.still_open && x.still_open.length ? `<h3 style="font-size:14px;margin:16px 0 6px">Left open by the repairer</h3><ul class="bullets">${x.still_open.map(q => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
+          <h3 style="font-size:14px;margin:16px 0 6px">Baselines</h3>${p.baselines.length ? `<div class="list">${p.baselines.map(b => `<div class="li"><div><div class="t">${esc(b.name)}</div><div class="s">saved ${fmtD(b.saved_at)} · finish ${fmtD(b.finish)}</div></div><button type="button" class="btn" data-bl="${esc(b.name)}">Compare</button></div>`).join('')}</div>` : '<p class="hint" style="margin:0">None yet. Set one from Plan, More, before work starts so slippage shows.</p>'}
+        </section>
+      </div>
+    </div></div>`;
+  el.scrollTop = scroll;
+  if (!S.ringShown[p.id]) { S.ringShown[p.id] = true; requestAnimationFrame(() => requestAnimationFrame(() => { const arc = $('#ringArc'); if (arc) arc.style.strokeDashoffset = C * (1 - score / 100); })); }
+  el.querySelector('#mPlan').onclick = () => go('plan');
+  const fix = el.querySelector('#mFix'); if (fix) fix.onclick = () => act('/repair');
+  el.querySelectorAll('[data-goto]').forEach(n => { const goTo = () => { const id = n.dataset.goto; if (!byId(id)) return; go('plan'); S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(q => rowKey(q) === id); if (i >= 0) scrollToRow(i); if (S.inspector) renderInspector(); }; n.onclick = goTo; n.onkeydown = e => { if (e.key === 'Enter') goTo(); }; });
+  el.querySelectorAll('[data-bl]').forEach(b => b.onclick = () => { act('/baseline/use', { name: b.dataset.bl }); S.view.baseline = true; $('#vBaseline').checked = true; });
+  el.querySelectorAll('.upd input[type=range]').forEach(inp => {
+    const row = inp.closest('.upd'), id = row.dataset.id, a = byId(id); const orig = a.status === 'complete' ? 100 : Math.round(a.percent_complete);
+    inp.oninput = () => { const v = +inp.value; row.querySelector('.pct').textContent = v + '%'; if (v === orig) delete S.staged[id]; else S.staged[id] = v; row.classList.toggle('changed', S.staged[id] != null); const n = Object.keys(S.staged).length; $('#updCount').textContent = n ? n + ' unsaved' : ''; $('#updSave').disabled = !n; };
+  });
+  el.querySelector('#updSave').onclick = () => {
+    const asOf = el.querySelector('#updAsOf').value; const staged = { ...S.staged }; const n = Object.keys(staged).length; if (!n) return;
+    S.staged = {};
+    mutate(pp => { if (asOf) pp.data_date = asOf + 'T08:00:00'; Object.entries(staged).forEach(([id, v]) => { const a = byId(id); if (a) setProgress(a, v, asOf ? new Date(asOf + 'T16:00:00') : null); }); }, `Progress saved for ${n} activit${n === 1 ? 'y' : 'ies'}${asOf ? ' as of ' + fmtD(asOf) : ''}`);
+  };
+}
+// ---------- Start: one guided flow for every new programme ----------
+const TYPES = [['house', 'Single house', 'One home'], ['houses', 'Housing scheme', 'Several homes'], ['apartments', 'Apartments', 'A block of flats'], ['office', 'Office', 'Commercial floors'], ['warehouse', 'Warehouse', 'Industrial or logistics'], ['school', 'School', 'Education building'], ['refurbishment', 'Refurbishment', 'Existing building'], ['generic', 'Something else', 'Mixed use or other']];
+const DEFAULT_GIA = { house: 150, houses: 95, apartments: 75, office: 1200, warehouse: 3000, school: 2500, refurbishment: 800, generic: 800 };
+const BRIEF_KEYS = ['name', 'building_type', 'storeys', 'units', 'frame', 'foundations', 'envelope', 'roof', 'fit_out', 'basement', 'demolition', 'service_diversion', 'contaminated_ground', 'external_works', 'six_day_week', 'start_date', 'deadline', 'planning_condition_date'];
+async function buildFromBrief(brief, text) {
+  setStatus('saving', 'Building');
+  try {
+    const v = await post('/api/generate', { brief, text: text || null }); show(v); await loadList(); go('plan'); setStatus('ok', 'Saved');
+    toast(`Built ${v.project.activities.length} activities. Forecast finish ${fmtD(v.project.finish)}.`, { ms: 6000, action: { label: 'See health', fn: () => go('monitor') } });
+    return true;
+  } catch (e) { setStatus('error', 'Not built'); toast(e.message, { ms: 6000 }); return false; }
+}
+function startFlow(initial = {}) {
+  const w = Object.assign({ name: '', building_type: 'house', storeys: 2, units: 0, gia: 0, frame: '', foundations: '', envelope: '', roof: '', fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: '', deadline: '', planning_condition_date: '' }, initial);
+  let step = 0, mode = 'steps';
+  const multi = () => w.building_type === 'houses' || w.building_type === 'apartments';
+  const pills = (key, opts) => `<div class="pills" data-key="${key}" role="radiogroup">${opts.map(([v, l]) => `<button type="button" role="radio" aria-checked="${String(w[key]) === String(v)}" data-v="${esc(v)}" class="${String(w[key]) === String(v) ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>`;
+  const opt = (label, html) => `<div class="optrow"><span>${label}</span>${html}</div>`;
+  const sw = (key, label, sub) => `<label class="sw"><span>${esc(label)}${sub ? `<br><span class="hint" style="font-size:12px;font-weight:400">${esc(sub)}</span>` : ''}</span><input type="checkbox" data-key="${key}" id="sw_${key}" ${w[key] ? 'checked' : ''}><i></i></label>`;
+  const estimate = () => { const per = DEFAULT_GIA[w.building_type] || 800; const gia = w.gia || (w.units && multi() ? per * w.units : per * (['office', 'generic'].includes(w.building_type) ? w.storeys : 1)); return { gia, foot: gia / Math.max(1, w.storeys) }; };
+  const steps = [
+    { q: 'What are you building?', sub: 'Pick the closest type. Every choice after this has a sensible default.', body: () => `<label style="margin-bottom:14px">Project name<input id="sfName" value="${esc(w.name)}" placeholder="e.g. Victoria Road apartments"></label><div class="tiles" role="radiogroup" aria-label="Building type">${TYPES.map(([v, l, s]) => `<button type="button" role="radio" aria-checked="${w.building_type === v}" class="tile ${w.building_type === v ? 'on' : ''}" data-type="${v}"><svg viewBox="0 0 28 28" aria-hidden="true">${TYPE_ICONS[v]}</svg><b>${esc(l)}</b><span>${esc(s)}</span></button>`).join('')}</div>` },
+    { q: 'How big is it?', sub: 'Leave the area at 0 and I will estimate it from the type and storeys.', body: () => `<div class="grid"><label>Storeys${stepper('sfStoreys', w.storeys, 1, 1)}</label>${multi() ? `<label>Number of homes${stepper('sfUnits', w.units || (w.building_type === 'apartments' ? 24 : 10), 1, 1)}</label>` : ''}<label>Gross internal area, m²<input type="number" id="sfGia" min="0" step="50" value="${w.gia}"></label></div><p class="hint" id="sfEst" style="margin-top:14px"></p>` },
+    { q: 'Structure and envelope', sub: 'Auto picks what an experienced planner would choose for this building.', body: () => opt('Frame', pills('frame', [['', 'Auto'], ['masonry', 'Brick and block'], ['rc', 'Concrete'], ['steel', 'Steel'], ['timber', 'Timber']])) + opt('Foundations', pills('foundations', [['', 'Auto'], ['strip', 'Strip'], ['raft', 'Raft'], ['piled', 'Piled']])) + opt('Envelope', pills('envelope', [['', 'Auto'], ['brick', 'Brick'], ['render', 'Render'], ['cladding', 'Cladding'], ['curtain_wall', 'Curtain wall']])) + opt('Roof', pills('roof', [['', 'Auto'], ['pitched', 'Pitched'], ['flat', 'Flat']])) + opt('Fit-out', pills('fit_out', [['full', 'Full'], ['basic', 'Basic or Cat A'], ['shell', 'Shell and core']])) },
+    { q: 'Anything unusual about the site?', sub: 'Each one adds the activities a planner would expect to see.', body: () => `<div class="toggles">${sw('demolition', 'Demolition first', 'Soft strip and knock down')}${sw('contaminated_ground', 'Contaminated ground', 'Remediation and validation')}${sw('service_diversion', 'Service diversions', 'Cables, gas or water mains: adds the undertaker lead-in')}${sw('basement', 'Basement', 'Excavation, propping and retaining walls')}${sw('external_works', 'External works', 'Drainage, roads, parking, landscaping')}${sw('six_day_week', 'Six-day week', 'Saturday working')}</div>` },
+    { q: 'When does it start?', sub: 'All optional. With no start date it begins next Monday.', body: () => `<div class="grid"><label>Start on site<input type="date" id="sfStart" value="${w.start_date}"></label><label>Must finish by<input type="date" id="sfDeadline" value="${w.deadline}"></label><label>Planning conditions discharged<input type="date" id="sfPlanning" value="${w.planning_condition_date}"></label></div>` },
+    { q: 'Ready to build the programme', sub: 'I will lay out the activities, link them, size them from production rates, schedule them and run the 14-point DCMA health check.', body: () => { const e = estimate(); const t = (TYPES.find(x => x[0] === w.building_type) || [, 'Building'])[1]; const flags = [['demolition', 'demolition'], ['contaminated_ground', 'contaminated ground'], ['service_diversion', 'service diversions'], ['basement', 'basement'], ['six_day_week', 'six-day week']].filter(([k]) => w[k]).map(([, l]) => l); const auto = v => v ? esc(v.replace(/_/g, ' ')) : 'auto'; return `<div class="review"><div class="line"><span>Project</span><b>${esc(w.name || 'New programme')}</b></div><div class="line"><span>Building</span><b>${w.storeys}-storey ${esc(t.toLowerCase())}${multi() && w.units ? `, ${w.units} homes` : ''}</b></div><div class="line"><span>Area</span><b>${w.gia ? pyNum(w.gia) + ' m²' : 'about ' + pyNum(e.gia) + ' m² (estimated)'}</b></div><div class="line"><span>Structure</span><b>${auto(w.frame)} frame, ${auto(w.foundations)} foundations</b></div><div class="line"><span>Envelope and roof</span><b>${auto(w.envelope)}, ${auto(w.roof)} roof, ${esc(w.fit_out)} fit-out</b></div><div class="line"><span>Site</span><b>${flags.length ? esc(flags.join(', ')) : 'nothing unusual'}${w.external_works ? '' : ', no external works'}</b></div><div class="line"><span>Dates</span><b>${w.start_date ? 'start ' + fmtD(w.start_date) : 'start next Monday'}${w.deadline ? ', finish by ' + fmtD(w.deadline) : ''}</b></div></div>`; } },
+  ];
+  const { m, close } = modal(null, '<div id="sfHost"></div>', null, '', { noActions: true, wide: true, label: 'New programme' });
+  const host = m.querySelector('#sfHost');
+  const read = () => {
+    const v = id => host.querySelector('#' + id);
+    if (v('sfName')) w.name = v('sfName').value.trim();
+    if (v('sfStoreys')) w.storeys = Math.max(1, Math.round(+v('sfStoreys').value || 1));
+    if (v('sfUnits')) w.units = Math.max(0, Math.round(+v('sfUnits').value || 0));
+    if (v('sfGia')) w.gia = Math.max(0, +v('sfGia').value || 0);
+    if (v('sfStart')) { w.start_date = v('sfStart').value; w.deadline = v('sfDeadline').value; w.planning_condition_date = v('sfPlanning').value; }
+  };
+  const brief = () => ({ name: w.name || 'New programme', building_type: w.building_type, storeys: w.storeys || 1, units: multi() ? (w.units || 0) : (w.building_type === 'house' ? 1 : 0), gross_internal_area_m2: w.gia || 0, frame: w.frame || null, foundations: w.foundations || null, envelope: w.envelope || null, roof: w.roof || null, fit_out: w.fit_out, basement: w.basement, demolition: w.demolition, service_diversion: w.service_diversion, contaminated_ground: w.contaminated_ground, external_works: w.external_works, six_day_week: w.six_day_week, start_date: w.start_date || null, deadline: w.deadline || null, planning_condition_date: w.planning_condition_date || null });
+  function draw(dir = 0) {
+    if (mode === 'paste') {
+      host.innerHTML = `<h2 class="q">Paste a written brief</h2><p class="qsub">I read the type, size, structure, site conditions and dates, then show you what I understood before building.</p><textarea id="sfText" rows="7" style="width:100%" placeholder="New-build 24-unit three-storey apartment block in Leeds, RC frame on CFA piles, brick envelope. Start on site 6 April 2026, handover before Christmas 2027. Brownfield site with a live 11kV cable to divert."></textarea><div class="actions"><button type="button" id="sfBack">Back</button><button type="button" class="primary" id="sfRead">Read the brief</button></div>`;
+      host.querySelector('#sfBack').onclick = () => { mode = 'steps'; draw(-1); };
+      host.querySelector('#sfRead').onclick = async () => {
+        const text = host.querySelector('#sfText').value.trim(); if (!text) { host.querySelector('#sfText').focus(); return; }
+        try { const b = await post('/api/brief/parse', { text }); BRIEF_KEYS.forEach(k => { if (b[k] != null && b[k] !== '') w[k] = b[k]; }); w.gia = b.gross_internal_area_m2 || 0; ['frame', 'foundations', 'envelope', 'roof'].forEach(k => { w[k] = b[k] || ''; }); ['start_date', 'deadline', 'planning_condition_date'].forEach(k => { w[k] = b[k] || ''; }); w._text = text; mode = 'steps'; step = steps.length - 1; draw(1); }
+        catch (e) { toast(e.message); }
+      };
+      setTimeout(() => host.querySelector('#sfText').focus(), 50); return;
+    }
+    if (mode === 'blank') {
+      host.innerHTML = `<h2 class="q">Start from a blank programme</h2><p class="qsub">An empty programme with standard calendars. Add activities in the grid or with commands.</p><div class="grid"><label>Project name<input id="sbName" value="${esc(w.name || 'New project')}"></label><label>Start on site<input id="sbStart" type="date" value="${w.start_date || ymd(new Date())}"></label></div><div class="actions"><button type="button" id="sfBack">Back</button><button type="button" class="primary" id="sbGo">Create</button></div>`;
+      host.querySelector('#sfBack').onclick = () => { mode = 'steps'; draw(-1); };
+      host.querySelector('#sbGo').onclick = async () => { try { const v = await post('/api/projects', { name: host.querySelector('#sbName').value || 'New project', start: host.querySelector('#sbStart').value || ymd(new Date()) }); close(); show(v); await loadList(); go('plan'); } catch (e) { toast(e.message); } };
+      return;
+    }
+    const s = steps[step], last = step === steps.length - 1;
+    host.innerHTML = `<div class="steps" aria-hidden="true">${steps.map((_, i) => `<i class="${i < step ? 'done' : i === step ? 'cur' : ''}"></i>`).join('')}</div>
+      <div class="stepbody"><h2 class="q">${esc(s.q)}</h2><p class="qsub">${esc(s.sub)}</p>${s.body()}</div>
+      ${step === 0 ? `<div class="alt"><button type="button" id="sfPaste">Paste a written brief instead</button><button type="button" id="sfBlank">Start blank</button><button type="button" id="sfImport">Import from P6, Asta or MS Project</button></div>` : ''}
+      <div class="actions">${step > 0 ? '<button type="button" id="sfBack">Back</button>' : ''}<span style="flex:1"></span><span class="hint" style="align-self:center">Step ${step + 1} of ${steps.length}</span><button type="button" class="primary" id="sfNext">${last ? 'Build programme' : 'Continue'}</button></div>`;
+    const body = host.querySelector('.stepbody');
+    if (dir) animate(body, { x: 0, opacity: 1 }, { from: { x: 28 * dir, opacity: 0 }, response: .36, done: () => { body.style.transform = ''; springs.delete(body); } });
+    wireSteppers(host);
+    host.querySelectorAll('[data-type]').forEach(t => t.onclick = () => { read(); w.building_type = t.dataset.type; host.querySelectorAll('[data-type]').forEach(o => { o.classList.toggle('on', o === t); o.setAttribute('aria-checked', String(o === t)); }); });
+    host.querySelectorAll('.pills').forEach(g => g.querySelectorAll('button').forEach(b => b.onclick = () => { w[g.dataset.key] = b.dataset.v; g.querySelectorAll('button').forEach(o => { o.classList.toggle('on', o === b); o.setAttribute('aria-checked', String(o === b)); }); }));
+    host.querySelectorAll('input[data-key]').forEach(c => c.onchange = () => { w[c.dataset.key] = c.checked; });
+    const est = host.querySelector('#sfEst');
+    if (est) { const upd = () => { read(); const e = estimate(); est.textContent = `${w.gia ? '' : 'Estimated '}${pyNum(e.gia)} m² over ${w.storeys} storey${w.storeys > 1 ? 's' : ''}: a footprint of about ${pyNum(e.foot)} m²${e.foot > 900 ? ', split into zones so trades can follow each other' : ''}.`; }; host.querySelectorAll('input').forEach(i => i.addEventListener('input', upd)); upd(); }
+    if (host.querySelector('#sfPaste')) { host.querySelector('#sfPaste').onclick = () => { read(); mode = 'paste'; draw(1); }; host.querySelector('#sfBlank').onclick = () => { read(); mode = 'blank'; draw(1); }; host.querySelector('#sfImport').onclick = () => { close(); $('#fileIn').click(); }; }
+    if (host.querySelector('#sfBack')) host.querySelector('#sfBack').onclick = () => { read(); step--; draw(-1); };
+    host.querySelector('#sfNext').onclick = async () => {
+      read(); if (!last) { step++; draw(1); return; }
+      const btn = host.querySelector('#sfNext'); btn.disabled = true; btn.textContent = 'Building';
+      const ok = await buildFromBrief(brief(), w._text); if (ok) close(); else { btn.disabled = false; btn.textContent = 'Build programme'; }
+    };
+    const first = host.querySelector('#sfName, #sfStoreys, #sfStart'); if (first && innerWidth > 640 && !dir) first.focus();
+  }
+  draw(0);
+}
+function pyNum(n) { return Math.round(n).toLocaleString('en-GB'); }
+
+// ---------- command palette ----------
+const PAL_EXAMPLES = ['add 2 weeks to A1040', 'link A1010 -> A1020 SS+2d', 'finish by 1 Nov 2026', 'progress A1010 50% as of 20 Apr 2026', 'complete A1010 on 24 Apr 2026', 'constrain A1100 start on or after 16 Mar 2026', 'insert "Scaffold inspection" 1d after A1040 before A1050', 'fix', 'help'];
+function palActions() {
+  return [
+    ['New programme', 'Start', () => startFlow()],
+    ['All projects', 'Go to', () => go('projects')],
+    S.project && ['Plan', 'Go to', () => go('plan')],
+    S.project && ['Monitor', 'Go to', () => go('monitor')],
+    S.project && ['Share and export', 'File', shareSheet],
+    S.project && ['Auto-repair failing checks', 'Fix', () => act('/repair')],
+    S.project && ['Set a baseline', 'Plan', () => $('#btnBaseline').click()],
+    S.project && ['Level to crew limits', 'Plan', () => act('/level')],
+    S.project && ['Show the inspector', 'View', () => { go('plan'); toggleInspector(true); }],
+    ['Import from P6, Asta or MS Project', 'File', () => $('#fileIn').click()],
+    ['Switch light or dark', 'View', toggleTheme],
+  ].filter(Boolean);
+}
+let palSel = 0;
+function openPalette() {
+  const back = $('#palBack'), f = $('#cmdForm'); $('#cmdOut').textContent = ''; $('#cmdIn').value = '';
+  back.hidden = false; back.style.backgroundColor = 'transparent'; requestAnimationFrame(() => { back.style.backgroundColor = ''; });
+  f.style.transformOrigin = '50% 0';
+  animate(f, { y: 0, scale: 1, opacity: 1 }, { from: springs.has(f) ? undefined : { y: -12, scale: .97, opacity: 0 }, response: .32 });
+  palSel = 0; paintPalette(); setTimeout(() => $('#cmdIn').focus(), 0);
+}
+function closePalette() { const back = $('#palBack'), f = $('#cmdForm'); if (back.hidden) return; back.style.backgroundColor = 'transparent'; animate(f, { y: -8, scale: .98, opacity: 0 }, { response: .24, done: () => { back.hidden = true; back.style.backgroundColor = ''; springs.delete(f); } }); }
+function palItems() {
+  const t = $('#cmdIn').value.trim(), tl = t.toLowerCase(); const items = [];
+  if (t && S.project) items.push({ sec: 'Command', label: `Run “${t}”`, k: 'Enter', run: () => runCommand(t) });
+  palActions().filter(([l]) => !tl || l.toLowerCase().includes(tl)).forEach(([l, k, fn]) => items.push({ sec: 'Actions', label: l, k, run: () => { closePalette(); fn(); } }));
+  if (S.project) PAL_EXAMPLES.filter(e => !tl || e.includes(tl)).slice(0, t ? 4 : 9).forEach(e => items.push({ sec: 'Try a command', label: e, k: '', fill: e }));
+  return items;
+}
+function paintPalette() {
+  const items = palItems(); palSel = Math.max(0, Math.min(palSel, items.length - 1)); let sec = '';
+  $('#palList').innerHTML = items.map((it, i) => { const h = it.sec !== sec ? `<div class="pal-sec">${esc(it.sec)}</div>` : ''; sec = it.sec; return h + `<div class="pal-item ${i === palSel ? 'on' : ''}" role="option" aria-selected="${i === palSel}" data-i="${i}">${it.fill ? `<span class="mono">${esc(it.label)}</span>` : esc(it.label)}<span class="k">${esc(it.k)}</span></div>`; }).join('') || '<div class="pal-sec">Open or create a project to run schedule commands</div>';
+  $$('#palList .pal-item').forEach(el => { el.onpointerdown = e => e.preventDefault(); el.onclick = () => choosePal(items[+el.dataset.i]); el.onpointermove = () => { if (palSel !== +el.dataset.i) { palSel = +el.dataset.i; $$('#palList .pal-item').forEach(x => x.classList.toggle('on', x === el)); } }; });
+  const on = $('#palList .pal-item.on'); if (on) on.scrollIntoView({ block: 'nearest' });
+}
+function choosePal(it) { if (!it) return; if (it.fill) { $('#cmdIn').value = it.fill; palSel = 0; paintPalette(); $('#cmdIn').focus(); return; } it.run(); }
+async function runCommand(t) {
+  try {
+    const v = await post(pidPath('/command'), { text: t });
+    if (v.message && v.message.includes('\n') && !v.project) { $('#cmdOut').innerHTML = `<pre style="white-space:pre-wrap;margin:0;font:12px/1.5 var(--mono)">${esc(v.message)}</pre>`; return; }
+    closePalette(); if (v.project) show(v); else toast(v.message.split('\n')[0]);
+  } catch (err) { $('#cmdOut').textContent = err.message; }
+}
+
+// ---------- share and export ----------
+function summaryText() {
+  const p = S.project, r = S.report; const [, label] = statusOf(p, r); const pr = progressOf(p); const spare = spareDays(p);
+  const crit = p.activities.filter(a => a.critical && a.status !== 'complete' && a.early_start).sort((a, b) => a.early_start.localeCompare(b.early_start)).slice(0, 5);
+  const failing = r ? r.checks.filter(c => c.applicable && !c.passed).map(c => c.title) : [];
+  return [`${p.name} (${p.id})`, `Status: ${label}. Data date ${fmtLong(p.data_date || p.start)}.`, `Forecast finish ${fmtLong(p.finish)}` + (spare == null ? '.' : spare >= 0 ? `, ${spare} working days inside the ${fmtD(p.must_finish_by)} deadline.` : `, ${-spare} working days past the ${fmtD(p.must_finish_by)} deadline.`),
+    `Progress ${Math.round(pr.pct)}% complete against ${Math.round(pr.planned)}% ${pr.baselined ? 'planned' : 'scheduled'} by the data date.`,
+    crit.length ? 'Critical path next: ' + crit.map(a => `${a.name} (${fmtD(a.early_start)})`).join('; ') + '.' : 'No critical activities remaining.',
+    r ? `Schedule health ${r.score}/100` + (failing.length ? `; failing: ${failing.join(', ')}.` : '; all DCMA checks pass.') : ''].filter(Boolean).join('\n');
+}
+function shareSheet() {
+  if (!S.project) return;
+  const file = '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/>';
+  const tiles = [['bundle', 'All three formats', 'One .zip for P6, Asta and MS Project', '<path d="M5 9h18v14H5z"/><path d="M5 9l3-5h12l3 5M12 13h4"/>'], ['xer', 'Primavera P6', '.xer file. Asta imports it too', file], ['xml', 'MS Project and Asta', 'MS Project XML (MSPDI)', file], ['json', 'Planner file', '.json to open here again', file]];
+  const { m } = modal('Share and export', `<p class="hint" style="margin-top:-4px">Send the programme to the tools your client and contractors use.</p><div class="exports">${tiles.map(([f, t, s, ic], i) => `<button type="button" class="tile ${i === 0 ? 'on' : ''}" data-x="${f}"><svg viewBox="0 0 28 28" aria-hidden="true">${ic}</svg><b>${t}</b><span>${s}</span></button>`).join('')}</div>
+    <h3>Status note</h3><p class="hint" style="margin:0 0 8px">A short update to paste into an email or message.</p><textarea id="shareText" rows="7" style="width:100%" readonly>${esc(summaryText())}</textarea>
+    <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="shareCopy">Copy status note</button>${LOCAL ? '' : '<button type="button" class="btn" id="sharePrint">Print the programme</button>'}</div>`, null, '', { wide: true });
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => exportAs(b.dataset.x));
+  m.querySelector('#shareCopy').onclick = async () => { const ta = m.querySelector('#shareText'); try { await navigator.clipboard.writeText(ta.value); toast('Status note copied'); } catch { ta.focus(); ta.select(); toast('Selected. Press Ctrl+C or ⌘C to copy.'); } };
+  const pr = m.querySelector('#sharePrint'); if (pr) pr.onclick = () => { modalClose(); go('plan'); setTimeout(() => window.print(), 300); };
+}
+function projectsPop(trigger) {
+  const pop = $('#popProjects');
+  pop.innerHTML = `<div class="pop-sec">Projects</div>${(S.list || []).map(p => `<button type="button" data-pid="${esc(p.id)}" class="${p.id === S.pid ? 'on' : ''}" role="menuitem">${esc(p.name)}</button>`).join('')}<div class="pop-sec"></div><button type="button" id="ppAll" role="menuitem">All projects</button><button type="button" id="ppNew" role="menuitem">New programme</button>`;
+  pop.querySelectorAll('[data-pid]').forEach(b => b.onclick = () => { closePop(pop); openProject(b.dataset.pid, S.screen === 'projects' ? 'monitor' : S.screen); });
+  pop.querySelector('#ppAll').onclick = () => { closePop(pop); go('projects'); };
+  pop.querySelector('#ppNew').onclick = () => { closePop(pop); startFlow(); };
+  openPop(pop, trigger);
+}
+
+// ---------- analysis bands under the Gantt ----------
+function setPanel(name) {
+  if (name === 'health' || name === 'notes') { go('monitor'); return; }
+  S.panel = S.panel === name ? null : name; if (S.screen !== 'plan') go('plan'); else render(); refreshPanel();
+}
+async function refreshPanel() {
+  if (!S.pid) return;
+  try {
+    if (S.panel === 'histogram') { S.hist = await api(pidPath('/histogram')); renderBand(); }
+    if (S.panel === 'cost') { S.costs = await api(pidPath('/costs')); renderBand(); }
+  } catch (e) { toast(e.message); }
+}
+function renderPanelBody() { /* health checks and notes live on the Monitor screen */ }
+// ---------- toolbar wiring ----------
+function wireToolbar() {
+  $('#btnHome').onclick = () => go('projects');
+  $('#crumbProject').onclick = e => projectsPop(e.currentTarget);
+  $$('#seg [data-screen]').forEach(b => b.onclick = () => go(b.dataset.screen));
+  $('#btnCmd').onclick = openPalette; $('#btnShare').onclick = shareSheet; $('#btnTheme').onclick = toggleTheme;
+  $('#fileIn').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return; toast('Importing ' + f.name);
+    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities`); }
+    catch (err) { toast((err && err.detail) || err.message, { ms: 8000 }); }
+    e.target.value = '';
+  };
+  $('#btnUndo').onclick = () => act('/undo'); $('#btnRedo').onclick = () => act('/redo');
+  $('#btnInsert').onclick = insertActivity; $('#btnSummary').onclick = insertSummary; $('#btnDelete').onclick = deleteSelected;
+  $('#btnIndent').onclick = () => indent(1); $('#btnOutdent').onclick = () => indent(-1); $('#btnUp').onclick = () => moveRow(-1); $('#btnDown').onclick = () => moveRow(1);
+  $('#btnLink').onclick = linkSelected; $('#btnUnlink').onclick = unlinkSelected; $('#btnMilestone').onclick = toggleMilestone;
+  $('#btnZoomIn').onclick = () => zoom(1.5); $('#btnZoomOut').onclick = () => zoom(1 / 1.5);
+  $('#btnFit').onclick = () => { if (!S.project) return; const [t0, t1] = timeRange(); S.view.pxDay = Math.max(1, ($('#sheet').clientWidth - gridWidth() - 60) / ((t1 - t0) / DAY)); render(); };
+  $('#btnToday').onclick = () => { if (!S.project) return; const sheet = $('#sheet'); sheet.scrollTo({ left: Math.max(0, S.x(S.project.data_date || S.project.start) - 300), behavior: REDUCED.matches ? 'auto' : 'smooth' }); };
+  $('#btnView').onclick = e => openPop($('#popView'), e.currentTarget, 'right');
+  $('#btnMore').onclick = e => openPop($('#popMore'), e.currentTarget);
+  $$('#popMore button').forEach(b => b.addEventListener('click', () => closePop($('#popMore'))));
+  ['links', 'float', 'baseline', 'progress', 'critical'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); el.onchange = () => { S.view[k] = el.checked; render(); }; });
+  $('#vColour').onchange = e => { S.view.colour = e.target.value; render(); }; $('#vGroup').onchange = e => { S.view.group = e.target.value; render(); }; $('#vSort').onchange = e => { S.view.sort = e.target.value; render(); };
+  $('#vFilter').oninput = e => { S.view.filter = e.target.value; render(); };
+  $('#btnColumns').onclick = () => { closePops(); columnsDialog(); }; $('#btnViews').onclick = () => { closePops(); viewsDialog(); };
+  $$('#modeSeg [data-mode]').forEach(b => b.onclick = () => { S.view.mode = b.dataset.mode; render(); });
+  $('#vTl').onchange = e => { S.view.tlSource = e.target.value; render(); };
+  $('#dataDate').onchange = e => { if (e.target.value) mutate(p => { p.data_date = e.target.value + 'T08:00:00'; }, `Data date moved to ${fmtD(e.target.value)}`); };
+  $('#btnProgress').onclick = progressDialog; $('#btnConstraint').onclick = constraintDialog;
+  $('#btnBaseline').onclick = () => modal('Set a baseline', `<p class="hint" style="margin-top:0">A baseline freezes today's dates so you can see slippage later, bar by bar.</p><label>Name<input name="n" id="blName" value="Baseline ${S.project ? S.project.baselines.length + 1 : 1}"></label>`, m => act('/baseline', { name: m.querySelector('[name=n]').value || 'Baseline' }), 'Save baseline');
+  $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
+  $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
+  $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
+  $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
+  $('#btnRepair').onclick = () => act('/repair');
+  $('#btnInspector').onclick = () => toggleInspector();
+  $('#btnAssistant').onclick = () => { const el = $('#ai'); el.hidden = !el.hidden; if (!el.hidden) { animate(el, { y: 0, opacity: 1, scale: 1 }, { from: { y: 16, opacity: 0, scale: .98 }, response: .34 }); $('#aiIn').focus(); } };
+  $('#aiClose').onclick = () => { $('#ai').hidden = true; };
+  $('#aiClear').onclick = () => { S.aiHistory = []; $('#aiLog').innerHTML = ''; addAi('New conversation. What should I build or change?'); };
+  $('#aiForm').onsubmit = async e => { e.preventDefault(); const t = $('#aiIn').value.trim(); if (!t) return; $('#aiIn').value = ''; sendAi(t); };
+  // command palette
+  $('#cmdForm').onsubmit = e => { e.preventDefault(); const items = palItems(); choosePal(items[palSel]); };
+  $('#cmdIn').oninput = () => { palSel = 0; $('#cmdOut').textContent = ''; paintPalette(); };
+  $('#cmdIn').onkeydown = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); palSel++; paintPalette(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); palSel = Math.max(0, palSel - 1); paintPalette(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+    e.stopPropagation();
+  };
+  $('#palBack').onpointerdown = e => { if (e.target === $('#palBack')) closePalette(); };
+  $('#sheet').addEventListener('keydown', onKey);
+  $('#sheet').addEventListener('wheel', e => { if (e.ctrlKey) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.25 : 0.8); } }, { passive: false });
+  document.addEventListener('keydown', e => {
+    const typing = e.target.matches('input,textarea,select');
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if ($('#palBack').hidden) openPalette(); else closePalette(); return; }
+    if (e.key === 'Escape') { closePops(); if (!$('#palBack').hidden) closePalette(); }
+    if (typing || S.editing) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && S.project) { e.preventDefault(); act(e.shiftKey ? '/redo' : '/undo'); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y' && S.project) { e.preventDefault(); act('/redo'); }
+    if (S.screen === 'plan' && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'i' && document.activeElement && document.activeElement.id !== 'sheet') { e.preventDefault(); toggleInspector(); }
+  });
+  addEventListener('resize', () => moveThumb(true));
+}
+function zoom(f) { S.view.pxDay = Math.max(1, Math.min(40, S.view.pxDay * f)); render(); }
+
+// ---------- start-up ----------
 (async () => {
+  try { const t = localStorage.getItem('theme'); if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t; } catch { }
   try { const c = JSON.parse(localStorage.getItem('cols') || 'null'); if (Array.isArray(c) && c.length) S.cols = c.filter(k => ALL_COLS[k]); const w = JSON.parse(localStorage.getItem('colw') || 'null'); if (w) Object.entries(w).forEach(([k, v]) => { if (ALL_COLS[k] && v > 20) ALL_COLS[k].w = v; }); } catch { }
+  if (LOCAL && window.__DEMO) { try { const l = await api('/api/projects'); if (!l.length) LOCAL.store(JSON.parse(JSON.stringify(window.__DEMO))); } catch { } }
   wireToolbar();
   await loadList();
-  let last = null; try { last = localStorage.getItem('pid'); } catch { }
-  if (last) openProject(last).catch(() => { });
+  go('projects');
 })();
