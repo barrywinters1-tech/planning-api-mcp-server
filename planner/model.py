@@ -90,7 +90,7 @@ class Calendar(BaseModel):
                 if dt > s:
                     return dt
             d -= timedelta(days=1)
-            dt = datetime.combine(d, time.max)
+            dt = datetime.combine(d, time(23, 59, 59))
         raise ValueError(f"Calendar {self.id} has no working time in the previous 10 years")
 
     def in_shift(self, dt: datetime) -> bool:
@@ -126,7 +126,7 @@ class Calendar(BaseModel):
                 if remaining <= avail + 1e-9:
                     return dt - timedelta(seconds=round(remaining * 3600))
                 remaining -= avail
-                dt = self.prev_working_end(datetime.combine(dt.date() - timedelta(days=1), time.max))
+                dt = self.prev_working_end(datetime.combine(dt.date() - timedelta(days=1), time(23, 59, 59)))
 
     def hours_between(self, a: datetime, b: datetime) -> float:
         """Working hours from a to b (negative if b < a)."""
