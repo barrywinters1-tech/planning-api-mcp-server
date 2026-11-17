@@ -772,7 +772,7 @@ function riskRunner(project, o = {}) {
   return { total, step, result };
 }
 function riskAnalysis(project, o = {}) { const r = riskRunner(project, o); r.step(r.total); return r.result(); }
-Object.assign(global.PlannerEngine, { riskRunner, riskAnalysis, weatherExposed, mulberry32, triangular });
+Object.assign(global.PlannerEngine, { riskRunner, riskAnalysis, weatherExposed, mulberry32, triangular, ensureCalendars });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 4: command language ---- */

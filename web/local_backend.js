@@ -66,12 +66,12 @@ async function route(method, path, body) {
 }
 
 async function importFile(file) {
-  const name = (file.name || '').toLowerCase();
-  const text = await file.text();
-  if (name.endsWith('.json') || text.trimStart().startsWith('{')) {
-    const p = JSON.parse(text); p.id = unique(p.id || 'IMPORT'); E.ensureCalendars(p); const v = view(p); store(p); return v;
-  }
-  throw { status: 501, detail: 'This preview imports its own JSON export. For Primavera XER, P6 XML, MS Project XML and Asta .pp import, use the full local app.' };
+  // same pipeline as POST /api/import: detect, read, give it a unique id, schedule, store
+  let p;
+  try { p = E.readAny(file.name || '', new Uint8Array(await file.arrayBuffer())); }
+  catch (e) { throw { status: 422, detail: (e && e.message) || String(e) }; }
+  p.id = unique(p.id || 'IMPORT'); if (E.ensureCalendars) E.ensureCalendars(p);
+  const v = view(p); store(p); return v;
 }
 async function download(pid, fmt) {
   const p = load(pid);

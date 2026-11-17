@@ -24,6 +24,8 @@ def _xml_root_tag(data: bytes) -> str:
 def read_any(filename: str, data: bytes) -> Project:
     name = (filename or "").lower()
     ext = os.path.splitext(name)[1]
+    if data.startswith(b"\xef\xbb\xbf"):          # UTF-8 byte-order mark, as Windows tools often write
+        data = data[3:]
     head = data[:200].lstrip()
     if ext == ".xer" or head.startswith(b"ERMHDR"):
         try:

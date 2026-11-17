@@ -1783,12 +1783,19 @@ function wireToolbar() {
   $('#crumbProject').onclick = e => projectsPop(e.currentTarget);
   $$('#seg [data-screen]').forEach(b => b.onclick = () => go(b.dataset.screen));
   $('#btnCmd').onclick = openPalette; $('#btnShare').onclick = shareSheet; $('#btnTheme').onclick = toggleTheme;
-  $('#fileIn').onchange = async e => {
-    const f = e.target.files[0]; if (!f) return; toast('Importing ' + f.name);
-    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities`); }
-    catch (err) { toast((err && err.detail) || err.message, { ms: 8000 }); }
-    e.target.value = '';
+  const handleImport = async f => {
+    toast('Importing ' + f.name);
+    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities, ${S.project.relationships.length} links`); }
+    catch (err) { toast((err && err.detail) || err.message, { ms: 9000 }); }
   };
+  $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (f) await handleImport(f); e.target.value = ''; };
+  // drop a P6, Asta or MS Project export anywhere on the page
+  const hasFiles = e => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
+  let dragDepth = 0;
+  addEventListener('dragenter', e => { if (!hasFiles(e)) return; e.preventDefault(); if (++dragDepth === 1) document.body.classList.add('dropping'); });
+  addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+  addEventListener('dragleave', e => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dropping'); } });
+  addEventListener('drop', e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; document.body.classList.remove('dropping'); const f = e.dataTransfer.files[0]; if (f) handleImport(f); });
   $('#btnUndo').onclick = () => act('/undo'); $('#btnRedo').onclick = () => act('/redo');
   $('#btnInsert').onclick = insertActivity; $('#btnSummary').onclick = insertSummary; $('#btnDelete').onclick = deleteSelected;
   $('#btnIndent').onclick = () => indent(1); $('#btnOutdent').onclick = () => indent(-1); $('#btnUp').onclick = () => moveRow(-1); $('#btnDown').onclick = () => moveRow(1);

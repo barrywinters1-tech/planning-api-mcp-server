@@ -19,6 +19,8 @@ def main():
     inner = re.search(r"<body>(.*)</body>", read("index.html"), re.S).group(1)
     inner = re.sub(r'<script src="/static/[^"]+"></script>\s*', "", inner)
     engine = read("engine.js")
+    # file readers (P6 XER, P6 XML, MS Project XML) ported from planner/*.py; parity tested
+    readers = "\n".join(read(f) for f in ("import_xer.js", "import_xml.js", "import_any.js") if (HERE / f).exists())
     backend = read("local_backend.js")
     app = read("app.js")
 
@@ -36,6 +38,7 @@ def main():
         + inner
         + "\n<script>window.__DEMO = " + seed + ";</script>\n"
         + "<script>\n" + engine + "\n</script>\n"
+        + "<script>\n" + readers + "\n</script>\n"
         + "<script>\n" + backend + "\n</script>\n"
         + "<script>\n" + app + "\n</script>\n"
     )
