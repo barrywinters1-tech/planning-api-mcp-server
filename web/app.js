@@ -456,7 +456,7 @@ function goToActivity(id) {
   }
   S.sel = new Set([id]); S.active = id; paintSelection();
   const i = visible(); if (i >= 0) scrollToRow(i);
-  const st = a.actual_start || a.early_start; if (st && S.x) { const sheet = $('#sheet'); sheet.scrollTo({ left: Math.max(0, S.x(st) - 240), behavior: REDUCED.matches ? 'auto' : 'smooth' }); }
+  const st = a.actual_start || a.early_start; if (st && S.x) { const sheet = $('#sheet'); sheet.scrollTo({ left: Math.max(0, S.x(st) - 80), behavior: REDUCED.matches ? 'auto' : 'smooth' }); }
   openInspector(id);
 }
 // ---------- CSV export (opens in Excel with real dates and numbers) ----------
@@ -485,6 +485,32 @@ async function exportCsv() {
 
 // ---------- render ----------
 function gridWidth() { return S.cols.reduce((t, k) => t + ALL_COLS[k].w, 0) + 1; }
+// The table is a pane beside the chart, like Asta's splitter. On narrow screens it starts at about
+// 40% so the bar chart is always visible; drag the grip in the header to resize (double-click to toggle).
+function paneWidth() {
+  const full = gridWidth(), sw = ($('#sheet') && $('#sheet').clientWidth) || innerWidth;
+  let saved = S.paneW; if (saved == null) { try { const v = +localStorage.getItem('paneW'); if (v) saved = v; } catch { } }
+  const def = sw >= 1200 ? Math.min(full, Math.round(sw * .55)) : sw < 600 ? Math.min(full, Math.max(140, Math.round(sw * .42))) : Math.min(full, Math.max(220, Math.round(sw * .42)));
+  return Math.round(Math.max(110, Math.min(full, Math.max(110, sw - 80), saved || def)));
+}
+// with a narrow pane the activity name leads, so the table still says what each bar is
+function visibleCols(pw) { return pw < 320 && S.cols.includes('name') ? ['name', ...S.cols.filter(k => k !== 'name')] : S.cols; }
+function wireSplitter() {
+  const g = $('#hdr .splitter'); if (!g) return;
+  g.onpointerdown = e => {
+    e.preventDefault(); e.stopPropagation(); g.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, w0 = paneWidth(), full = gridWidth(); let moved = false; document.body.classList.add('splitting');
+    const mv = ev => {
+      if (Math.abs(ev.clientX - x0) > 2) moved = true; if (!moved) return;
+      const w = Math.round(Math.max(110, Math.min(full, $('#sheet').clientWidth - 80, w0 + ev.clientX - x0)));
+      S.paneW = w; $$('#hdr .hdr-grid, #rows .cells').forEach(el => { el.style.width = w + 'px'; });
+      const svg = $('svg.chart'); if (svg) svg.style.left = w + 'px'; $('#inner').style.width = (w + S.ganttW) + 'px';
+    };
+    const up = () => { g.removeEventListener('pointermove', mv); g.removeEventListener('pointerup', up); document.body.classList.remove('splitting'); if (!moved) return; try { localStorage.setItem('paneW', S.paneW); } catch { } render(); };   // a click leaves the DOM alone so double-click works
+    g.addEventListener('pointermove', mv); g.addEventListener('pointerup', up);
+  };
+  g.ondblclick = e => { e.stopPropagation(); const full = gridWidth(); S.paneW = paneWidth() >= full - 2 ? Math.min(full, Math.max(160, Math.round($('#sheet').clientWidth * .38))) : full; try { localStorage.setItem('paneW', S.paneW); } catch { } render(); };
+}
 function timeRange() {
   const p = S.project;
   const ds = p.activities.flatMap(a => [a.actual_start || a.early_start, a.actual_finish || a.early_finish, S.view.float ? a.late_finish : null, S.view.baseline ? a.baseline_start : null, S.view.baseline ? a.baseline_finish : null]).filter(Boolean).map(d => new Date(d));
@@ -498,12 +524,12 @@ function render() {
   const p = S.project; if (!p) return;
   renderSummary(); renderToolbarState();
   const rs = rows(); S.rowsCache = rs;
-  const gw = gridWidth();
-  const [t0, t1] = timeRange(); S.t0 = t0;
+  const gw = paneWidth(), cols = visibleCols(gw);
+  const [t0, t1] = timeRange(); S.t0 = t0; S.t1 = t1;
   const px = S.view.pxDay; const W = Math.ceil((t1 - t0) / DAY * px) + 40; S.ganttW = W;
   const x = d => GX + (new Date(d) - t0) / DAY * px; S.x = x;
   // header
-  $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px">` + S.cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${k}">${ALL_COLS[k].t}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
+  $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px"><span class="splitter" title="Drag to resize the table; double-click to show all columns or give the chart more room" aria-hidden="true"></span>` + cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${k}">${ALL_COLS[k].t}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
   $$('#hdr .c[data-col]').forEach(el => { const h = document.createElement('span'); h.className = 'colgrip'; el.appendChild(h); h.onmousedown = e => { e.stopPropagation(); e.preventDefault(); const k = el.dataset.col, x0 = e.clientX, w0 = ALL_COLS[k].w; const mv = ev => { ALL_COLS[k].w = Math.max(30, w0 + ev.clientX - x0); el.style.width = ALL_COLS[k].w + 'px'; }; const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); try { localStorage.setItem('colw', JSON.stringify(Object.fromEntries(Object.entries(ALL_COLS).map(([k, c]) => [k, c.w])))); } catch { } render(); }; document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); }; });
   $$('#hdr .c[data-col]').forEach(el => el.onclick = () => { const k = el.dataset.col; S.view.sort = S.view.sort === k ? '' : (['start', 'finish', 'tf', 'id', 'name'].includes(k) ? (k === 'tf' ? 'float' : k) : S.view.sort); $('#vSort').value = S.view.sort; render(); });
   // rows
@@ -515,7 +541,7 @@ function render() {
     let cells;
     if (r.act) {
       const a = r.act;
-      cells = S.cols.map((k, ci) => {
+      cells = cols.map((k, ci) => {
         const c = ALL_COLS[k]; let v = esc(c.get(a));
         if (ci === 0 || (ci === 1 && k === 'name')) { const indent = k === 'name' ? r.depth * 14 : 0; v = `<span style="display:inline-block;width:${indent}px"></span>` + (k === 'name' && colourOf(a) ? `<span class="swatch" style="background:${colourOf(a)}"></span>` : '') + v; }
         const cls = ['c', c.num ? 'num' : '', c.cls ? c.cls(a) : '', (a.critical && k === 'name') ? 'crit' : '', (S.active === key && S.activeCol === k) ? 'active' : ''].join(' ');
@@ -525,7 +551,7 @@ function render() {
     } else {
       const name = r.wbs ? r.wbs.name : r.group; const id = r.wbs ? (r.wbs.code || '') : '';
       const collapsed = S.collapsed.has(key);
-      cells = S.cols.map((k, ci) => {
+      cells = cols.map((k, ci) => {
         let v = '';
         if (k === 'id') v = esc(id);
         else if (k === 'name') v = `<span style="display:inline-block;width:${r.depth * 14}px"></span><span class="tw" data-tw="${esc(key)}">${collapsed ? '▸' : '▾'}</span>${r.colour ? `<span class="swatch" style="background:${r.colour}"></span>` : ''}${esc(name)}${r.n != null ? ` <span class="hint">(${r.n})</span>` : ''}`;
@@ -535,13 +561,13 @@ function render() {
       html.push(`<div class="row ${r.wbs ? 'wbs' : 'group'} ${sel ? 'sel' : ''}" data-key="${esc(key)}" data-i="${i}"><div class="cells" style="width:${gw}px">${cells}</div></div>`);
     }
   });
-  const H = rs.length * RH;
+  const H = rs.length * RH; S.chartH = H;
   html.push(`<svg class="chart" style="left:${gw}px" width="${W}" height="${H}">${chart(rs, t0, t1, W, H, 0)}</svg>`);
   const band = (S.panel === 'histogram' || S.panel === 'cost');
   if (band) html.push(`<div class="bandrow"><div class="cells" style="width:${gw}px" id="bandLabel"></div><svg id="bandSvg" width="${W}" height="150"></svg></div>`);
   $('#rows').innerHTML = html.join('');
   $('#inner').style.width = (gw + W) + 'px';
-  wireRows(); wireChart();
+  wireRows(); wireChart(); wireSplitter();
   if (band) renderBand();
   renderPanelBody();
   if (S.pendingEdit) { const pe = S.pendingEdit; S.pendingEdit = null; const i = S.rowsCache.findIndex(r => rowKey(r) === pe.key); if (i >= 0) scrollToRow(i); setTimeout(() => startEdit(pe.key, pe.col), 0); }
@@ -620,7 +646,7 @@ function chart(rs, t0, t1, W, H, bandH) {
       return;
     }
     const a = r.act, st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (!st) return;
-    const dim = !inTrace(a.id); if (dim) s += '<g opacity=".2">';
+    const dim = !inTrace(a.id); s += `<g class="act${S.sel.has(a.id) ? ' sel' : ''}" data-g="${a.id}"${dim ? ' opacity=".2"' : ''}>`;
     const lbl = barLabel(a);
     const pct = a.status === 'complete' ? 100 : a.percent_complete;
     const fill = colourOf(a) || (S.view.colour === 'critical' && a.critical ? 'var(--crit)' : 'var(--bar)');
@@ -628,7 +654,8 @@ function chart(rs, t0, t1, W, H, bandH) {
     if (a.type !== 'task' || a.duration_hours === 0) {
       const cx = x(a.type === 'finish_milestone' ? fi : st), cy = y + mid;
       s += `<polygon class="hit bar" data-id="${a.id}" points="${cx},${cy - 7.5} ${cx + 7.5},${cy} ${cx},${cy + 7.5} ${cx - 7.5},${cy}" fill="${a.status === 'complete' ? 'var(--progress)' : (colourOf(a) || (a.critical ? 'var(--crit)' : 'var(--ms)'))}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
-      if (lbl) s += `<text x="${cx + 11}" y="${cy + 4}" fill="var(--ink-2)" font-weight="600">${esc(lbl)}</text>`;
+      s += `<circle class="hit linkdot" data-id="${a.id}" data-end="${a.type === 'start_milestone' ? 'S' : 'F'}" cx="${cx + 13}" cy="${cy}" r="5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6"/>`;
+      if (lbl) s += `<text x="${cx + 21}" y="${cy + 4}" fill="var(--ink-2)" font-weight="600">${esc(lbl)}</text>`;
       if (S.view.progress) progressPts.push([a.status === 'complete' ? x(dd) : Math.min(cx, x(dd)), cy]);
     } else {
       const bx = x(st), bw = Math.max(3, x(fi) - bx), h = 14, by = y + (RH - h) / 2, rr = Math.min(2, bw / 2);
@@ -637,12 +664,15 @@ function chart(rs, t0, t1, W, H, bandH) {
       s += `<rect class="hit bar" data-id="${a.id}" x="${bx}" y="${by}" width="${bw}" height="${h}" rx="${rr}" fill="${fill}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
       if (pct > 0) s += `<rect x="${bx}" y="${by}" width="${Math.max(2, bw * Math.min(100, pct) / 100)}" height="${h}" rx="${rr}" fill="var(--done-ink)" opacity=".34" pointer-events="none"/>`;
       if (a.constraint && a.constraint !== 'none' && a.constraint_date) { const cx = x(a.constraint_date); s += a.constraint.includes('start') ? `<polygon points="${cx},${by - 1} ${cx - 4},${by - 6} ${cx + 4},${by - 6}" fill="var(--warn)"/>` : `<polygon points="${cx},${by + h + 1} ${cx - 4},${by + h + 6} ${cx + 4},${by + h + 6}" fill="var(--warn)"/>`; }
-      s += `<rect class="hit handle" data-id="${a.id}" x="${bx + bw - 6}" y="${by}" width="8" height="${h}" fill="transparent"/>`;
-      s += `<circle class="hit linkdot" data-id="${a.id}" cx="${bx + bw + 7}" cy="${y + mid}" r="4.5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6" opacity="${S.sel.has(a.id) ? 1 : 0}"/>`;
-      if (lbl) s += `<text x="${bx + bw + 14}" y="${y + mid + 4}" fill="var(--ink-2)">${esc(lbl)}</text>`;
+      const hw = Math.min(8, Math.max(4, bw / 4));     // grab zones at each end: drag to change start or finish
+      s += `<rect class="hit handle hs" data-id="${a.id}" data-end="S" x="${bx - 2}" y="${by - 2}" width="${hw}" height="${h + 4}" fill="transparent"/>`;
+      s += `<rect class="hit handle hf" data-id="${a.id}" data-end="F" x="${bx + bw - hw + 2}" y="${by - 2}" width="${hw}" height="${h + 4}" fill="transparent"/>`;
+      s += `<circle class="hit linkdot" data-id="${a.id}" data-end="S" cx="${bx - 9}" cy="${y + mid}" r="5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6"/>`;
+      s += `<circle class="hit linkdot" data-id="${a.id}" data-end="F" cx="${bx + bw + 9}" cy="${y + mid}" r="5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6"/>`;
+      if (lbl) s += `<text x="${bx + bw + 18}" y="${y + mid + 4}" fill="var(--ink-2)">${esc(lbl)}</text>`;
       if (S.view.progress) { const exp = a.status === 'complete' ? x(dd) : a.status === 'in_progress' ? bx + bw * pct / 100 : Math.min(bx, x(dd)); progressPts.push([exp, y + mid]); }
     }
-    if (dim) s += '</g>';
+    s += '</g>';
   });
   if (S.view.progress && progressPts.length) {
     let d = `M${x(dd)},0`; progressPts.forEach(([px_, py]) => { d += ` L${px_},${py}`; }); d += ` L${x(dd)},${H - bandH}`;
@@ -884,36 +914,137 @@ function wireChart() {
     b.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); if (!S.sel.has(b.dataset.id)) selectRow(b.dataset.id, e); contextMenu(e.clientX, e.clientY); };
     b.ondblclick = () => openInspector(b.dataset.id);
   });
-  svg.querySelectorAll('.handle').forEach(h => h.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); selectRow(h.dataset.id, e); startDrag(e, 'resize', h.dataset.id, h.previousElementSibling && h.previousElementSibling.classList.contains('bar') ? h.previousElementSibling : svg.querySelector(`.bar[data-id="${CSS.escape(h.dataset.id)}"]`)); });
+  svg.querySelectorAll('.handle').forEach(h => { h.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); if (!S.sel.has(h.dataset.id)) selectRow(h.dataset.id, e); startDrag(e, 'resize', h.dataset.id, h); }; h.ondblclick = () => openInspector(h.dataset.id); h.onmousemove = e => tipFor(e, byId(h.dataset.id)); h.onmouseleave = hideTip; });
   svg.querySelectorAll('.linkdot').forEach(d => d.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); startDrag(e, 'link', d.dataset.id, d); });
   svg.querySelectorAll('.link').forEach(l => { l.onmousedown = e => { e.stopPropagation(); S.selLink = { p: l.dataset.p, s: l.dataset.s }; S.sel = new Set(); paintSelection(); }; l.ondblclick = e => { e.stopPropagation(); linkDialog(l.dataset.p, l.dataset.s); }; });
 }
+// ---------- Asta-style dragging ----------
+// Move the bar (push later, pull earlier), drag either end (start or finish), or drag from a link dot onto
+// another bar (the ends you leave and land on set FS / SS / FF / SF). While you drag, the programme is
+// recalculated live so successors follow; on release the change is saved. Moving sets "start on or
+// after", as Asta does; pulling earlier than the logic allows snaps to the earliest start and says why.
+const LIVE_LIMIT = 1500;
+const ENGINE = () => window.PlannerEngine && window.PlannerEngine.schedule ? window.PlannerEngine : null;
+function cloneProject() { return JSON.parse(JSON.stringify(S.project)); }
+function runSchedule(p) { const E = ENGINE(); if (!E) return false; try { p.levelled && E.level ? E.level(p) : E.schedule(p); return true; } catch { return false; } }
+function workStartOn(a, d) { const c = calOf(a); const n = nextWorking(c, d); const hm = String(c.day_start || '08:00').split(':'); n.setHours(+hm[0] || 8, +hm[1] || 0, 0, 0); return n; }
+function logicEarliest(a) {
+  // where logic alone would put this activity (its own constraint removed), and what holds it there
+  const E = ENGINE(); if (!E) return { es: null, by: [] };
+  const c = cloneProject(); const ca = c.activities.find(x => x.id === a.id); ca.constraint = 'none'; ca.constraint_date = null;
+  if (!runSchedule(c)) return { es: null, by: [] };
+  return { es: ca.early_start, by: c.relationships.filter(r => r.successor_id === a.id && r.driving).map(r => r.predecessor_id) };
+}
+function applyDrag(act, d, days) {
+  // mutate act (in the real project or a preview clone) for a drag of `days` calendar days; return a note
+  const cal = calOf(act), b = d.base, minH = hpd(act) / 2;
+  const holdStart = T => {
+    if (d.es0 && T <= new Date(d.es0)) { act.constraint = 'none'; act.constraint_date = null; return { T: new Date(d.es0), pulled: true }; }
+    act.constraint = b.con === 'must_start_on' ? 'must_start_on' : 'start_on_or_after'; act.constraint_date = iso(T); return { T, pulled: false };
+  };
+  if (d.kind === 'move') {
+    const t = new Date(b.st); t.setDate(t.getDate() + days); const r = holdStart(workStartOn(act, t));
+    return r.pulled ? { pulled: true } : { start: iso(r.T) };
+  }
+  if (d.end === 'F') {
+    const f = new Date(b.fi); f.setDate(f.getDate() + days);
+    const dd = workingDaysBetween(cal, new Date(b.fi), f);
+    act.duration_hours = Math.max(minH, b.dur + dd * hpd(act));
+    if (act.status === 'in_progress') act.remaining_hours = Math.max(0, (b.rem ?? b.dur) + dd * hpd(act));
+    return { dur: act.duration_hours };
+  }
+  const t = new Date(b.st); t.setDate(t.getDate() + days); const r = holdStart(workStartOn(act, t));
+  const dd = workingDaysBetween(cal, new Date(b.st), r.T);
+  act.duration_hours = Math.max(minH, b.dur - dd * hpd(act));
+  return { dur: act.duration_hours, pulled: r.pulled, start: iso(r.T) };
+}
+function drawPreview(clone, d) {
+  const svg = $('svg.chart'); if (!svg) return;
+  const cmap = Object.fromEntries(clone.activities.map(x => [x.id, x]));
+  const rs2 = S.rowsCache.map(r => r.act ? Object.assign({}, r, { act: cmap[r.act.id] || r.act }) : r);
+  const real = S.project; S.project = clone;
+  let html; try { html = chart(rs2, S.t0, S.t1, S.ganttW, S.chartH, 0); } finally { S.project = real; }
+  const i = S.rowsCache.findIndex(r => r.act && r.act.id === d.id);
+  if (i >= 0 && d.base.st && d.base.fi) {          // where it was: a dashed ghost, as Asta shows while dragging
+    const gx = S.x(d.base.st), gw = Math.max(3, S.x(d.base.fi) - gx);
+    html += `<rect x="${gx}" y="${i * RH + (RH - 14) / 2}" width="${gw}" height="14" rx="2" fill="none" stroke="var(--ink-3)" stroke-dasharray="3 3" pointer-events="none"/>`;
+  }
+  svg.innerHTML = html;
+}
+function dragNote(d, info, clone) {
+  const a = clone.activities.find(x => x.id === d.id);
+  const shift = (from, to) => { if (!from || !to) return ''; const n = workingDaysBetween(calOf(a), new Date(from), new Date(to)); return n === 0 ? 'unchanged' : (n > 0 ? '+' : '') + n + 'd'; };
+  const fin = shift(S.project.finish, clone.finish);
+  const head = d.kind === 'move' ? `<b>${esc(d.id)}</b> starts ${fmtD(a.early_start)}` : d.end === 'F' ? `<b>${esc(d.id)}</b> ${fmt1(daysOf(a, a.duration_hours))}d, finishes ${fmtD(a.early_finish)}` : `<b>${esc(d.id)}</b> starts ${fmtD(a.early_start)}, ${fmt1(daysOf(a, a.duration_hours))}d`;
+  const held = info.pulled ? `<br>Can't go earlier: ${d.by.length ? 'held by ' + d.by.map(esc).join(', ') : 'held by the data date or project start'}` : '';
+  const moved = clone.activities.filter(x => { const o = byId(x.id); return o && x.early_start !== o.early_start; }).length;
+  return `${head}${held}<br><span class="hint">${moved} activit${moved === 1 ? 'y moves' : 'ies move'} · finish ${fin}</span>`;
+}
 function startDrag(e, kind, id, el) {
-  const a = byId(id); const sheet = $('#sheet'); const rect = sheet.getBoundingClientRect();
-  S.drag = { kind, id, el, x0: e.clientX, moved: false, bx: +el.getAttribute('x') || 0, bw: +el.getAttribute('width') || 0 };
-  const svg = $('svg.chart');
-  if (kind === 'link') { const g = document.createElementNS('http://www.w3.org/2000/svg', 'line'); g.setAttribute('stroke', 'var(--accent)'); g.setAttribute('stroke-dasharray', '4 3'); g.setAttribute('x1', el.getAttribute('cx')); g.setAttribute('y1', el.getAttribute('cy')); g.setAttribute('x2', el.getAttribute('cx')); g.setAttribute('y2', el.getAttribute('cy')); svg.appendChild(g); S.drag.line = g; }
+  const a = byId(id); if (!a) return; const svg = $('svg.chart'), sheet = $('#sheet');
+  const end = (el.dataset && el.dataset.end) || 'F';
+  const d = S.drag = { kind, id, el, end, x0: e.clientX, sl0: sheet.scrollLeft, moved: false, by: [], base: { st: a.actual_start || a.early_start, fi: a.actual_finish || a.early_finish, dur: a.duration_hours, rem: a.remaining_hours, con: a.constraint } };
+  if (kind === 'link') {
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'path'); g.setAttribute('stroke', 'var(--accent)'); g.setAttribute('stroke-width', '1.6'); g.setAttribute('fill', 'none'); g.setAttribute('stroke-dasharray', '4 3');
+    d.sx = +el.getAttribute('cx'); d.sy = +el.getAttribute('cy'); svg.appendChild(g); d.line = g;
+  } else {
+    if (a.status === 'complete' || (a.status === 'in_progress' && !(kind === 'resize' && end === 'F'))) {
+      S.drag = null; toast(a.status === 'complete' ? `${id} is complete: change its actual dates instead` : `${id} has started: drag its finish, or change its actual start`); return;
+    }
+    if (a.type !== 'task' && kind === 'resize') { S.drag = null; return; }
+    const le = logicEarliest(a); d.es0 = le.es; d.by = le.by;
+    d.live = !!ENGINE() && S.project.activities.length <= LIVE_LIMIT;
+    el.classList.add('dragging');
+  }
+  let raf = 0, last = null;
+  const autoScroll = ev => { const r = sheet.getBoundingClientRect(); if (ev.clientX > r.right - 36) sheet.scrollLeft += 14; else if (ev.clientX < r.left + paneWidth() + 36 && sheet.scrollLeft > 0) sheet.scrollLeft -= 14; };
   const onMove = ev => {
-    const d = S.drag; const dx = ev.clientX - d.x0; if (Math.abs(dx) > 3) d.moved = true;
-    if (d.kind === 'move' && d.el.tagName === 'rect') { d.el.setAttribute('x', d.bx + dx); d.el.classList.add('drag'); }
-    else if (d.kind === 'move') { d.el.setAttribute('transform', `translate(${dx},0)`); }
-    else if (d.kind === 'resize') { d.el.setAttribute('width', Math.max(2, d.bw + dx)); }
-    else if (d.kind === 'link') { const pt = svgPoint(svg, ev); d.line.setAttribute('x2', pt.x); d.line.setAttribute('y2', pt.y); }
-    if (d.kind !== 'link') { const days = Math.round(dx / S.view.pxDay); tipText(ev, d.kind === 'move' ? `${days >= 0 ? '+' : ''}${days} days` : `${fmt1(daysOf(a, a.duration_hours)) + Math.round(dx / S.view.pxDay * 5 / 7)}d approx`); }
+    if (!S.drag) return; autoScroll(ev);
+    const dx = ev.clientX - d.x0 + (sheet.scrollLeft - d.sl0); if (Math.abs(dx) > 3) d.moved = true; if (!d.moved) return;
+    if (d.kind === 'link') {
+      const pt = svgPoint(svg, ev); d.line.setAttribute('d', `M${d.sx},${d.sy} C${d.sx + (d.end === 'F' ? 40 : -40)},${d.sy} ${pt.x - 40},${pt.y} ${pt.x},${pt.y}`);
+      $$('svg.chart .linktarget').forEach(x => x.classList.remove('linktarget'));
+      const t = document.elementFromPoint(ev.clientX, ev.clientY), bar = t && t.closest && t.closest('g.act'), tid = bar && bar.dataset.g;
+      d.target = null;
+      if (tid && tid !== id) {
+        const tb = bar.querySelector('.bar'); const r = tb.getBoundingClientRect(); const tend = ev.clientX < r.left + r.width / 2 ? 'S' : 'F';
+        d.target = { id: tid, end: tend, type: d.end + tend }; tb.classList.add('linktarget');
+        const ta = byId(tid); tipText(ev, `<b>${esc(d.end === 'F' ? 'Finish' : 'Start')} of ${esc(id)}</b> → <b>${tend === 'S' ? 'start' : 'finish'} of ${esc(tid)}</b> (${d.target.type})<br>${esc(ta ? ta.name : '')}${reaches(S.project, tid, id) ? '<br><span style="color:var(--crit)">Would create a loop</span>' : ''}`);
+      } else tipText(ev, `Drop on another bar: left half links to its start, right half to its finish`);
+      return;
+    }
+    const days = Math.round(dx / S.view.pxDay);
+    if (last === days) return; last = days;
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      if (!S.drag) return;
+      if (d.live) {
+        const c = cloneProject(); const ca = c.activities.find(x => x.id === id); const info = applyDrag(ca, d, days);
+        if (runSchedule(c)) { drawPreview(c, d); tipText(ev, dragNote(d, info, c)); d.preview = { c, info, days }; return; }
+      }
+      // fallback for very large programmes: move the bar only
+      const px = days * S.view.pxDay; if (d.kind === 'move') d.el.setAttribute('transform', `translate(${px},0)`); tipText(ev, `${days >= 0 ? '+' : ''}${days} days`);
+    });
   };
   const onUp = ev => {
-    document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp); document.removeEventListener('pointercancel', onUp); hideTip();
-    const d = S.drag; S.drag = null; if (!d) return;
-    if (d.kind === 'link') { d.line.remove(); const target = document.elementFromPoint(ev.clientX, ev.clientY); const tid = target && target.dataset && target.dataset.id; const tkey = target && target.dataset && target.dataset.key; const sid = tid || (tkey && byId(tkey) ? tkey : null); if (sid && sid !== id) addLink(id, sid, 'FS', 0); return; }
-    if (!d.moved) { if (d.kind === 'move' && d.el.tagName === 'rect') { d.el.setAttribute('x', d.bx); d.el.classList.remove('drag'); } else if (d.kind === 'move') d.el.removeAttribute('transform'); else if (d.kind === 'resize') d.el.setAttribute('width', d.bw); return; }
-    const dx = ev.clientX - d.x0; const days = Math.round(dx / S.view.pxDay); if (!days) { render(); return; }
-    if (d.kind === 'move') {
-      if (a.status !== 'not_started') { toast('Started activities move by their actual dates'); render(); return; }
-      const s = new Date(a.early_start); s.setDate(s.getDate() + days); const nw = nextWorking(calOf(a), s); const hm = String(calOf(a).day_start || '08:00').split(':'); nw.setHours(+hm[0] || 8, +hm[1] || 0, 0, 0);
-      mutate(() => { a.constraint = 'start_on_or_after'; a.constraint_date = iso(nw); }, `${a.id} now held to start on or after ${fmtD(iso(nw))}. Dragging adds this constraint.`);
-    } else {
-      mutate(p => { const f = new Date(a.actual_finish || a.early_finish); f.setDate(f.getDate() + days); const wd = workingDaysBetween(calOf(a), new Date(a.actual_start || a.early_start), f); if (wd < 0.5) return false; a.duration_hours = Math.max(0.5, wd) * hpd(a); if (a.status === 'in_progress') a.remaining_hours = a.duration_hours * (1 - a.percent_complete / 100); }, `${a.id} duration changed`);
+    document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp); document.removeEventListener('pointercancel', onUp); cancelAnimationFrame(raf); hideTip();
+    if (!S.drag) return; S.drag = null;
+    if (d.kind === 'link') {
+      d.line.remove(); $$('svg.chart .linktarget').forEach(x => x.classList.remove('linktarget'));
+      if (!d.target) { const t = document.elementFromPoint(ev.clientX, ev.clientY), key = t && t.dataset && t.dataset.key; if (key && byId(key) && key !== id) addLink(id, key, d.end + 'S', 0); return; }
+      addLink(id, d.target.id, d.target.type, 0); return;
     }
+    const dx = ev.clientX - d.x0 + (sheet.scrollLeft - d.sl0), days = Math.round(dx / S.view.pxDay);
+    if (!d.moved) { d.el.classList.remove('dragging'); return; }   // a click: leave the DOM alone so double-click and right-click work
+    if (!days) { render(); return; }
+    let info = null;
+    mutate(p => { const act = p.activities.find(x => x.id === id); info = applyDrag(act, d, days); }, null);
+    const c = d.preview && d.preview.days === days ? d.preview.c : null;
+    const fin = c ? workingDaysBetween(calOf(a), new Date(S.project.finish), new Date(c.finish)) : null;
+    const tail = fin == null ? '' : fin === 0 ? ' Finish unchanged.' : ` Finish ${fin > 0 ? '+' : ''}${fin} working days.`;
+    if (d.kind === 'move') toast(info.pulled ? `${id} pulled back to its earliest start${d.by.length ? ': ' + d.by.join(', ') + ' holds it' : ''}. Constraint removed.${tail}` : `${id} now starts on or after ${fmtD(info.start)} (constraint added).${tail}`, { undo: true });
+    else if (d.end === 'F') toast(`${id} is now ${fmt1(daysOf(a, info.dur))} days.${tail}`, { undo: true });
+    else toast(`${id} ${info.pulled ? 'starts at its earliest' : 'starts ' + fmtD(info.start)}, now ${fmt1(daysOf(a, info.dur))} days.${tail}`, { undo: true });
   };
   document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp); document.addEventListener('pointercancel', onUp);
 }
@@ -1809,8 +1940,8 @@ function wireToolbar() {
   $('#btnIndent').onclick = () => indent(1); $('#btnOutdent').onclick = () => indent(-1); $('#btnUp').onclick = () => moveRow(-1); $('#btnDown').onclick = () => moveRow(1);
   $('#btnLink').onclick = linkSelected; $('#btnUnlink').onclick = unlinkSelected; $('#btnMilestone').onclick = toggleMilestone;
   $('#btnZoomIn').onclick = () => zoom(1.5); $('#btnZoomOut').onclick = () => zoom(1 / 1.5);
-  $('#btnFit').onclick = () => { if (!S.project) return; const [t0, t1] = timeRange(); S.view.pxDay = Math.max(1, ($('#sheet').clientWidth - gridWidth() - 60) / ((t1 - t0) / DAY)); render(); };
-  $('#btnToday').onclick = () => { if (!S.project) return; const sheet = $('#sheet'); sheet.scrollTo({ left: Math.max(0, S.x(S.project.data_date || S.project.start) - 300), behavior: REDUCED.matches ? 'auto' : 'smooth' }); };
+  $('#btnFit').onclick = () => { if (!S.project) return; const [t0, t1] = timeRange(); S.view.pxDay = Math.max(1, ($('#sheet').clientWidth - paneWidth() - 60) / ((t1 - t0) / DAY)); render(); };
+  $('#btnToday').onclick = () => { if (!S.project) return; const sheet = $('#sheet'); sheet.scrollTo({ left: Math.max(0, S.x(S.project.data_date || S.project.start) - 60), behavior: REDUCED.matches ? 'auto' : 'smooth' }); };
   $('#btnView').onclick = e => openPop($('#popView'), e.currentTarget, 'right');
   $('#btnMore').onclick = e => openPop($('#popMore'), e.currentTarget);
   $$('#popMore button').forEach(b => b.addEventListener('click', () => closePop($('#popMore'))));
