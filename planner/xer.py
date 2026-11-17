@@ -35,6 +35,28 @@ CSTR_OUT = {v: k for k, v in CSTR_IN.items()}
 LINK_IN = {"PR_FS": LinkType.FS, "PR_SS": LinkType.SS, "PR_FF": LinkType.FF, "PR_SF": LinkType.SF}
 LINK_OUT = {v: k for k, v in LINK_IN.items()}
 RSRC_IN = {"RT_Labor": "labour", "RT_Mat": "material", "RT_Equip": "equipment"}
+# user-defined field types: P6 logical data type <-> ours (text, number, date)
+UDF_IN = {"FT_TEXT": "text", "FT_STATICTYPE": "text", "FT_INT": "number", "FT_FLOAT_2_DECIMALS": "number", "FT_MONEY": "number",
+          "FT_START_DATE": "date", "FT_END_DATE": "date"}
+UDF_OUT = {"text": "FT_TEXT", "number": "FT_FLOAT_2_DECIMALS", "date": "FT_START_DATE"}
+
+
+def _num_text(v) -> str:
+    v = float(v)
+    return str(int(v)) if v.is_integer() else repr(v)
+
+
+def udf_defs(project) -> list[dict]:
+    """The project's user-defined fields, plus any field an activity carries that was never declared."""
+    defs = [{"name": d["name"], "type": d.get("type", "text") if d.get("type") in UDF_OUT else "text"}
+            for d in (project.user_fields or []) if d.get("name")]
+    seen = {d["name"] for d in defs}
+    for a in project.activities:
+        for k, v in (a.fields or {}).items():
+            if k not in seen:
+                seen.add(k)
+                defs.append({"name": k, "type": "number" if isinstance(v, (int, float)) and not isinstance(v, bool) else "text"})
+    return defs
 RSRC_OUT = {v: k for k, v in RSRC_IN.items()}
 
 
@@ -336,6 +358,25 @@ def read_xer(text: str, project_index: int = 0) -> Project:
                 a = act_map[id_by_task[r["task_id"]]]
                 a.notes = a.notes + "\n\n" + txt if a.notes else txt
 
+    # user-defined fields on activities (UDFTYPE / UDFVALUE)
+    udf_types: dict[str, tuple[str, str]] = {}
+    for r in t.get("UDFTYPE", []):
+        label = r.get("udf_type_label") or r.get("udf_type_name") or ""
+        if r.get("table_name", "") == "TASK" and label and label not in {v[0] for v in udf_types.values()}:
+            udf_types[r.get("udf_type_id", "")] = (label, UDF_IN.get(r.get("logical_data_type", ""), "text"))
+    for r in t.get("UDFVALUE", []):
+        ut = udf_types.get(r.get("udf_type_id", ""))
+        if not ut or r.get("fk_id") not in id_by_task:
+            continue
+        label, typ = ut
+        raw = r.get({"number": "udf_number", "date": "udf_date"}.get(typ, "udf_text"), "")
+        if raw == "":
+            continue
+        a = act_map[id_by_task[r["fk_id"]]]
+        a.fields = a.fields or {}
+        a.fields[label] = _f(raw) if typ == "number" else raw[:10] if typ == "date" else raw
+    user_fields = [{"name": n, "type": ty} for n, ty in udf_types.values()] or None
+
     default_cal = pr.get("clndr_id") or (next(iter(cals)) if cals else "std")
     proj = Project(
         id=pr.get("proj_short_name") or pid, name=name,
@@ -343,6 +384,7 @@ def read_xer(text: str, project_index: int = 0) -> Project:
         data_date=_dt(pr.get("last_recalc_date", "")),
         must_finish_by=_dt(pr.get("plan_end_date", "")),
         default_calendar_id=default_cal, calendars=cals, wbs=wbs, activities=acts, relationships=rels,
+        user_fields=user_fields,
         resources=[res[k] for k in res if k in used] or list(res.values()), assignments=assigns, code_types=code_lib,
     )
     proj.ensure_default_calendar()
@@ -563,7 +605,38 @@ def write_xer(project: Project, currency: str = "GBP") -> str:
     taskmemo = _table("TASKMEMO", ["memo_id", "task_id", "memo_type_id", "proj_id", "task_memo"],
                       [{"memo_id": i + 1, "task_id": task_ids[a.id], "memo_type_id": 1, "proj_id": pid, "task_memo": _memo_html(a.notes)}
                        for i, a in enumerate([a for a in project.activities if a.notes and a.id in task_ids])])
-    return "\n".join([header, currtype, memotype, calendar, proj_t, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, taskmemo, "%E", ""])
+    defs = udf_defs(project)
+    udf_ids = {d["name"]: i + 1 for i, d in enumerate(defs)}
+    udf_types = {d["name"]: d["type"] for d in defs}
+    udftype = _table("UDFTYPE", ["udf_type_id", "table_name", "udf_type_name", "udf_type_label", "logical_data_type", "super_flag",
+                                 "indicator_expression", "summary_indicator_expression", "export_flag"],
+                     [{"udf_type_id": udf_ids[d["name"]], "table_name": "TASK", "udf_type_name": f"user_field_{udf_ids[d['name']]}",
+                       "udf_type_label": d["name"][:40], "logical_data_type": UDF_OUT[d["type"]], "super_flag": "N", "export_flag": "Y"} for d in defs])
+
+    def _udf_row(a, k, v):
+        typ = udf_types[k]
+        if typ == "number":
+            try:
+                return {"udf_number": _num_text(v)}
+            except (TypeError, ValueError):
+                return None
+        if typ == "date":
+            return {"udf_date": f"{str(v)[:10]} 00:00"} if v else None
+        return {"udf_text": " ".join(str(v).split("\t")).replace("\r", " ").replace("\n", " ")} if str(v) != "" else None
+    udfrows = []
+    for a in project.activities:
+        if a.id not in task_ids:
+            continue
+        for k, v in (a.fields or {}).items():
+            if v is None or k not in udf_ids:
+                continue
+            row = _udf_row(a, k, v)
+            if row:
+                udfrows.append({"udf_type_id": udf_ids[k], "fk_id": task_ids[a.id], "proj_id": pid, **row})
+    udfvalue = _table("UDFVALUE", ["udf_type_id", "fk_id", "proj_id", "udf_date", "udf_number", "udf_text", "udf_code_id"], udfrows)
+    tables = [header, currtype, memotype, calendar, proj_t, projwbs, rsrc, actvtype, actvcode] + ([udftype] if defs else []) + \
+        [task, taskpred, taskrsrc, taskactv, taskmemo] + ([udfvalue] if defs else []) + ["%E", ""]
+    return "\n".join(tables)
 
 
 def write_xer_file(project: Project, path: str) -> None:

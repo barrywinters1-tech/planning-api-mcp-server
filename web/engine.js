@@ -932,6 +932,13 @@ function exportRelationships(p) {
   const keep = new Set(best.values());
   return [p.relationships.filter(r => keep.has(r)), p.relationships.filter(r => !keep.has(r))];
 }
+const UDF_OUT = { text: 'FT_TEXT', number: 'FT_FLOAT_2_DECIMALS', date: 'FT_START_DATE' };
+// the project's user-defined fields, plus any field an activity carries that was never declared (xer.udf_defs)
+function udfDefs(p) {
+  const defs = (p.user_fields || []).filter(d => d && d.name).map(d => ({ name: d.name, type: UDF_OUT[d.type] ? d.type : 'text' })), seen = new Set(defs.map(d => d.name));
+  for (const a of p.activities) for (const [k, v] of Object.entries(a.fields || {})) if (!seen.has(k)) { seen.add(k); defs.push({ name: k, type: typeof v === 'number' ? 'number' : 'text' }); }
+  return defs;
+}
 function writeXer(p) {
   E.ensureCalendars(p); const now = E.nowISO(); const nowS = fmtDt(now); const pid = 1;
   const calIds = {}; Object.keys(p.calendars).forEach((c, i) => calIds[c] = i + 1);
@@ -966,7 +973,15 @@ function writeXer(p) {
   const memoHtml = t => '<HTML><BODY>' + t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\t/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>') + '</BODY></HTML>';
   const memotype = table('MEMOTYPE', ['memo_type_id', 'seq_num', 'eps_flag', 'proj_flag', 'wbs_flag', 'task_flag', 'memo_type'], [{ memo_type_id: 1, seq_num: 0, eps_flag: 'N', proj_flag: 'N', wbs_flag: 'Y', task_flag: 'Y', memo_type: 'Notes' }]);
   const taskmemo = table('TASKMEMO', ['memo_id', 'task_id', 'memo_type_id', 'proj_id', 'task_memo'], p.activities.filter(a => a.notes && taskIds[a.id]).map((a, i) => ({ memo_id: i + 1, task_id: taskIds[a.id], memo_type_id: 1, proj_id: pid, task_memo: memoHtml(a.notes) })));
-  return [header, currtype, memotype, calendar, projT, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, taskmemo, '%E', ''].join('\n');
+  // user-defined fields: UDFTYPE per field, UDFVALUE per value (mirrors xer.write_xer)
+  const defs = udfDefs(p), udfIds = {}, udfTy = {}; defs.forEach((d, i) => { udfIds[d.name] = i + 1; udfTy[d.name] = d.type; });
+  const udftype = table('UDFTYPE', ['udf_type_id', 'table_name', 'udf_type_name', 'udf_type_label', 'logical_data_type', 'super_flag', 'indicator_expression', 'summary_indicator_expression', 'export_flag'], defs.map(d => ({ udf_type_id: udfIds[d.name], table_name: 'TASK', udf_type_name: 'user_field_' + udfIds[d.name], udf_type_label: d.name.slice(0, 40), logical_data_type: UDF_OUT[d.type], super_flag: 'N', export_flag: 'Y' })));
+  const udfRows = [];
+  for (const a of p.activities) { if (!taskIds[a.id]) continue; for (const [k, v] of Object.entries(a.fields || {})) { if (v == null || !udfIds[k]) continue; const ty = udfTy[k]; let row = null;
+    if (ty === 'number') { const n = Number(v); if (v !== '' && !isNaN(n)) row = { udf_number: String(n) }; } else if (ty === 'date') { if (v) row = { udf_date: String(v).slice(0, 10) + ' 00:00' }; } else if (String(v) !== '') row = { udf_text: String(v).replace(/[\t\r\n]/g, ' ') };
+    if (row) udfRows.push(Object.assign({ udf_type_id: udfIds[k], fk_id: taskIds[a.id], proj_id: pid }, row)); } }
+  const udfvalue = table('UDFVALUE', ['udf_type_id', 'fk_id', 'proj_id', 'udf_date', 'udf_number', 'udf_text', 'udf_code_id'], udfRows);
+  return [header, currtype, memotype, calendar, projT, projwbs, rsrc, actvtype, actvcode].concat(defs.length ? [udftype] : [], [task, taskpred, taskrsrc, taskactv, taskmemo], defs.length ? [udfvalue] : [], ['%E', '']).join('\n');
 }
 
 function writeMspdi(p) {
@@ -1026,7 +1041,7 @@ function writeAny(p, fmt) {
   if (fmt === 'xml' || fmt === 'mspdi' || fmt === 'msproject') return [writeMspdi(p), 'application/xml', p.id + '.xml'];
   throw new Error('format must be json, xer or xml');
 }
-Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships });
+Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships, udfDefs });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 6: export bundle (store-only ZIP of .xer + .xml + .json) ---- */

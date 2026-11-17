@@ -150,3 +150,25 @@ def test_progress_periods_and_chart_notes_survive_json_roundtrip():
     assert back.progress_periods == p.progress_periods
     assert back.annotations == p.annotations
     assert Project.model_validate_json(sample().model_dump_json()).progress_periods is None
+
+
+def test_user_fields_written_by_both_engines_read_back_the_same():
+    """XER user-defined fields: web/engine.js writes what planner/xer.py writes (read back through read_xer)."""
+    import json, shutil, subprocess
+    from pathlib import Path
+    node = shutil.which("node")
+    if not node:
+        import pytest
+        pytest.skip("node is not installed")
+    p = sample()
+    p.user_fields = [{"name": "Package", "type": "text"}, {"name": "Cost", "type": "number"}, {"name": "Due", "type": "date"}]
+    p.activities[0].fields = {"Package": "Steel\tframe", "Cost": 1200.0, "Due": "2026-04-01"}
+    p.activities[1].fields = {"Cost": 12.5, "Extra": "x", "Blank": ""}
+    web = Path(__file__).resolve().parent.parent / "web"
+    js = ("require(%r); const E = globalThis.PlannerEngine; const p = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+          "process.stdout.write(E.writeXer(p));") % str(web / "engine.js")
+    out = subprocess.run([node, "-e", js], input=p.model_dump_json(), capture_output=True, text=True, check=True).stdout
+    a, b = read_xer(out), read_xer(write_xer(p))
+    assert a.user_fields == b.user_fields
+    assert [x.fields for x in a.activities] == [x.fields for x in b.activities]
+    assert a.activities[0].fields == {"Package": "Steel frame", "Cost": 1200.0, "Due": "2026-04-01"}

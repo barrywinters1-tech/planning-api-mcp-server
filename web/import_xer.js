@@ -387,6 +387,23 @@ function readXer(text, projectIndex = 0) {
     const a = actMap.get(idByTask.get(ti)); a.notes = a.notes ? a.notes + '\n\n' + txt : txt;
   }
 
+  // user-defined fields on activities (UDFTYPE / UDFVALUE), port of the same block in xer.read_xer
+  const UDF_IN = { FT_TEXT: 'text', FT_STATICTYPE: 'text', FT_INT: 'number', FT_FLOAT_2_DECIMALS: 'number', FT_MONEY: 'number', FT_START_DATE: 'date', FT_END_DATE: 'date' };
+  const udfTypes = new Map();
+  for (const r of tbl('UDFTYPE')) {
+    const label = get(r, 'udf_type_label') || get(r, 'udf_type_name') || '';
+    if (getd(r, 'table_name', '') === 'TASK' && label && ![...udfTypes.values()].some(v => v[0] === label)) udfTypes.set(getd(r, 'udf_type_id', ''), [label, lookup(UDF_IN, getd(r, 'logical_data_type', ''), 'text')]);
+  }
+  for (const r of tbl('UDFVALUE')) {
+    const ut = udfTypes.get(getd(r, 'udf_type_id', '')), fk = get(r, 'fk_id');
+    if (!ut || !idByTask.has(fk)) continue;
+    const [label, typ] = ut, raw = getd(r, typ === 'number' ? 'udf_number' : typ === 'date' ? 'udf_date' : 'udf_text', '');
+    if (raw === '') continue;
+    const a = actMap.get(idByTask.get(fk)); if (!a.fields) a.fields = {};
+    put(a.fields, label, typ === 'number' ? _f(raw) : typ === 'date' ? raw.slice(0, 10) : raw);
+  }
+  const userFields = [...udfTypes.values()].map(([name, type]) => ({ name, type }));
+
   const defaultCal = get(pr, 'clndr_id') || (cals.size ? cals.keys().next().value : 'std');
   const calendars = {};
   for (const [k, v] of cals) put(calendars, k, v);
@@ -400,6 +417,7 @@ function readXer(text, projectIndex = 0) {
     resources: usedRes.length ? usedRes : Array.from(res.values()), assignments: assigns,
     description: '', assumptions: [], code_types: codeLib, baselines: [], revisions: [], levelled: false, finish: null, scheduled_at: null,
   };
+  if (userFields.length) proj.user_fields = userFields;
   if (!own(calendars, defaultCal)) put(calendars, defaultCal, newCalendar(defaultCal));   // Project.ensure_default_calendar()
   return proj;
 }

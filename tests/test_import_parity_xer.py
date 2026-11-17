@@ -251,6 +251,21 @@ def build_cases() -> list[tuple[str, dict]]:
     for fn in (progress, constraints, hammocks, links_and_lags, dst_year):
         raw.append((f"written-{fn.__name__}", _xer(fn()), None))
     raw.append(("written-progress-baselined", _xer(progress(), baseline=True), None))
+    uf = copy.deepcopy(progress())
+    uf["user_fields"] = [{"name": "Package", "type": "text"}, {"name": "Cost", "type": "number"}, {"name": "Permit due", "type": "date"}]
+    for i, a in enumerate(uf["activities"]):
+        a["fields"] = {"Package": f"Pkg {i % 3}", "Cost": 1250.5 * i, "Permit due": f"2026-04-{i % 28 + 1:02d}"} if i % 2 == 0 else {"Undeclared": "x"}
+    raw.append(("written-user-fields", _xer(uf), None))
+    udf = ("%T\tUDFTYPE", "%F\tudf_type_id\ttable_name\tudf_type_name\tudf_type_label\tlogical_data_type",
+           "%R\t1\tTASK\tuser_field_1\tSupplier\tFT_TEXT", "%R\t2\tTASK\tuser_field_2\t\tFT_INT",
+           "%R\t3\tTASK\tuser_field_3\tValue\tFT_MONEY", "%R\t4\tTASK\tuser_field_4\tDue\tFT_END_DATE",
+           "%R\t5\tPROJWBS\tuser_field_5\tWBS only\tFT_TEXT", "%R\t6\tTASK\tuser_field_6\tSupplier\tFT_INT",
+           "%R\t7\tTASK\t\t\tFT_TEXT", "%R\t8\tTASK\tuser_field_8\tFlag\tFT_STATICTYPE", "%R\t9\tTASK\tuser_field_9\tOdd\tFT_UNKNOWN",
+           "%T\tUDFVALUE", "%F\tudf_type_id\tfk_id\tproj_id\tudf_date\tudf_number\tudf_text",
+           "%R\t1\t1\t7\t\t\tAcme", "%R\t2\t1\t7\t\t42\t", "%R\t3\t1\t7\t\tabc\t", "%R\t4\t1\t7\t2026-05-01 17:00\t\t",
+           "%R\t5\t1\t7\t\t\tignored", "%R\t6\t1\t7\t\t9\t", "%R\t8\t1\t7\t\t\tINDICATOR_RED", "%R\t9\t1\t7\t\t\tq",
+           "%R\t1\t99\t7\t\t\tno such task", "%R\t3\t1\t7\t\t\t", "%R\t77\t1\t7\t\t\tno such type", "%R\t1\t1\t7\t\t\tAcme twice")
+    raw.append(("crafted-user-fields", _minimal(extra=udf).encode(), None))
     raw.append(("written-constraints-unscheduled", _xer(constraints(), scheduled=False), None))
     raw.append(("written-logic_loop", _xer(logic_loop(), scheduled=False), None))
     raw.append(("non-ascii-cp1252", _xer(_non_ascii(), encoding="cp1252"), None))

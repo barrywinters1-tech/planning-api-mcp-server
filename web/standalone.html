@@ -707,7 +707,7 @@ details.why .linkchip { margin-right: 4px; }
           <div class="miniseg" id="modeSeg"><button data-mode="gantt" class="on">Gantt</button><button data-mode="tl">Time–location</button></div>
           <select id="vTl" hidden aria-label="Locations"><option value="WBS">Locations: WBS</option></select>
           <div class="tracechip" id="traceChip" hidden></div>
-          <div class="search"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="vFilter" placeholder="Filter, or Trade=Bricklayers" aria-label="Filter activities"></div>
+          <div class="search"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="vFilter" placeholder="Filter: text, Trade=Brick; Float<5" aria-label="Filter activities"></div>
           <button class="tb only-ic" id="btnZoomOut" title="Zoom out (-)" aria-label="Zoom out"><svg viewBox="0 0 20 20" class="ic"><path d="M5 10h10"/></svg></button>
           <button class="tb only-ic" id="btnZoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg viewBox="0 0 20 20" class="ic"><path d="M10 5v10M5 10h10"/></svg></button>
           <button class="tb" id="btnFit" title="Fit the programme to the window">Fit</button>
@@ -755,6 +755,8 @@ details.why .linkchip { margin-right: 4px; }
   <button id="btnCalendars" role="menuitem">Calendars…</button>
   <button id="btnResources" role="menuitem">Resources and crews…</button>
   <button id="btnCodes" role="menuitem">Activity codes…</button>
+  <button id="btnFields" role="menuitem">Custom fields…</button>
+  <button id="btnLibrary" role="menuitem">Codes, fields and views library…</button>
   <div class="pop-sec">Fix and assist</div>
   <button id="btnRisk" role="menuitem">Schedule risk (Monte Carlo)…</button>
   <button id="btnRepair" role="menuitem">Auto-repair failing checks</button>
@@ -1738,6 +1740,13 @@ function exportRelationships(p) {
   const keep = new Set(best.values());
   return [p.relationships.filter(r => keep.has(r)), p.relationships.filter(r => !keep.has(r))];
 }
+const UDF_OUT = { text: 'FT_TEXT', number: 'FT_FLOAT_2_DECIMALS', date: 'FT_START_DATE' };
+// the project's user-defined fields, plus any field an activity carries that was never declared (xer.udf_defs)
+function udfDefs(p) {
+  const defs = (p.user_fields || []).filter(d => d && d.name).map(d => ({ name: d.name, type: UDF_OUT[d.type] ? d.type : 'text' })), seen = new Set(defs.map(d => d.name));
+  for (const a of p.activities) for (const [k, v] of Object.entries(a.fields || {})) if (!seen.has(k)) { seen.add(k); defs.push({ name: k, type: typeof v === 'number' ? 'number' : 'text' }); }
+  return defs;
+}
 function writeXer(p) {
   E.ensureCalendars(p); const now = E.nowISO(); const nowS = fmtDt(now); const pid = 1;
   const calIds = {}; Object.keys(p.calendars).forEach((c, i) => calIds[c] = i + 1);
@@ -1772,7 +1781,15 @@ function writeXer(p) {
   const memoHtml = t => '<HTML><BODY>' + t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\t/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>') + '</BODY></HTML>';
   const memotype = table('MEMOTYPE', ['memo_type_id', 'seq_num', 'eps_flag', 'proj_flag', 'wbs_flag', 'task_flag', 'memo_type'], [{ memo_type_id: 1, seq_num: 0, eps_flag: 'N', proj_flag: 'N', wbs_flag: 'Y', task_flag: 'Y', memo_type: 'Notes' }]);
   const taskmemo = table('TASKMEMO', ['memo_id', 'task_id', 'memo_type_id', 'proj_id', 'task_memo'], p.activities.filter(a => a.notes && taskIds[a.id]).map((a, i) => ({ memo_id: i + 1, task_id: taskIds[a.id], memo_type_id: 1, proj_id: pid, task_memo: memoHtml(a.notes) })));
-  return [header, currtype, memotype, calendar, projT, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, taskmemo, '%E', ''].join('\n');
+  // user-defined fields: UDFTYPE per field, UDFVALUE per value (mirrors xer.write_xer)
+  const defs = udfDefs(p), udfIds = {}, udfTy = {}; defs.forEach((d, i) => { udfIds[d.name] = i + 1; udfTy[d.name] = d.type; });
+  const udftype = table('UDFTYPE', ['udf_type_id', 'table_name', 'udf_type_name', 'udf_type_label', 'logical_data_type', 'super_flag', 'indicator_expression', 'summary_indicator_expression', 'export_flag'], defs.map(d => ({ udf_type_id: udfIds[d.name], table_name: 'TASK', udf_type_name: 'user_field_' + udfIds[d.name], udf_type_label: d.name.slice(0, 40), logical_data_type: UDF_OUT[d.type], super_flag: 'N', export_flag: 'Y' })));
+  const udfRows = [];
+  for (const a of p.activities) { if (!taskIds[a.id]) continue; for (const [k, v] of Object.entries(a.fields || {})) { if (v == null || !udfIds[k]) continue; const ty = udfTy[k]; let row = null;
+    if (ty === 'number') { const n = Number(v); if (v !== '' && !isNaN(n)) row = { udf_number: String(n) }; } else if (ty === 'date') { if (v) row = { udf_date: String(v).slice(0, 10) + ' 00:00' }; } else if (String(v) !== '') row = { udf_text: String(v).replace(/[\t\r\n]/g, ' ') };
+    if (row) udfRows.push(Object.assign({ udf_type_id: udfIds[k], fk_id: taskIds[a.id], proj_id: pid }, row)); } }
+  const udfvalue = table('UDFVALUE', ['udf_type_id', 'fk_id', 'proj_id', 'udf_date', 'udf_number', 'udf_text', 'udf_code_id'], udfRows);
+  return [header, currtype, memotype, calendar, projT, projwbs, rsrc, actvtype, actvcode].concat(defs.length ? [udftype] : [], [task, taskpred, taskrsrc, taskactv, taskmemo], defs.length ? [udfvalue] : [], ['%E', '']).join('\n');
 }
 
 function writeMspdi(p) {
@@ -1832,7 +1849,7 @@ function writeAny(p, fmt) {
   if (fmt === 'xml' || fmt === 'mspdi' || fmt === 'msproject') return [writeMspdi(p), 'application/xml', p.id + '.xml'];
   throw new Error('format must be json, xer or xml');
 }
-Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships });
+Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships, udfDefs });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 6: export bundle (store-only ZIP of .xer + .xml + .json) ---- */
@@ -2259,6 +2276,23 @@ function readXer(text, projectIndex = 0) {
     const a = actMap.get(idByTask.get(ti)); a.notes = a.notes ? a.notes + '\n\n' + txt : txt;
   }
 
+  // user-defined fields on activities (UDFTYPE / UDFVALUE), port of the same block in xer.read_xer
+  const UDF_IN = { FT_TEXT: 'text', FT_STATICTYPE: 'text', FT_INT: 'number', FT_FLOAT_2_DECIMALS: 'number', FT_MONEY: 'number', FT_START_DATE: 'date', FT_END_DATE: 'date' };
+  const udfTypes = new Map();
+  for (const r of tbl('UDFTYPE')) {
+    const label = get(r, 'udf_type_label') || get(r, 'udf_type_name') || '';
+    if (getd(r, 'table_name', '') === 'TASK' && label && ![...udfTypes.values()].some(v => v[0] === label)) udfTypes.set(getd(r, 'udf_type_id', ''), [label, lookup(UDF_IN, getd(r, 'logical_data_type', ''), 'text')]);
+  }
+  for (const r of tbl('UDFVALUE')) {
+    const ut = udfTypes.get(getd(r, 'udf_type_id', '')), fk = get(r, 'fk_id');
+    if (!ut || !idByTask.has(fk)) continue;
+    const [label, typ] = ut, raw = getd(r, typ === 'number' ? 'udf_number' : typ === 'date' ? 'udf_date' : 'udf_text', '');
+    if (raw === '') continue;
+    const a = actMap.get(idByTask.get(fk)); if (!a.fields) a.fields = {};
+    put(a.fields, label, typ === 'number' ? _f(raw) : typ === 'date' ? raw.slice(0, 10) : raw);
+  }
+  const userFields = [...udfTypes.values()].map(([name, type]) => ({ name, type }));
+
   const defaultCal = get(pr, 'clndr_id') || (cals.size ? cals.keys().next().value : 'std');
   const calendars = {};
   for (const [k, v] of cals) put(calendars, k, v);
@@ -2272,6 +2306,7 @@ function readXer(text, projectIndex = 0) {
     resources: usedRes.length ? usedRes : Array.from(res.values()), assignments: assigns,
     description: '', assumptions: [], code_types: codeLib, baselines: [], revisions: [], levelled: false, finish: null, scheduled_at: null,
   };
+  if (userFields.length) proj.user_fields = userFields;
   if (!own(calendars, defaultCal)) put(calendars, defaultCal, newCalendar(defaultCal));   // Project.ensure_default_calendar()
   return proj;
 }
@@ -3773,6 +3808,8 @@ function fidelityReport(project, fmt) {
   const codeVals = x => x.activities.reduce((t, a) => t + Object.keys(a.codes || {}).length, 0);
   if (codeVals(p)) add(codeVals(q) >= codeVals(p), `${codeVals(q)} of ${codeVals(p)} activity code values`, codeVals(q) < codeVals(p) ? (fmt === 'xml' ? 'MS Project XML has no activity codes; they are left out.' : '') : '');
   const notes = p.activities.filter(a => a.notes).length; if (notes) add(q.activities.filter(a => a.notes).length >= notes, `${q.activities.filter(a => a.notes).length} of ${notes} activity notes`);
+  const fieldVals = x => x.activities.reduce((t, a) => t + Object.values(a.fields || {}).filter(v => v != null && v !== '').length, 0);
+  if (fieldVals(p)) add(fieldVals(q) >= fieldVals(p), `${fieldVals(q)} of ${fieldVals(p)} custom field values`, fieldVals(q) < fieldVals(p) ? (fmt === 'xml' ? 'This MS Project XML export leaves custom fields out. Use XER, or send the coding sheet (CSV) alongside.' : 'Values that do not fit the field type (text in a number field) are left out.') : '');
   if ((p.annotations || []).length) add(false, `${p.annotations.length} chart note${p.annotations.length > 1 ? 's' : ''} not carried`, 'Notes on the chart print on the PDF but have no place in this format.');
   if ((p.progress_periods || []).length) add(false, `${p.progress_periods.length} closed progress period${p.progress_periods.length > 1 ? 's' : ''} not carried`, 'Period records and their progress lines stay in this programme; the file carries the current progress only.');
   if (p.must_finish_by) add(!!q.must_finish_by, q.must_finish_by ? 'Deadline (must finish by) carried' : 'Deadline (must finish by) not carried', q.must_finish_by ? '' : 'This format has no field for it. Add it as a constraint on the completion milestone if the other tool must see it.');
@@ -5672,13 +5709,8 @@ function toggleTheme() {
 // ---------- rows ----------
 function rows() {
   const p = S.project, out = [], f = S.view.filter.trim().toLowerCase();
-  let codeF = null; const m = f.match(/^([a-z ]+)\s*[=:]\s*(.+)$/); if (m) codeF = [m[1].trim(), m[2].trim()];
-  const pass = a => {
-    if (!passQuick(a)) return false;
-    if (codeF) return Object.entries(a.codes || {}).some(([k, v]) => k.toLowerCase() === codeF[0] && v.toLowerCase().includes(codeF[1]));
-    if (f) return a.name.toLowerCase().includes(f) || a.id.toLowerCase().includes(f);
-    return true;
-  };
+  const flt = buildFilter(S.view.filter);
+  const pass = a => passQuick(a) && (!flt || flt(a));
   const sortFn = { start: (a, b) => (a.early_start || '').localeCompare(b.early_start || ''), finish: (a, b) => (a.early_finish || '').localeCompare(b.early_finish || ''), float: (a, b) => (a.total_float_hours ?? 1e9) - (b.total_float_hours ?? 1e9), id: (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }), name: (a, b) => a.name.localeCompare(b.name) }[S.view.sort];
   const order = list => sortFn ? [...list].sort(sortFn) : list;
   if (S.view.group) {
@@ -5808,7 +5840,7 @@ function csvText() {
   const head = ['Level', ...S.cols.map(k => ALL_COLS[k].t + (CSV_NUM[k] && k !== 'pct' ? ' (days)' : '')), 'Critical'];
   const lines = [head.map(q).join(',')];
   S.rowsCache.forEach(r => {
-    if (r.act) { const a = r.act; lines.push([r.depth, ...S.cols.map(k => CSV_DATE[k] ? (CSV_DATE[k](a) || '').slice(0, 10) : CSV_NUM[k] ? CSV_NUM[k](a) : ALL_COLS[k].get(a)), a.critical ? 'Yes' : ''].map(q).join(',')); }
+    if (r.act) { const a = r.act; lines.push([r.depth, ...S.cols.map(k => CSV_DATE[k] ? (CSV_DATE[k](a) || '').slice(0, 10) : CSV_NUM[k] ? CSV_NUM[k](a) : k.startsWith('f:') ? fieldRaw(a, k) : ALL_COLS[k].get(a)), a.critical ? 'Yes' : ''].map(q).join(',')); }
     else lines.push([r.depth, ...S.cols.map(k => k === 'id' ? (r.wbs ? r.wbs.code || '' : '') : k === 'name' ? (r.wbs ? r.wbs.name : r.group) : k === 'start' ? (r.start || '').slice(0, 10) : k === 'finish' ? (r.finish || '').slice(0, 10) : k === 'pct' && r.pct != null ? Math.round(r.pct) : ''), r.crit ? 'Yes' : ''].map(q).join(','));
   });
   return '﻿' + lines.join('\r\n') + '\r\n';
@@ -5926,6 +5958,7 @@ function timeRange() {
 }
 function render() {
   const p = S.project; if (!p) return;
+  syncFieldCols();
   renderSummary(); renderToolbarState();
   const rs = rows(); S.rowsCache = rs;
   if (S.cols.includes('drag') && S.dragStamp !== p.scheduled_at && p.activities.length <= 1500) { try { computeDrag(true); } catch { } }
@@ -5934,7 +5967,7 @@ function render() {
   const px = S.view.pxDay; const W = Math.ceil((t1 - t0) / DAY * px) + 40; S.ganttW = W;
   const x = d => GX + (new Date(d) - t0) / DAY * px; S.x = x;
   // header
-  $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px"><button type="button" class="colpage prev" aria-label="Earlier columns" hidden>‹</button><button type="button" class="colpage next" aria-label="More columns" hidden>›</button>` + cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${k}">${ALL_COLS[k].t}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
+  $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px"><button type="button" class="colpage prev" aria-label="Earlier columns" hidden>‹</button><button type="button" class="colpage next" aria-label="More columns" hidden>›</button>` + cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${esc(k)}">${esc(ALL_COLS[k].t)}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
   $$('#hdr .c[data-col]').forEach(el => { const h = document.createElement('span'); h.className = 'colgrip'; el.appendChild(h); h.onmousedown = e => { e.stopPropagation(); e.preventDefault(); const k = el.dataset.col, x0 = e.clientX, w0 = ALL_COLS[k].w; const mv = ev => { ALL_COLS[k].w = Math.max(30, w0 + ev.clientX - x0); el.style.width = ALL_COLS[k].w + 'px'; }; const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); try { localStorage.setItem('colw', JSON.stringify(Object.fromEntries(Object.entries(ALL_COLS).map(([k, c]) => [k, c.w])))); } catch { } render(); }; document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); }; });
   $$('#hdr .c[data-col]').forEach(el => el.onclick = () => { const k = el.dataset.col; S.view.sort = S.view.sort === k ? '' : (['start', 'finish', 'tf', 'id', 'name'].includes(k) ? (k === 'tf' ? 'float' : k) : S.view.sort); $('#vSort').value = S.view.sort; render(); });
   // rows
@@ -5950,7 +5983,7 @@ function render() {
         const c = ALL_COLS[k]; let v = esc(c.get(a));
         if (ci === 0 || (ci === 1 && k === 'name')) { const indent = k === 'name' ? r.depth * 14 : 0; v = `<span style="display:inline-block;width:${indent}px"></span>` + (k === 'name' && colourOf(a) ? `<span class="swatch" style="background:${colourOf(a)}"></span>` : '') + v; }
         const cls = ['c', c.num ? 'num' : '', c.cls ? c.cls(a) : '', (a.critical && k === 'name') ? 'crit' : '', (S.active === key && S.activeCol === k) ? 'active' : ''].join(' ');
-        return `<div class="${cls}" style="width:${c.w}px" data-col="${k}" title="${v.replace(/<[^>]+>/g, '')}">${v}</div>`;
+        return `<div class="${cls}" style="width:${c.w}px" data-col="${esc(k)}" title="${v.replace(/<[^>]+>/g, '')}">${v}</div>`;
       }).join('');
       html.push(`<div class="row ${sel ? 'sel' : ''}" data-key="${esc(key)}" data-i="${i}"><div class="cells" style="width:${gw}px">${cells}</div></div>`);
     } else {
@@ -5961,7 +5994,7 @@ function render() {
         if (k === 'id') v = esc(id);
         else if (k === 'name') v = `<span style="display:inline-block;width:${r.depth * 14}px"></span><span class="tw" data-tw="${esc(key)}">${collapsed ? '▸' : '▾'}</span>${r.colour ? `<span class="swatch" style="background:${r.colour}"></span>` : ''}${esc(name)}${r.n != null ? ` <span class="hint">(${r.n})</span>` : ''}`;
         else if (k === 'start') v = fmtD(r.start); else if (k === 'finish') v = fmtD(r.finish); else if (k === 'pct' && r.pct != null) v = Math.round(r.pct) + '%';
-        return `<div class="c ${ALL_COLS[k].num ? 'num' : ''} ${(S.active === key && S.activeCol === k) ? 'active' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${k}">${v}</div>`;
+        return `<div class="c ${ALL_COLS[k].num ? 'num' : ''} ${(S.active === key && S.activeCol === k) ? 'active' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${esc(k)}">${v}</div>`;
       }).join('');
       html.push(`<div class="row ${r.wbs ? 'wbs' : 'group'} ${sel ? 'sel' : ''}" data-key="${esc(key)}" data-i="${i}"><div class="cells" style="width:${gw}px">${cells}</div></div>`);
     }
@@ -6242,6 +6275,7 @@ function renderActivityPanel() {
       <div class="row2"><label>Constraint<select id="iCon">${cons}</select></label><label>Date<input type="date" id="iConD" value="${a.constraint_date ? a.constraint_date.slice(0, 10) : ''}"></label></div>
       <label>Resources<input id="iRes" value="${esc(ALL_COLS.res.get(a))}" placeholder="Bricklayers, Scaffolders"></label>
       ${codes}
+      ${fieldDefs(S.project).length ? `<div class="insp-sec">Custom fields</div>${fieldDefs(S.project).map(d => { const v = (a.fields || {})[d.name]; return `<label>${esc(d.name)}<input data-field="${esc(d.name)}" ${d.type === 'date' ? 'type="date"' : d.type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(v == null ? '' : d.type === 'date' ? String(v).slice(0, 10) : String(v))}"></label>`; }).join('')}` : ''}
       <label>Notes<textarea id="iNotes" rows="3">${esc(a.notes || '')}</textarea></label>
     </div>`;
   const q = s => el.querySelector(s);
@@ -6265,6 +6299,7 @@ function renderActivityPanel() {
   q('#iRes').onchange = e => mutate(() => setResources(a, e.target.value), `${a.id} resources updated`);
   el.querySelectorAll('[data-code]').forEach(sel => sel.onchange = () => mutate(() => { a.codes = a.codes || {}; if (sel.value) a.codes[sel.dataset.code] = sel.value; else delete a.codes[sel.dataset.code]; }, null));
   q('#iNotes').onchange = e => mutate(() => { a.notes = e.target.value; }, null);
+  el.querySelectorAll('[data-field]').forEach(inp => inp.onchange = () => { const d = fieldDefs(S.project).find(x => x.name === inp.dataset.field); if (!d) return; const v = parseField(d, inp.value); if (v === undefined) return toast(`${d.name} needs a ${d.type}`); mutate(() => setField(a, d.name, v), null); });
   if (focusId && q('#' + CSS.escape(focusId))) q('#' + CSS.escape(focusId)).focus({ preventScroll: true });
 }
 
@@ -6579,11 +6614,12 @@ function startEdit(key, col) {
   const a = byId(key); const w = wbsById(key); const c = ALL_COLS[col];
   if (S.editing) commitEdit();
   const row = $(`#rows .row[data-key="${CSS.escape(key)}"]`); if (!row) return;
-  const cell = row.querySelector(`.c[data-col="${col}"]`); if (!cell) return;
+  const cell = row.querySelector(`.c[data-col="${CSS.escape(col)}"]`); if (!cell) return;
   if (w) { if (col !== 'name') return; cell.innerHTML = `<input value="${esc(w.name)}">`; }
   else if (a) {
     if (c.options) { const opts = c.options(); cell.innerHTML = `<select>${opts.map(([v, t]) => `<option value="${esc(v)}" ${(a.calendar_id || S.project.default_calendar_id) === v ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`; }
-    else if (c.set) { let v = c.get(a); if (col === 'dur') v = String(fmt1(daysOf(a, a.duration_hours))); if (['start', 'finish', 'astart', 'afinish'].includes(col)) { const d = { start: a.actual_start || a.early_start, finish: a.actual_finish || a.early_finish, astart: a.actual_start, afinish: a.actual_finish }[col]; v = d ? d.slice(0, 10) : ''; cell.innerHTML = `<input type="date" value="${v}">`; } else if (col === 'pct') { cell.innerHTML = `<input type="number" min="0" max="100" value="${a.status === 'not_started' ? 0 : a.percent_complete}">`; } else cell.innerHTML = `<input value="${esc(v)}">`; }
+    else if (c.field && c.field.type === 'date') { const v = String((a.fields || {})[c.field.name] || '').slice(0, 10); cell.innerHTML = `<input type="date" value="${esc(v)}">`; }
+    else if (c.set) { let v = c.get(a); if (col === 'dur') v = String(fmt1(daysOf(a, a.duration_hours))); if (c.field) v = String(fieldRaw(a, col)); if (['start', 'finish', 'astart', 'afinish'].includes(col)) { const d = { start: a.actual_start || a.early_start, finish: a.actual_finish || a.early_finish, astart: a.actual_start, afinish: a.actual_finish }[col]; v = d ? d.slice(0, 10) : ''; cell.innerHTML = `<input type="date" value="${v}">`; } else if (col === 'pct') { cell.innerHTML = `<input type="number" min="0" max="100" value="${a.status === 'not_started' ? 0 : a.percent_complete}">`; } else cell.innerHTML = `<input value="${esc(v)}">`; }
     else return;
   } else return;
   const inp = cell.querySelector('input,select'); inp.focus(); if (inp.select) inp.select();
@@ -6953,20 +6989,164 @@ function codesDialog() {
   };
   wire();
 }
-function viewsDialog() {
-  const load = () => { try { return JSON.parse(localStorage.getItem('views') || '{}'); } catch { return {}; } };
-  const views = load();
-  modal('Views', `<p class="hint">A view remembers columns, widths, zoom, chart type, toggles, colour, group, sort, filter and panel.</p><table>${Object.keys(views).map(n => `<tr><td>${esc(n)}</td><td><button type="button" data-apply="${esc(n)}">Apply</button> <button type="button" data-del="${esc(n)}">×</button></td></tr>`).join('') || '<tr><td class="hint" colspan="2">No saved views yet</td></tr>'}</table><p><input name="vn" placeholder="Name for the current view"> <button type="button" id="vSave">Save current</button></p>`, null);
-  const m = $('#modal');
-  const wire = () => {
-    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => { const v = load()[b.dataset.apply]; if (!v) return; S.cols = v.cols; Object.entries(v.widths || {}).forEach(([k, w]) => { if (ALL_COLS[k]) ALL_COLS[k].w = w; }); Object.assign(S.view, v.view); S.panel = v.panel; $('#mCancel').click(); render(); refreshPanel(); });
-    m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { const v = load(); delete v[b.dataset.del]; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); });
-    m.querySelector('#vSave').onclick = () => { const n = m.querySelector('[name=vn]').value.trim(); if (!n) return; const v = load(); v[n] = { cols: S.cols, widths: Object.fromEntries(S.cols.map(k => [k, ALL_COLS[k].w])), view: { ...S.view }, panel: S.panel }; localStorage.setItem('views', JSON.stringify(v)); $('#mCancel').click(); viewsDialog(); toast('View saved'); };
+// ---------- custom (user-defined) fields: columns, filters, inspector, XER UDFs ----------
+const FIELD_TYPES = [['text', 'Text'], ['number', 'Number'], ['date', 'Date']];
+const fieldDefs = p => (window.PlannerEngine && PlannerEngine.udfDefs) ? PlannerEngine.udfDefs(p) : (p.user_fields || []);
+const fieldText = (d, v) => v == null || v === '' ? '' : d.type === 'number' ? (typeof v === 'number' ? v.toLocaleString('en-GB', { maximumFractionDigits: 2 }) : String(v)) : d.type === 'date' ? fmtD(String(v).slice(0, 10)) : String(v);
+function parseField(d, raw) {        // null clears the value; undefined means it does not fit the type
+  raw = String(raw == null ? '' : raw).trim(); if (raw === '') return null;
+  if (d.type === 'number') { const n = parseFloat(raw.replace(/[£$€,\s]/g, '')); return isNaN(n) ? undefined : n; }
+  if (d.type === 'date') { const dt = parseDateInput(raw); return dt ? iso(dt).slice(0, 10) : undefined; }
+  return raw;
+}
+function setField(a, name, v) { if (v === undefined) return false; a.fields = a.fields || {}; if (v === null) delete a.fields[name]; else a.fields[name] = v; if (!Object.keys(a.fields).length) a.fields = null; }
+function syncFieldCols() {
+  const old = {}; Object.keys(ALL_COLS).forEach(k => { if (k.startsWith('f:')) { old[k] = ALL_COLS[k].w; delete ALL_COLS[k]; } });
+  if (S.project) fieldDefs(S.project).forEach(d => { const k = 'f:' + d.name; ALL_COLS[k] = { t: d.name, w: old[k] || (d.type === 'text' ? 120 : 86), num: d.type === 'number' ? 1 : 0, field: d, get: a => fieldText(d, (a.fields || {})[d.name]), set: (a, v) => { setField(a, d.name, parseField(d, v)); } }; });
+  S.cols = S.cols.filter(k => ALL_COLS[k]); if (!S.cols.length) S.cols = ['id', 'name'];
+}
+const fieldRaw = (a, k) => { const v = (a.fields || {})[k.slice(2)]; return v == null ? '' : v; };
+// Filters: plain text, or conditions joined by ";" or "and", e.g. Trade=Brick; Float<5; Cost>=10000; Start>1 Apr 2026
+function fieldAccessor(name) {
+  const p = S.project, n = name.toLowerCase().trim();
+  const codeTypes = new Set(Object.keys(p.code_types || {})); p.activities.forEach(a => Object.keys(a.codes || {}).forEach(k => codeTypes.add(k)));
+  const ct = [...codeTypes].find(k => k.toLowerCase() === n); if (ct) return { type: 'text', get: a => (a.codes || {})[ct] };
+  const d = fieldDefs(p).find(x => x.name.toLowerCase() === n); if (d) return { type: d.type, get: a => (a.fields || {})[d.name] };
+  const B = {
+    'float|tf|total float': { type: 'number', get: a => a.total_float_hours == null ? null : daysOf(a, a.total_float_hours) },
+    'free float|ff': { type: 'number', get: a => a.free_float_hours == null ? null : daysOf(a, a.free_float_hours) },
+    'dur|duration': { type: 'number', get: a => a.type === 'task' ? daysOf(a, a.duration_hours) : 0 },
+    '%|pct|progress|complete|% complete': { type: 'number', get: a => a.status === 'complete' ? 100 : a.percent_complete || 0 },
+    'start': { type: 'date', get: a => (a.actual_start || a.early_start || '').slice(0, 10) }, 'finish': { type: 'date', get: a => (a.actual_finish || a.early_finish || '').slice(0, 10) },
+    'name|activity': { type: 'text', get: a => a.name }, 'id': { type: 'text', get: a => a.id },
+    'wbs': { type: 'text', get: a => (wbsById(a.wbs_id) || {}).name || '' }, 'status': { type: 'text', get: a => a.status.replace('_', ' ') },
+    'critical': { type: 'bool', get: a => !!a.critical }, 'calendar': { type: 'text', get: a => ALL_COLS.cal.get(a) }, 'resource|resources': { type: 'text', get: a => ALL_COLS.res.get(a) },
   };
-  wire();
+  const k = Object.keys(B).find(k => k.split('|').includes(n)); return k ? B[k] : null;
+}
+function buildFilter(text) {
+  const t = String(text || '').trim(); if (!t) return null;
+  const tests = t.split(/\s*;\s*|\s+and\s+/i).filter(Boolean).map(part => {
+    const m = part.match(/^(.+?)\s*(>=|<=|!=|=|:|>|<)\s*(.*)$/), acc = m && fieldAccessor(m[1]);
+    if (!acc) { const q = part.toLowerCase(); return a => a.name.toLowerCase().includes(q) || a.id.toLowerCase().includes(q); }
+    const op = m[2] === ':' ? '=' : m[2], raw = m[3].trim();
+    if (acc.type === 'bool') { const want = !/^(n|no|false|0)$/i.test(raw); return a => (acc.get(a) === want) === (op !== '!='); }
+    if (acc.type === 'number') { const n = parseFloat(raw.replace(/[£$€,\s]/g, '')); return a => { const v = acc.get(a); if (v == null || v === '' || isNaN(n)) return op === '!='; const x = +v; return op === '=' ? Math.abs(x - n) < 1e-9 : op === '!=' ? Math.abs(x - n) >= 1e-9 : op === '>' ? x > n : op === '<' ? x < n : op === '>=' ? x >= n : x <= n; }; }
+    if (acc.type === 'date') { const d = parseDateInput(raw), r = d ? iso(d).slice(0, 10) : raw; return a => { const v = String(acc.get(a) || '').slice(0, 10); if (!v) return op === '!='; return op === '=' ? v === r : op === '!=' ? v !== r : op === '>' ? v > r : op === '<' ? v < r : op === '>=' ? v >= r : v <= r; }; }
+    const r = raw.toLowerCase(); return a => { const v = String(acc.get(a) == null ? '' : acc.get(a)).toLowerCase(); const has = r === '' ? v === '' : v.includes(r); return op === '=' ? has : op === '!=' ? !has : op === '>' ? v > r : op === '<' ? v < r : op === '>=' ? v >= r : v <= r; };
+  });
+  return a => tests.every(f => f(a));
+}
+function fieldsDialog() {
+  if (!S.project) return;
+  const body = () => { const p = S.project, defs = fieldDefs(p);
+    return `<p class="hint" style="margin-top:-4px">Your own columns on every activity: package, cost, permit date and so on. They show in the table and inspector, filter (<span class="mono">Cost&gt;5000; Package=Steel</span>), print on the PDF, export to CSV, and travel in XER as P6 user-defined fields.</p>
+    <div class="list">${defs.map(d => { const n = p.activities.filter(a => a.fields && a.fields[d.name] != null && a.fields[d.name] !== '').length; return `<div class="li"><div style="min-width:0"><div class="t">${esc(d.name)}</div><div class="s">${(FIELD_TYPES.find(t => t[0] === d.type) || FIELD_TYPES[0])[1]} · ${n} activit${n === 1 ? 'y' : 'ies'} filled</div></div><span style="display:flex;gap:6px"><button type="button" class="btn" data-fshow="${esc(d.name)}">${S.cols.includes('f:' + d.name) ? 'Hide column' : 'Show column'}</button><button type="button" class="icon" data-fdel="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="Delete the field and its values"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></span></div>`; }).join('') || '<p class="hint" style="margin:0">No custom fields yet.</p>'}</div>
+    <div class="row2" style="margin-top:14px"><label>New field<input name="fn" placeholder="e.g. Package"></label><label>Type<select name="ft">${FIELD_TYPES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label></div><button type="button" class="primary" id="fAdd" style="margin-top:8px">Add field</button>`; };
+  const { m } = modal('Custom fields', body(), null);
+  const wire = () => {
+    const b = m.querySelector('.mbody');
+    b.querySelector('#fAdd').onclick = () => { const name = b.querySelector('[name=fn]').value.trim(), type = b.querySelector('[name=ft]').value; if (!name) return; if (fieldDefs(S.project).some(d => d.name.toLowerCase() === name.toLowerCase())) return toast(`There is already a field called ${name}`);
+      mutate(p => { p.user_fields = [...(p.user_fields || []), { name, type }]; S.cols = [...S.cols, 'f:' + name]; }, `Field ${name} added as a column`); redraw(); };
+    b.querySelectorAll('[data-fshow]').forEach(x => x.onclick = () => { const k = 'f:' + x.dataset.fshow; S.cols = S.cols.includes(k) ? S.cols.filter(c => c !== k) : [...S.cols, k]; try { localStorage.setItem('cols', JSON.stringify(S.cols)); } catch { } render(); redraw(); });
+    b.querySelectorAll('[data-fdel]').forEach(x => x.onclick = () => { const n = x.dataset.fdel; mutate(p => { p.user_fields = (p.user_fields || []).filter(d => d.name !== n); if (!p.user_fields.length) p.user_fields = null; p.activities.forEach(a => { if (a.fields && n in a.fields) setField(a, n, null); }); S.cols = S.cols.filter(c => c !== 'f:' + n); }, `Field ${n} deleted`); redraw(); });
+  };
+  const redraw = () => { syncFieldCols(); m.querySelector('.mbody').innerHTML = body(); wire(); }; wire();
+}
+// ---------- library: codes, fields and views shared between programmes ----------
+function libraryOf(p) { return { kind: 'planner-library', version: 1, code_types: JSON.parse(JSON.stringify(p.code_types || {})), user_fields: fieldDefs(p), views: JSON.parse(JSON.stringify(p.views || [])) }; }
+function mergeLibrary(p, lib) {
+  let c = 0, f = 0, v = 0;
+  Object.entries(lib.code_types || {}).forEach(([t, vals]) => { p.code_types[t] = p.code_types[t] || {}; Object.entries(vals || {}).forEach(([k, col]) => { if (!(k in p.code_types[t])) { p.code_types[t][k] = col || '#7a8aa6'; c++; } }); });
+  (lib.user_fields || []).forEach(d => { if (d && d.name && !(p.user_fields || []).some(x => x.name === d.name)) { p.user_fields = [...(p.user_fields || []), { name: String(d.name), type: ['text', 'number', 'date'].includes(d.type) ? d.type : 'text' }]; f++; } });
+  (lib.views || []).forEach(x => { if (x && x.name && !(p.views || []).some(y => y.name === x.name)) { p.views = [...(p.views || []), x]; v++; } });
+  return { c, f, v };
+}
+const libSummary = r => [r.c && `${r.c} code value${r.c === 1 ? '' : 's'}`, r.f && `${r.f} field${r.f === 1 ? '' : 's'}`, r.v && `${r.v} view${r.v === 1 ? '' : 's'}`].filter(Boolean).join(', ') || 'nothing new';
+function parseCsv(text) {
+  text = String(text).replace(/^﻿/, ''); const first = text.split(/\r?\n/)[0] || '';
+  const delim = (first.match(/;/g) || []).length > (first.match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) { const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+    else if (ch === '"') q = true; else if (ch === delim) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; } else cell += ch; }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim() !== '')).map(r => r.map(c => /^'[=+\-@]/.test(c) ? c.slice(1) : c));
+}
+function codingSheetCsv(p) {
+  const types = [...new Set([...Object.keys(p.code_types || {}), ...p.activities.flatMap(a => Object.keys(a.codes || {}))])], defs = fieldDefs(p);
+  const lines = [['ID', 'Activity', ...types, ...defs.map(d => d.name)].map(csvCell).join(',')];
+  p.activities.forEach(a => lines.push([a.id, a.name, ...types.map(t => (a.codes || {})[t] || ''), ...defs.map(d => { const v = (a.fields || {})[d.name]; return v == null ? '' : v; })].map(csvCell).join(',')));
+  return '﻿' + lines.join('\r\n') + '\r\n';
+}
+function applyCodingSheet(p, rows) {
+  if (rows.length < 2) throw new Error('The sheet has no activity rows.');
+  const head = rows[0].map(h => h.trim()), idCol = Math.max(0, head.findIndex(h => /^(id|activity id|task code)$/i.test(h)));
+  const skip = new Set([idCol, ...head.map((h, i) => /^(activity|name|activity name)$/i.test(h) ? i : -1).filter(i => i >= 0)]);
+  const types = Object.keys(p.code_types || {}), created = [];
+  const cols = head.map((h, i) => { if (skip.has(i) || !h) return null; const ct = types.find(t => t.toLowerCase() === h.toLowerCase()); if (ct) return { kind: 'code', name: ct };
+    let d = fieldDefs(p).find(x => x.name.toLowerCase() === h.toLowerCase()); if (!d) { d = { name: h, type: 'text' }; p.user_fields = [...(p.user_fields || []), d]; created.push(h); } return { kind: 'field', d }; });
+  const ids = new Map(p.activities.map(a => [a.id.toLowerCase(), a])); let n = 0; const missing = [], bad = [];
+  rows.slice(1).forEach(r => { const a = ids.get(String(r[idCol] || '').trim().toLowerCase()); if (!a) { if (String(r[idCol] || '').trim()) missing.push(r[idCol].trim()); return; } let ch = false;
+    cols.forEach((c, i) => { if (!c) return; const raw = String(r[i] == null ? '' : r[i]).trim();
+      if (c.kind === 'code') { const cur = (a.codes || {})[c.name] || ''; if (raw === cur) return; a.codes = a.codes || {}; if (raw) { a.codes[c.name] = raw; if (!(raw in p.code_types[c.name])) p.code_types[c.name][raw] = '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'); } else delete a.codes[c.name]; ch = true; }
+      else { const v = parseField(c.d, raw); if (v === undefined) { bad.push(`${a.id} ${c.d.name}`); return; } const cur = (a.fields || {})[c.d.name]; if ((cur == null ? null : cur) === v) return; setField(a, c.d.name, v); ch = true; } });
+    if (ch) n++; });
+  return { n, missing, bad, created };
+}
+function libraryDialog() {
+  if (!S.project) return; const others = (S.list || []).filter(x => x.id !== S.pid);
+  const { m } = modal('Codes, fields and views', `<p class="hint" style="margin-top:-4px">Share set-up between programmes: activity codes and their colours, custom fields and saved views. Copying only adds what is missing; nothing here is overwritten.</p>
+    <div class="insp-sec">Copy from another programme</div>
+    ${others.length ? `<div class="row2"><label>Programme<select id="libSrc">${others.map(o => `<option value="${esc(o.id)}">${esc(o.name)} (${esc(o.id)})</option>`).join('')}</select></label><label>&nbsp;<button type="button" class="btn" id="libCopy">Copy in</button></label></div>` : '<p class="hint">No other programmes here yet. Load a library file instead.</p>'}
+    <div class="insp-sec">Library file</div><p class="hint" style="margin:0 0 8px">Save this programme's set-up to load into another, or send to a colleague. Loading also accepts a P6 XER or a programme file, and takes its codes and fields.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="libSave">Save library file</button><button type="button" class="btn" id="libLoad">Load library…</button></div><input type="file" id="libFile" accept=".json,.xer,.xml" hidden>
+    <div class="insp-sec">Coding sheet (CSV)</div><p class="hint" style="margin:0 0 8px">One row per activity with its codes and custom fields. Fill it in Excel and load it back: columns that match a code type or field update it, and new columns become text fields.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="csExp">Export coding sheet</button><button type="button" class="btn" id="csImp">Import coding sheet…</button></div><input type="file" id="csFile" accept=".csv,text/csv" hidden>
+    <div id="libOut" class="hint" role="status" style="margin-top:10px"></div>`, null);
+  const out = t => { m.querySelector('#libOut').textContent = t; };
+  const merge = (lib, from) => { let r; mutate(p => { r = mergeLibrary(p, lib); if (!r.c && !r.f && !r.v) return false; }, null); if (r && (r.c || r.f || r.v)) { syncFieldCols(); toast(`Copied from ${from}: ${libSummary(r)}`, { ms: 4200, undo: true }); } out(`From ${from}: ${libSummary(r || {})}.`); };
+  const cp = m.querySelector('#libCopy'); if (cp) cp.onclick = async () => { const id = m.querySelector('#libSrc').value; try { const d = await api('/api/projects/' + encodeURIComponent(id)); merge(libraryOf(d.project), d.project.name); } catch (e) { out(e.message || String(e)); } };
+  m.querySelector('#libSave').onclick = async () => { const p = S.project; if (await saveBlob(`${p.id}-library.json`, new Blob([JSON.stringify(libraryOf(p), null, 2)], { type: 'application/json' }))) out('Library file saved.'); };
+  m.querySelector('#libLoad').onclick = () => m.querySelector('#libFile').click();
+  m.querySelector('#libFile').onchange = async e => { const f = e.target.files[0]; if (!f) return; e.target.value = '';
+    try { const bytes = new Uint8Array(await f.arrayBuffer()); let lib = null; if (/\.json$/i.test(f.name)) { try { const j = JSON.parse(new TextDecoder().decode(bytes).replace(/^﻿/, '')); if (j && j.kind === 'planner-library') lib = j; } catch { } }
+      if (!lib) lib = libraryOf(window.PlannerEngine.readAny(f.name, bytes)); merge(lib, f.name); } catch (err) { out(err.message || String(err)); } };
+  m.querySelector('#csExp').onclick = async () => { const p = S.project; if (await saveBlob(`${p.id}-coding-sheet.csv`, new Blob([codingSheetCsv(p)], { type: 'text/csv;charset=utf-8' }))) out(`Coding sheet saved: ${p.activities.length} activities.`); };
+  m.querySelector('#csImp').onclick = () => m.querySelector('#csFile').click();
+  m.querySelector('#csFile').onchange = async e => { const f = e.target.files[0]; if (!f) return; e.target.value = '';
+    try { const rows = parseCsv(await f.text()); let r; mutate(p => { r = applyCodingSheet(p, rows); if (!r.n && !r.created.length) return false; }, null); syncFieldCols();
+      const msg = `${r.n} activit${r.n === 1 ? 'y' : 'ies'} updated${r.created.length ? `; new fields: ${r.created.join(', ')}` : ''}${r.missing.length ? `; ${r.missing.length} ID${r.missing.length === 1 ? '' : 's'} not found (${r.missing.slice(0, 5).join(', ')})` : ''}${r.bad.length ? `; ${r.bad.length} value${r.bad.length === 1 ? '' : 's'} did not fit the field type (${r.bad.slice(0, 4).join(', ')})` : ''}.`;
+      out(msg); if (r.n || r.created.length) toast(`Coding sheet loaded: ${r.n} updated`, { ms: 3600, undo: true }); } catch (err) { out(err.message || String(err)); } };
+}
+// ---------- saved views: with the programme (everyone) or on this device ----------
+function viewsDialog() {
+  const loadLocal = () => { try { return JSON.parse(localStorage.getItem('views') || '{}'); } catch { return {}; } };
+  const cur = name => ({ name, cols: [...S.cols], widths: Object.fromEntries(S.cols.map(k => [k, ALL_COLS[k].w])), view: { ...S.view }, panel: S.panel });
+  const apply = v => { if (!v) return; syncFieldCols(); const miss = (v.cols || []).filter(k => !ALL_COLS[k]); S.cols = (v.cols || S.cols).filter(k => ALL_COLS[k]); if (!S.cols.includes('name')) S.cols.unshift('name');
+    Object.entries(v.widths || {}).forEach(([k, w]) => { if (ALL_COLS[k]) ALL_COLS[k].w = w; }); Object.assign(S.view, v.view || {}); S.panel = v.panel; modalClose(); syncViewControls(); render(); refreshPanel(); toast(`View ${v.name || ''} applied${miss.length ? `; ${miss.length} column${miss.length === 1 ? '' : 's'} not in this programme` : ''}`); };
+  const row = (n, src) => `<div class="li"><div class="t">${esc(n)}</div><span style="display:flex;gap:6px"><button type="button" class="btn" data-apply="${src}:${esc(n)}">Apply</button><button type="button" class="icon" data-del="${src}:${esc(n)}" aria-label="Delete view ${esc(n)}"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></span></div>`;
+  const body = () => { const pv = (S.project.views || []), lv = Object.keys(loadLocal());
+    return `<p class="hint" style="margin-top:-4px">A view remembers columns and widths, zoom, chart type, bar options, colour, grouping, sorting, filter and panel.</p>
+    <div class="insp-sec">With this programme</div><p class="hint" style="margin:0 0 6px">Everyone who opens the programme gets these, and they travel with it.</p><div class="list">${pv.map(v => row(v.name, 'p')).join('') || '<p class="hint" style="margin:0">None yet.</p>'}</div>
+    <div class="insp-sec">On this device only</div><div class="list">${lv.map(n => row(n, 'l')).join('') || '<p class="hint" style="margin:0">None.</p>'}</div>
+    <div class="row2" style="margin-top:14px"><label>Save the current view as<input name="vn" placeholder="e.g. Look-ahead for site"></label><label>Keep it<select name="vw"><option value="p">With the programme</option><option value="l">On this device</option></select></label></div><button type="button" class="primary" id="vSave" style="margin-top:8px">Save view</button>`; };
+  const { m } = modal('Saved views', body(), null);
+  const wire = () => { const b = m.querySelector('.mbody');
+    b.querySelectorAll('[data-apply]').forEach(x => x.onclick = () => { const [src, ...rest] = x.dataset.apply.split(':'), n = rest.join(':'); apply(src === 'p' ? (S.project.views || []).find(v => v.name === n) : Object.assign({ name: n }, loadLocal()[n])); });
+    b.querySelectorAll('[data-del]').forEach(x => x.onclick = () => { const [src, ...rest] = x.dataset.del.split(':'), n = rest.join(':');
+      if (src === 'p') mutate(p => { p.views = (p.views || []).filter(v => v.name !== n); if (!p.views.length) p.views = null; }, `View ${n} deleted`); else { const v = loadLocal(); delete v[n]; try { localStorage.setItem('views', JSON.stringify(v)); } catch { } } redraw(); });
+    b.querySelector('#vSave').onclick = () => { const n = b.querySelector('[name=vn]').value.trim(), where = b.querySelector('[name=vw]').value; if (!n) return b.querySelector('[name=vn]').focus();
+      if (where === 'p') mutate(p => { p.views = (p.views || []).filter(v => v.name !== n).concat([cur(n)]); }, `View ${n} saved with the programme`);
+      else { const v = loadLocal(); v[n] = cur(n); try { localStorage.setItem('views', JSON.stringify(v)); toast(`View ${n} saved on this device`); } catch { toast('This browser will not store views; save it with the programme instead'); } }
+      redraw(); };
+  };
+  const redraw = () => { m.querySelector('.mbody').innerHTML = body(); wire(); }; wire();
 }
 function columnsDialog() {
-  modal('Columns', `<div class="days">${Object.entries(ALL_COLS).map(([k, c]) => `<label class="row"><input type="checkbox" name="${k}" ${S.cols.includes(k) ? 'checked' : ''}>${esc(c.t)}</label>`).join('')}</div>`, m => { S.cols = Object.keys(ALL_COLS).filter(k => m.querySelector(`[name=${k}]`).checked); if (!S.cols.includes('name')) S.cols.unshift('name'); try { localStorage.setItem('cols', JSON.stringify(S.cols)); } catch { } render(); }, 'Apply');
+  syncFieldCols();
+  modal('Columns', `<div class="days">${Object.entries(ALL_COLS).map(([k, c]) => `<label class="row"><input type="checkbox" name="${esc(k)}" ${S.cols.includes(k) ? 'checked' : ''}>${esc(c.t)}</label>`).join('')}</div>`, m => { S.cols = Object.keys(ALL_COLS).filter(k => m.querySelector(`[name="${CSS.escape(k)}"]`).checked); if (!S.cols.includes('name')) S.cols.unshift('name'); try { localStorage.setItem('cols', JSON.stringify(S.cols)); } catch { } render(); }, 'Apply');
 }
 function renderBand() {
   const g = $('#bandSvg'); const label = $('#bandLabel'); if (!g || !label) return;
@@ -7538,6 +7718,10 @@ function palActions() {
     S.project && ['Site update: record progress on site', 'Progress', siteUpdateSheet],
     S.project && ['Close progress period', 'Progress', closePeriodDialog],
     S.project && ['As-built record (CSV)', 'File', exportAsBuilt],
+    S.project && ['Custom fields', 'Set-up', fieldsDialog],
+    S.project && ['Codes, fields and views library', 'Set-up', libraryDialog],
+    S.project && ['Saved views', 'View', viewsDialog],
+    S.project && ['Coding sheet (CSV) export and import', 'Set-up', libraryDialog],
     S.project && ['Share and export', 'File', shareSheet],
     S.project && ['Export to Excel (CSV)', 'File', exportCsv],
     S.project && ['Show the longest path to completion', 'Trace', () => setTrace(finishDrivers(), 'back', 'Longest path to completion')],
@@ -7804,6 +7988,7 @@ function wireToolbar() {
   $('#btnSite').onclick = siteUpdateSheet; $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
+  $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
   $('#btnRepair').onclick = () => act('/repair');
   $('#btnInspector').onclick = () => toggleInspector();

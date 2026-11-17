@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -222,6 +222,7 @@ class Activity(BaseModel):
     notes: str = ""
     # classification and levelling
     codes: dict[str, str] = Field(default_factory=dict)   # code type -> value, e.g. {"Trade": "Bricklayers"}
+    fields: Optional[dict[str, Any]] = None                # user-defined fields: name -> value (text, number or YYYY-MM-DD)
     priority: int = 500                                   # levelling priority, lower = first (P6 convention)
     level_delay_hours: float = 0.0                        # set by resource levelling
 
@@ -258,6 +259,8 @@ class Project(BaseModel):
     revisions: list[dict] = Field(default_factory=list)   # issued versions: {name, issued_at, note, project}
     annotations: Optional[list[dict]] = None              # chart notes: {id, date, activity_id|None, text}
     progress_periods: Optional[list[dict]] = None         # closed periods: {id, name, data_date, closed_at, pct, planned_pct, finish, acts{id: [start, finish, pct, n|p|c]}}
+    user_fields: Optional[list[dict]] = None              # user-defined field definitions: {name, type: text|number|date}
+    views: Optional[list[dict]] = None                    # saved views stored with the programme: {name, cols, widths, view, panel}
     levelled: bool = False
     # computed
     finish: Optional[datetime] = None

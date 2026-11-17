@@ -23,6 +23,7 @@ Pure code. No AI service, no API key, nothing leaves your machine.
 | Compare | `planner/compare.py`, `web/compare.js` | Two versions of a programme: activities added, removed, renamed; duration, logic, constraint, progress and calendar changes; date moves; critical path joined/left; and a plain-English commentary of why the finish moved, walking the new longest path. Issued revisions (Rev A, Rev B...) are frozen copies stored with the project for this. Parity tested |
 | PDF | `web/pdf_export.js` | Dependency-free vector PDF of the Gantt: three-tier timescale, table, bars, links, float, baseline, data date and deadline lines, annotations, Asta/P6-style title block with legend and page numbers; A4-A1, portrait or landscape, rows per page and pages wide |
 | Progress periods | `web/app.js` | Site update sheet (phone-first: Not started / Started / Finished, % or days left, actual dates, as-of date), closed progress periods stored with the project (`progress_periods`), a dashed progress line per period on the Gantt (View → Period lines), period points on the S-curve, finish movement per period, and an as-built CSV (actual against baseline, the period each activity started and finished in). Closing a period can also freeze a full copy for Compare |
+| Custom fields, library, views | `web/app.js`, `planner/xer.py`, `web/engine.js`, `web/import_xer.js` | User-defined fields (text, number, date) as table columns, inspector inputs, PDF and CSV columns, and P6 UDFs in XER both ways (parity tested); filters with several conditions (`Trade=Brick; Float<5; Cost>=10000`); a library to copy codes, fields and views between programmes or via a library file (also reads codes and fields from an XER); a coding sheet CSV to fill codes and fields in Excel; saved views stored with the programme or on the device |
 | Guardrails | `planner/guardrails.py` | Out-of-sequence progress (P6's definition) and critical path drag: how many working days each unfinished critical activity adds to the finish. In-progress activities can be suspended and resumed (P6 `suspend_date` / `resume_date`, carried in XER) |
 | Risk | `planner/risk.py` | Monte Carlo schedule risk: triangular duration ranges, extra for weather-exposed work, correlation, P10/P50/P80/P90, chance of the deadline, criticality index. Seeded, so the browser and Python give identical answers |
 | History | `planner/history.py` | Undo / redo as snapshots next to the project file |
@@ -122,8 +123,8 @@ Reviewed against Asta's own documentation and release notes, ranked by how often
 3. Annotations: arrows and boxes (text notes pinned to a date and row are done).
 4. PDF: company logo in the title block, and period lines on the print (title block, revision, legend, date range and fit to pages are done).
 5. Progress: dragging the progress line to record progress (periods, per-period lines and the site update sheet are done).
-6. Views saved with the project: filters with several conditions, columns, bar styles and grouping in one named view (now in browser storage only).
-7. User-defined fields and code libraries shared across projects.
+6. Bar styles per code or field in saved views (views with the project, multi-condition filters and columns are done).
+7. Custom fields in MS Project XML (ExtendedAttribute) and P6 XML; a shared organisation-wide library once there is a hosted service (fields, the library file and XER UDFs are done).
 8. Subprojects and multi-project (expanded tasks, master programmes).
 9. Cash flow with payment terms; cost centres.
 10. Split tasks and buffer tasks.
