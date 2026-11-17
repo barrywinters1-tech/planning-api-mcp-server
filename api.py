@@ -25,6 +25,7 @@ from planner.io import read_any, write_any
 from planner import mpxj_bridge
 from planner.plan import Patch, PatchOp, apply_patch, draft_to_project, schedule_digest
 from planner.repair import plan_repairs
+from planner.risk import risk_analysis
 from planner import agent
 from planner.model import Assignment, Resource
 
@@ -381,6 +382,25 @@ def get_variance(pid: str):
     project = _load(pid)
     schedule(project) if not project.levelled else level(project)
     return variance(project)
+
+
+class RiskIn(BaseModel):
+    iterations: int = 500
+    optimistic_pct: float = 10
+    pessimistic_pct: float = 30
+    weather_pct: float = 20
+    correlation_pct: float = 30
+    seed: int = 1
+
+
+@app.post("/api/projects/{pid}/risk")
+def post_risk(pid: str, body: Optional[RiskIn] = None):
+    """Monte Carlo schedule risk: P50/P80/P90 finish, chance of the deadline, criticality."""
+    b = body or RiskIn()
+    try:
+        return risk_analysis(_load(pid), **b.model_dump())
+    except ScheduleError as e:
+        raise HTTPException(422, str(e))
 
 
 class NewIn(BaseModel):

@@ -1588,6 +1588,7 @@ function palActions() {
     S.project && ['Auto-repair failing checks', 'Fix', () => act('/repair')],
     S.project && ['Set a baseline', 'Plan', () => $('#btnBaseline').click()],
     S.project && ['Level to crew limits', 'Plan', () => act('/level')],
+    S.project && ['Schedule risk (Monte Carlo)', 'Analyse', riskSheet],
     S.project && ['Show the inspector', 'View', () => { go('plan'); S.sideTab = 'activity'; toggleInspector(true); }],
     S.project && ['Progress charts beside the programme', 'View', () => { go('plan'); S.sideTab = 'progress'; if (S.inspector) renderInspector(); else toggleInspector(true); }],
     ['Import from P6, Asta or MS Project', 'File', () => $('#fileIn').click()],
@@ -1626,6 +1627,111 @@ async function runCommand(t) {
     if (v.message && v.message.includes('\n') && !v.project) { $('#cmdOut').innerHTML = `<pre style="white-space:pre-wrap;margin:0;font:12px/1.5 var(--mono)">${esc(v.message)}</pre>`; return; }
     closePalette(); if (v.project) show(v); else toast(v.message.split('\n')[0]);
   } catch (err) { $('#cmdOut').textContent = err.message; }
+}
+
+// ---------- schedule risk: Monte Carlo on the in-page engine (same maths as planner/risk.py) ----------
+const RISK = { iterations: 500, optimistic_pct: 10, pessimistic_pct: 30, weather_pct: 20, correlation_pct: 30 };
+const dayCal = () => S.project.calendars[S.project.default_calendar_id] || { working_days: [0, 1, 2, 3, 4], exceptions: {} };
+function riskSheet() {
+  if (!S.project) return;
+  const E = window.PlannerEngine; if (!E || !E.riskRunner) return toast('Risk analysis needs the scheduling engine on this page');
+  const { m } = modal('Schedule risk', `
+    <p class="hint" style="margin-top:-4px">How likely is the finish date? Each run varies every unfinished activity's duration within the range below and recalculates the critical path.</p>
+    <div class="risk-set">
+      <label>Best case, quicker by<span class="unit">${stepper('rkLo', RISK.optimistic_pct, 5)}<i>%</i></span></label>
+      <label>Worst case, slower by<span class="unit">${stepper('rkHi', RISK.pessimistic_pct, 5)}<i>%</i></span></label>
+      <label>Extra for weather-exposed work<span class="unit">${stepper('rkWx', RISK.weather_pct, 5)}<i>%</i></span></label>
+      <label>How much delays run together<span class="unit">${stepper('rkCor', RISK.correlation_pct, 10)}<i>%</i></span></label>
+      <label>Runs<select id="rkN">${[200, 500, 1000].map(n => `<option ${n === RISK.iterations ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    </div>
+    <div class="rk-go"><button type="button" class="primary" id="rkRun">Run analysis</button><div class="rk-prog" id="rkProg" hidden><i></i></div><span class="hint" id="rkProgT"></span></div>
+    <div id="rkOut"></div>`, null, '', { wide: true });
+  wireSteppers(m);
+  m.querySelector('#rkRun').onclick = () => runRisk(m);
+  if (S.risk && S.risk.pid === S.pid && S.risk.stamp === S.project.scheduled_at) paintRisk(m, S.risk.r); else runRisk(m);
+}
+async function runRisk(m) {
+  const num = (id, d) => { const v = parseFloat(m.querySelector(id).value); return Number.isFinite(v) ? Math.max(0, v) : d; };
+  Object.assign(RISK, { optimistic_pct: Math.min(90, num('#rkLo', 10)), pessimistic_pct: num('#rkHi', 30), weather_pct: num('#rkWx', 20), correlation_pct: Math.min(100, num('#rkCor', 30)), iterations: +m.querySelector('#rkN').value });
+  const btn = m.querySelector('#rkRun'), bar = m.querySelector('#rkProg'), txt = m.querySelector('#rkProgT');
+  let r; try { r = window.PlannerEngine.riskRunner(S.project, { ...RISK, seed: 1 }); } catch (e) { toast(e.message); return; }
+  const token = {}; m._risk = token; btn.disabled = true; bar.hidden = false;
+  const t0 = performance.now();
+  while (r.step(10) < r.total) {
+    bar.firstChild.style.width = (r.step(0) / r.total * 100) + '%'; txt.textContent = `${r.step(0)} of ${r.total} runs`;
+    await new Promise(res => setTimeout(res, 0));
+    if (m._risk !== token || $('#modalBack').hidden) return;                 // closed or restarted
+  }
+  const res = r.result(); S.risk = { pid: S.pid, stamp: S.project.scheduled_at, r: res };
+  btn.disabled = false; bar.hidden = true; txt.textContent = `${res.iterations} runs in ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+  paintRisk(m, res);
+}
+function paintRisk(m, r) {
+  const out = m.querySelector('#rkOut'); if (!out) return;
+  const cal = dayCal(), wd = (a, b) => workingDaysBetween(cal, new Date(a), new Date(b));
+  const pct = v => v == null ? '–' : (v < 1 && v > 0 ? '<1' : v > 99 && v < 100 ? '>99' : Math.round(v)) + '%';
+  const gap = wd(r.deterministic_finish, r.p80);
+  const lead = `The planned finish of <b>${fmtD(r.deterministic_finish)}</b> is met in <b>${pct(r.deterministic_probability)}</b> of runs. For 80% confidence, plan on <b>${fmtD(r.p80)}</b>${gap > 0 ? `, ${gap} working days later` : ''}.` +
+    (r.deadline ? ` The ${fmtD(r.deadline)} deadline is met in <b>${pct(r.deadline_probability)}</b> of runs.` : ' No deadline is set, so there is no chance-of-deadline figure.');
+  const dlTone = r.deadline_probability == null ? '' : r.deadline_probability >= 80 ? 'ok' : r.deadline_probability >= 50 ? 'warn' : 'bad';
+  out.innerHTML = `
+    <p class="rk-lead">${lead}</p>
+    <div class="kpis rk-kpis">
+      <div class="kpi"><div class="k">P50</div><div class="big">${fmtD(r.p50)}</div><div class="note">Half the runs finish by</div></div>
+      <div class="kpi"><div class="k">P80</div><div class="big">${fmtD(r.p80)}</div><div class="note">The usual date to commit to</div></div>
+      <div class="kpi"><div class="k">P90</div><div class="big">${fmtD(r.p90)}</div><div class="note">Range ${fmtD(r.earliest)} to ${fmtD(r.latest)}</div></div>
+      <div class="kpi"><div class="k">Deadline</div><div class="big ${dlTone}">${r.deadline ? pct(r.deadline_probability) : '–'}</div><div class="note">${r.deadline ? 'Chance of ' + fmtD(r.deadline) : 'No deadline set'}</div></div>
+    </div>
+    <h3>When it finishes</h3>
+    <div class="rk-chart" id="rkChart" role="img" aria-label="Distribution of finish dates by week, with planned finish, P80 and deadline marked"></div>
+    <h3>Where the risk sits</h3>
+    ${(() => {
+      const always = r.criticality.filter(c => c.pct >= 100), some = r.criticality.filter(c => c.pct < 100).slice(0, 10);
+      const row = c => { const a = byId(c.id); return `<button type="button" class="crow" data-goto="${esc(c.id)}"><span class="cid">${esc(c.id)}</span><span class="cname">${esc(c.name)}${a && !a.critical ? ' <span class="chip plain">not critical now</span>' : ''}</span><span class="cbar"><i style="width:${c.pct}%"></i></span><b>${pct(c.pct)}</b></button>`; };
+      return `<p class="hint" style="margin:0 0 8px">${always.length ? `<b>${always.length}</b> activities are critical in every run: that is the backbone, and any delay there moves the finish.` : 'No activity is critical in every run.'} ${some.length ? 'These are critical in some runs. The ones not critical today are hidden risks: they can take over the path.' : 'Nothing else ever becomes critical, so the path is stable.'}</p>` +
+        (some.length ? `<div class="crit-list">${some.map(row).join('')}</div>` : '') +
+        (always.length ? `<details class="rk-always"><summary>Critical in every run (${always.length})</summary><div class="crit-list">${always.map(row).join('')}</div></details>` : '') ||
+        '<p class="hint">Nothing left to vary: every activity is complete.</p>';
+    })()}
+    <p class="hint rk-foot">Durations drawn from a triangular range, ${r.settings.optimistic_pct}% quicker to ${r.settings.pessimistic_pct}% slower; ${r.weather_exposed} of ${r.uncertain_activities} unfinished activities treated as weather-exposed (+${r.settings.weather_pct}%). Activities share ${r.settings.correlation_pct}% of their variation, since delays tend to hit many trades at once. Resource levelling is not re-run. The same settings always give the same answer.</p>`;
+  out.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { modalClose(); setTimeout(() => goToActivity(b.dataset.goto), 250); });
+  drawRiskChart(out.querySelector('#rkChart'), r);
+}
+function drawRiskChart(el, r) {
+  const W = Math.max(280, el.clientWidth || 640), pl = 40, pr = 16, pb = 26, WK = 7 * DAY;
+  const day = s => { const d = new Date(s); d.setHours(0, 0, 0, 0); return +d; };
+  const weeks = r.histogram.map(h => ({ t: +new Date(h.week + 'T00:00:00'), c: h.count }));
+  const marks = [['Planned', r.deterministic_finish, 'var(--ink-2)', ''], ['P80', r.p80, 'var(--accent)', ''], r.deadline && ['Deadline', r.deadline, 'var(--crit)', '4 3']].filter(Boolean);
+  const placedRows = [];
+  const t0 = Math.min(weeks[0].t, ...marks.map(k => day(k[1]))) - WK, t1 = Math.max(weeks[weeks.length - 1].t + WK, ...marks.map(k => day(k[1]))) + WK;
+  const xr = t => pl + (t - t0) / (t1 - t0) * (W - pl - pr);
+  // marker labels go in rows above the plot, so close dates (P80 next to a deadline) never collide
+  const placed = marks.map(k => [...k, xr(day(k[1]) + DAY / 2)]).sort((a, b) => a[4] - b[4]).map(k => {
+    const w = (k[0].length + 10) * 6.6; let row = 0;
+    while (placedRows.some(p => p.row === row && Math.abs(p.x - k[4]) < (p.w + w) / 2 + 8)) row++;
+    const p = { row, x: k[4], w }; placedRows.push(p); return [...k, row];
+  });
+  const rows = Math.max(...placed.map(k => k[5])) + 1, pt = 14 + rows * 16, H = 170 + rows * 16;
+  const x = xr, maxC = Math.max(...weeks.map(w => w.c)), y = c => H - pb - c / maxC * (H - pt - pb);
+  let s = '';
+  [0, .5, 1].forEach(f => { const yy = y(maxC * f); s += `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="var(--line-2)"/><text x="${pl - 6}" y="${yy + 4}" text-anchor="end" class="ax">${Math.round(maxC * f / r.iterations * 100)}%</text>`; });
+  for (let d = new Date(t0); +d < t1; d.setDate(d.getDate() + 1)) if (d.getDate() === 1) s += `<text x="${x(+d)}" y="${H - 8}" class="ax" text-anchor="middle">${d.toLocaleDateString('en-GB', { month: 'short' })}${d.getMonth() === 0 ? ' ' + String(d.getFullYear()).slice(2) : ''}</text>`;
+  let cum = 0;
+  weeks.forEach((w, i) => {
+    cum += w.c; const bx = x(w.t) + 1, bw = Math.max(2, x(w.t + WK) - x(w.t) - 2), top = y(w.c), r0 = Math.min(3, bw / 2);
+    s += `<path d="M${bx},${H - pb} V${top + r0} q0,${-r0} ${r0},${-r0} H${bx + bw - r0} q${r0},0 ${r0},${r0} V${H - pb} Z" fill="var(--bar)"/>`;
+    s += `<rect class="rk-hit" data-i="${i}" data-cum="${cum}" x="${x(w.t)}" y="${pt - 10}" width="${x(w.t + WK) - x(w.t)}" height="${H - pb - pt + 10}" fill="transparent"/>`;
+  });
+  s += `<line x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}" stroke="var(--line)"/>`;
+  placed.forEach(([lab, d, col, dash, mx, row]) => {
+    const ly = 12 + row * 16, anchor = mx > W - 80 ? 'end' : mx < pl + 40 ? 'start' : 'middle';
+    s += `<line x1="${mx}" x2="${mx}" y1="${ly + 4}" y2="${H - pb}" stroke="${col}" stroke-width="2" ${dash ? `stroke-dasharray="${dash}"` : ''}/><text x="${mx}" y="${ly}" text-anchor="${anchor}" class="mk" fill="${col}">${lab} ${fmtD(d)}</text>`;
+  });
+  el.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${s}</svg>`;
+  el.querySelectorAll('.rk-hit').forEach(h => {
+    h.onpointermove = e => { const w = weeks[+h.dataset.i]; tipText(e, `<b>Week of ${new Date(w.t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</b><br>${w.c} runs finish this week (${Math.round(w.c / r.iterations * 100)}%)<br>${Math.round(+h.dataset.cum / r.iterations * 100)}% finished by its end`); h.setAttribute('fill', 'var(--accent-soft)'); };
+    h.onpointerleave = () => { hideTip(); h.setAttribute('fill', 'transparent'); };
+  });
 }
 
 // ---------- share and export ----------
@@ -1706,6 +1812,7 @@ function wireToolbar() {
   $('#btnProgress').onclick = progressDialog; $('#btnConstraint').onclick = constraintDialog;
   $('#btnBaseline').onclick = () => modal('Set a baseline', `<p class="hint" style="margin-top:0">A baseline freezes today's dates so you can see slippage later, bar by bar.</p><label>Name<input name="n" id="blName" value="Baseline ${S.project ? S.project.baselines.length + 1 : 1}"></label>`, m => act('/baseline', { name: m.querySelector('[name=n]').value || 'Baseline' }), 'Save baseline');
   $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
+  $('#btnRisk').onclick = riskSheet;
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));

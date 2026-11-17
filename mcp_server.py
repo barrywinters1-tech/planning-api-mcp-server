@@ -24,6 +24,7 @@ from planner.commands import CommandError, parse_command
 from planner.generator import Brief, generate, parse_brief
 from planner.io import read_any, write_any
 from planner.repair import plan_repairs
+from planner.risk import risk_analysis
 
 mcp = FastMCP(
     "AI Construction Planner",
@@ -198,6 +199,20 @@ def get_schedule(project_id: str) -> dict:
     except ScheduleError as e:
         return {"error": str(e)}
     return p.model_dump(mode="json")
+
+
+@mcp.tool()
+def schedule_risk(project_id: str, iterations: int = 500, optimistic_pct: float = 10, pessimistic_pct: float = 30,
+                  weather_pct: float = 20, correlation_pct: float = 30, seed: int = 1) -> dict:
+    """Monte Carlo schedule risk analysis. Each unfinished task's duration is drawn from a triangular
+    range (optimistic_pct quicker to pessimistic_pct slower, plus weather_pct more for weather-exposed
+    external work); correlation_pct is how much activities run late together. Returns P10/P50/P80/P90
+    finish dates, the chance of meeting the deadline and the planned finish, a weekly histogram and the
+    criticality index (how often each activity is critical). Seeded, so results are reproducible."""
+    try:
+        return risk_analysis(_load(project_id), iterations, optimistic_pct, pessimistic_pct, weather_pct, correlation_pct, seed)
+    except ScheduleError as e:
+        return {"error": str(e)}
 
 
 @mcp.tool()

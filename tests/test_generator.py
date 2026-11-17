@@ -64,3 +64,11 @@ def test_bigger_building_takes_longer():
     run_schedule(small); run_schedule(big)
     assert big.finish > small.finish
     assert len(big.activities) > len(small.activities)
+
+
+def test_end_of_month_deadline_is_the_last_day():
+    from datetime import date
+    from planner.generator import parse_brief
+    assert parse_brief("House, start 6 April 2026, finish by end of November 2026").deadline == date(2026, 11, 30)
+    assert parse_brief("House, start 6 April 2026, complete by end Feb 2028").deadline == date(2028, 2, 29)
+    assert parse_brief("House, start 6 April 2026, finish by November 2026").deadline == date(2026, 11, 1)

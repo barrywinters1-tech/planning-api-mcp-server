@@ -125,7 +125,11 @@ def _find_dates(text: str) -> list[tuple[int, date, str]]:
     for m in re.finditer(r"\b(" + "|".join(sorted(MONTHS, key=len, reverse=True)) + r")\w*\s+(\d{4})\b", t):
         if any(abs(o[0] - m.start()) < 12 for o in out):
             continue
-        out.append((m.start(), date(int(m[2]), MONTHS[m[1]], 1), t[max(0, m.start() - 40):m.start()]))
+        y, mo = int(m[2]), MONTHS[m[1]]
+        # "end of November 2026" is the last day of the month; a bare "November 2026" is the 1st
+        last = re.search(r"\bend(?:\s+of)?\s+$", t[max(0, m.start() - 8):m.start()])
+        d = (date(y + mo // 12, mo % 12 + 1, 1) - timedelta(days=1)) if last else date(y, mo, 1)
+        out.append((m.start(), d, t[max(0, m.start() - 40):m.start()]))
     for m in re.finditer(r"\b(\d{4})-(\d{2})-(\d{2})\b", t):
         out.append((m.start(), date(int(m[1]), int(m[2]), int(m[3])), t[max(0, m.start() - 40):m.start()]))
     for m in re.finditer(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", t):

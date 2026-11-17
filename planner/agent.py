@@ -66,6 +66,8 @@ TOOLS: list[dict] = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "set_baseline", "description": "Snapshot the current dates as a baseline for variance tracking.",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}}},
+    {"name": "risk_analysis", "description": "Monte Carlo schedule risk: P50/P80/P90 finish dates, chance of meeting the deadline and the planned finish, and which activities are most often critical. Durations vary from optimistic_pct quicker to pessimistic_pct slower (weather-exposed work gets weather_pct more); correlation_pct is how much activities run late together.",
+     "input_schema": {"type": "object", "properties": {"iterations": {"type": "integer"}, "optimistic_pct": {"type": "number"}, "pessimistic_pct": {"type": "number"}, "weather_pct": {"type": "number"}, "correlation_pct": {"type": "number"}}}},
 ]
 
 
@@ -154,6 +156,20 @@ def dispatch(name: str, args: dict, h: Holder) -> str:
     if name == "set_baseline":
         bl = set_baseline(p, args.get("name") or "Baseline")
         return f"Baseline '{bl.name}' saved at finish {bl.finish:%Y-%m-%d}."
+    if name == "risk_analysis":
+        from .risk import risk_analysis
+        keys = ("optimistic_pct", "pessimistic_pct", "weather_pct", "correlation_pct")
+        try:
+            r = risk_analysis(p, int(args.get("iterations") or 300), **{k: float(args[k]) for k in keys if args.get(k) is not None})
+        except ScheduleError as e:
+            return f"Schedule error: {e}"
+        d = lambda iso: iso[:10]
+        dl = f" Chance of meeting the {d(r['deadline'])} deadline: {r['deadline_probability']:.0f}%." if r["deadline"] else ""
+        always = sum(1 for c in r["criticality"] if c["pct"] >= 100)
+        top = f"{always} activities critical in every run" + "".join(
+            f"; {c['id']} {c['name']} {c['pct']:.0f}%" for c in [c for c in r["criticality"] if c["pct"] < 100][:6])
+        return (f"Risk over {r['iterations']} runs: P50 {d(r['p50'])}, P80 {d(r['p80'])}, P90 {d(r['p90'])}; planned finish "
+                f"{d(r['deterministic_finish'])} is met in {r['deterministic_probability']:.0f}% of runs.{dl} Criticality: {top}.")
     return f"Unknown tool {name}."
 
 

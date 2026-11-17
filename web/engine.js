@@ -414,7 +414,13 @@ function findDates(text) {
   let re = new RegExp('(\\d{1,2})(?:st|nd|rd|th)?\\s+(' + monthAlt + ')\\w*\\s+(\\d{4})', 'g'), m;
   while ((m = re.exec(t))) out.push([m.index, isoDate(+m[3], MONTHS[m[2]], +m[1])]);
   re = new RegExp('\\b(' + monthAlt + ')\\w*\\s+(\\d{4})\\b', 'g');
-  while ((m = re.exec(t))) { if (out.some(o => Math.abs(o[0] - m.index) < 12)) continue; out.push([m.index, isoDate(+m[2], MONTHS[m[1]], 1)]); }
+  while ((m = re.exec(t))) {
+    if (out.some(o => Math.abs(o[0] - m.index) < 12)) continue;
+    const y = +m[2], mo = MONTHS[m[1]];
+    // "end of November 2026" is the last day of the month; a bare "November 2026" is the 1st
+    const last = /\bend(?:\s+of)?\s+$/.test(t.slice(Math.max(0, m.index - 8), m.index));
+    out.push([m.index, last ? isoDate(y, mo, new Date(Date.UTC(y, mo, 0)).getUTCDate()) : isoDate(y, mo, 1)]);
+  }
   re = /\b(\d{4})-(\d{2})-(\d{2})\b/g; while ((m = re.exec(t))) out.push([m.index, isoDate(+m[1], +m[2], +m[3])]);
   re = /\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g; while ((m = re.exec(t))) out.push([m.index, isoDate(+m[3], +m[2], +m[1])]);
   re = /christmas\s+(\d{4})/g; while ((m = re.exec(t))) out.push([m.index, isoDate(+m[1], 12, 18)]);
@@ -699,6 +705,74 @@ function planRepairs(p, report) {
 }
 
 Object.assign(global.PlannerEngine, { RATES, parseBrief, generate, draftToProject, level, unlevel, setBaseline, useBaseline, clearBaseline, histogram, costCurve, variance, planRepairs, dailyDemand });
+
+// ---------- schedule risk analysis: port of planner/risk.py (bit-identical, parity tested) ----------
+const WEATHER_WORDS = ['excavat', 'topsoil', 'reduce level', 'foundation', 'pil', 'drainage', 'groundwork', 'ground beam',
+  'pile cap', 'slab', 'concrete', 'scaffold', 'brick', 'block', 'envelope', 'cladding', 'curtain wall',
+  'roof', 'steel', 'frame', 'external', 'landscap', 'fencing', 'driveway', 'paving', 'surfacing',
+  'facade', 'render', 'window', 'crane', 'demolition', 'earthworks'];
+function weatherExposed(name, cid) {
+  const n = String(name).toLowerCase();
+  if (n.includes('cure') || n.includes('drying') || String(cid || '').startsWith('seven')) return false;
+  return WEATHER_WORDS.some(w => n.includes(w));
+}
+function mulberry32(seed) { let a = seed | 0; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function triangular(u, lo, mode, hi) {
+  if (hi <= lo) return mode;
+  const c = (mode - lo) / (hi - lo);
+  return u < c ? lo + Math.sqrt(u * (hi - lo) * (mode - lo)) : hi - Math.sqrt((1 - u) * (hi - lo) * (hi - mode));
+}
+// Runs in steps so a page can keep painting: r = riskRunner(p, opts); while (r.step(25) < r.total); r.result()
+function riskRunner(project, o = {}) {
+  const total = Math.max(1, Math.min(Math.trunc(o.iterations ?? 500), 5000));
+  const opt = o.optimistic_pct ?? 10, pes = o.pessimistic_pct ?? 30, wea = o.weather_pct ?? 20, cor = o.correlation_pct ?? 30, seed = o.seed ?? 1;
+  const base = JSON.parse(JSON.stringify(project)); base.baselines = []; schedule(base);
+  const det = base.finish;
+  const work = JSON.parse(JSON.stringify(base));
+  const tasks = work.activities.filter(a => a.type === 'task' && a.status !== 'complete' && a.duration_hours > 0);
+  const orig = tasks.map(a => [a.duration_hours, a.remaining_hours]);
+  const wet = tasks.map(a => weatherExposed(a.name, a.calendar_id));
+  const lo = 1 - opt / 100, rho = cor / 100, rnd = mulberry32(seed);
+  const finishes = [], crit = {};
+  let done = 0;
+  function step(k) {
+    for (let n = 0; n < k && done < total; n++, done++) {
+      const shared = rnd();
+      tasks.forEach((a, j) => {
+        const pick = rnd(), own = rnd(), u = pick < rho ? shared : own;
+        const f = triangular(u, lo, 1.0, 1 + (pes + (wet[j] ? wea : 0)) / 100);
+        a.duration_hours = Math.max(1, pyRound(orig[j][0] * f));
+        if (a.status === 'in_progress' && orig[j][1] != null) a.remaining_hours = Math.max(0, pyRound(orig[j][1] * f));
+      });
+      schedule(work);
+      finishes.push(work.finish);
+      tasks.forEach(a => { if (a.critical) crit[a.id] = (crit[a.id] || 0) + 1; });
+    }
+    return done;
+  }
+  function result() {
+    const fs = finishes.slice().sort(), n = fs.length, q = v => fs[Math.max(0, Math.ceil(v * n) - 1)];
+    const weeks = new Map();
+    fs.forEach(f => { const d = dateOnly(D(f)); const wk = YMD(addDays(d, -dow(d))); weeks.set(wk, (weeks.get(wk) || 0) + 1); });
+    const names = Object.fromEntries(work.activities.map(a => [a.id, a.name]));
+    const ranked = Object.entries(crit).sort((x, y) => (y[1] - x[1]) || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+    const dl = project.must_finish_by ? ISO(D(project.must_finish_by)) : null;
+    return {
+      iterations: n, seed,
+      settings: { optimistic_pct: opt, pessimistic_pct: pes, weather_pct: wea, correlation_pct: cor },
+      uncertain_activities: tasks.length, weather_exposed: wet.filter(Boolean).length,
+      deterministic_finish: det || null, deadline: dl,
+      p10: q(.1), p50: q(.5), p80: q(.8), p90: q(.9), earliest: fs[0], latest: fs[n - 1],
+      deterministic_probability: fs.filter(f => det && f <= det).length * 100 / n,
+      deadline_probability: dl ? fs.filter(f => f <= dl).length * 100 / n : null,
+      histogram: [...weeks].map(([week, count]) => ({ week, count })),
+      criticality: ranked.map(([id, c]) => ({ id, name: names[id] ?? id, pct: c * 100 / n })),
+    };
+  }
+  return { total, step, result };
+}
+function riskAnalysis(project, o = {}) { const r = riskRunner(project, o); r.step(r.total); return r.result(); }
+Object.assign(global.PlannerEngine, { riskRunner, riskAnalysis, weatherExposed, mulberry32, triangular });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 4: command language ---- */

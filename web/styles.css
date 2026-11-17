@@ -514,3 +514,38 @@ svg text { font-family: var(--font); font-size: 11.5px; }
 .trace-btns { display: flex; gap: 8px; margin: 2px 0 6px; flex-wrap: wrap; }
 .trace-btns .btn { flex: 1; min-width: 0; }
 @media (max-width: 760px) { .tracechip { max-width: 100%; } .tracechip .tc-l { max-width: 46vw; } }
+
+/* ---------- schedule risk ---------- */
+.risk-set { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 14px; margin: 6px 0 12px; }
+.risk-set label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.risk-set .unit { display: flex; align-items: center; gap: 6px; }
+.risk-set .unit i { font-style: normal; color: var(--ink-3); }
+.rk-go { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; min-height: 36px; }
+.rk-prog { flex: 1; max-width: 260px; height: 6px; border-radius: 99px; background: var(--line-2); overflow: hidden; }
+.rk-prog i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .12s linear; }
+.rk-lead { font-size: 15px; line-height: 1.5; margin: 14px 0; }
+.rk-kpis { margin-bottom: 8px; }
+.rk-kpis .kpi { box-shadow: none; background: var(--surface-2); }
+.rk-kpis .big { font-size: 22px; }
+.rk-kpis .big.ok { color: var(--ok); } .rk-kpis .big.warn { color: var(--warn); } .rk-kpis .big.bad { color: var(--crit); }
+.rk-chart { width: 100%; overflow: hidden; }
+.rk-chart svg { display: block; }
+.rk-chart .ax { font-size: 11px; fill: var(--ink-3); font-variant-numeric: tabular-nums; }
+.rk-chart .mk { font-size: 11.5px; font-weight: 650; }
+.crit-list { display: flex; flex-direction: column; gap: 2px; }
+.crow { display: grid; grid-template-columns: 64px minmax(0, 1fr) minmax(60px, 160px) 44px; align-items: center; gap: 10px; text-align: left; border: 0; background: transparent; padding: 7px 8px; border-radius: 10px; color: var(--ink); font-size: 13px; }
+.crow:hover { background: var(--accent-soft); }
+.crow .cid { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+.crow .cname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow .cname .chip { margin-left: 6px; font-size: 10.5px; }
+.crow .cbar { height: 6px; border-radius: 99px; background: var(--line-2); overflow: hidden; }
+.crow .cbar i { display: block; height: 100%; background: var(--crit); border-radius: 99px; }
+.crow b { text-align: right; font-variant-numeric: tabular-nums; font-weight: 650; }
+.rk-foot { font-size: 12px; margin-top: 14px; line-height: 1.5; }
+@media (max-width: 640px) { .crow { grid-template-columns: 54px minmax(0, 1fr) 40px; } .crow .cbar { display: none; } .rk-kpis .big { font-size: 19px; } }
+.rk-chart .mk { paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.risk-set .unit .stepper { flex: 1; min-width: 0; }
+@media (max-width: 640px) { .risk-set { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; } .risk-set label { font-size: 12px; } }
+.rk-always { margin-top: 10px; }
+.rk-always summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); padding: 6px 8px; border-radius: 8px; }
+.rk-always summary:hover { background: var(--accent-soft); }

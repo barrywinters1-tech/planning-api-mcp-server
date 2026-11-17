@@ -31,6 +31,7 @@ from planner.levelling import level, set_baseline
 from planner.model import Project
 from planner.plan import UK_BANK_HOLIDAYS_2026_27, _parse_date, apply_patch, draft_to_project
 from planner.repair import plan_repairs
+from planner.risk import risk_analysis
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = Path(__file__).parent / "parity" / "js_runner.js"
@@ -151,6 +152,7 @@ BRIEFS = [
     "Pair of two-storey semi-detached houses, brick and block, 190 m2, start 4 May 2026",
     "Three-storey care home, masonry, render, 2100 m2, gas main diversion, start 7 September 2026, handover by June 2027",
     "Six-storey office, 4,800 m2, start 1 February 2027, finish by end of 2028",
+    "Two-storey house in York, start 6 April 2026, finish by end of November 2026",
 ]
 
 COMMANDS = ["add 2 weeks to A1040", "link A1010 -> A1030 SS+2d", "finish by 1 Nov 2026", "set A1060 to 15d",
@@ -215,6 +217,13 @@ def build_cases() -> list[tuple[str, dict]]:
         squeezed["must_finish_by"] = squeezed["start"][:4] + "-10-30T16:00:00"
         cases.append((f"repair-{i}", {"kind": "repair", "project": squeezed}))
         cases.append((f"analysis-{i}", {"kind": "analysis", "project": proj, "commands": ["add 3 weeks to A1060", "progress A1010 100%"]}))
+    # Monte Carlo: same seeded draws, so every percentile and criticality count must match
+    for i in (0, 3, 6):
+        proj = _generated(BRIEFS[i])
+        proj["must_finish_by"] = proj["start"][:4] + "-12-18T16:00:00"
+        cases.append((f"risk-{i}", {"kind": "risk", "project": proj, "opts": {"iterations": 40, "seed": 7 + i}}))
+    cases.append(("risk-progress", {"kind": "risk", "project": progress(),
+                  "opts": {"iterations": 60, "optimistic_pct": 5, "pessimistic_pct": 50, "weather_pct": 0, "correlation_pct": 80, "seed": 3}}))
     house = _generated(BRIEFS[0])
     for j, cmd in enumerate(COMMANDS):
         cases.append((f"command-{j}", {"kind": "command", "project": house, "command": cmd}))
@@ -263,6 +272,8 @@ def run_py(c: dict) -> dict:
                 apply_patch(p, parse_command(p, cmd))
             schedule(p)
             return json.loads(json.dumps({"histogram": histogram(p), "cost": cost_curve(p), "variance": variance(p)}, default=_jsonable))
+        if k == "risk":
+            return risk_analysis(Project.model_validate(c["project"]), **c["opts"])
         if k == "parse_date":
             return {"values": [(lambda d: d.isoformat() if d else None)(_parse_date(s, h)) for s, h in c["values"]]}
         if k == "round":
