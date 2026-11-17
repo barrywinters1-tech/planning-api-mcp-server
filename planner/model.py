@@ -256,6 +256,7 @@ class Project(BaseModel):
     code_types: dict[str, dict[str, str]] = Field(default_factory=dict)  # type -> {value: colour}
     baselines: list[Baseline] = Field(default_factory=list)
     revisions: list[dict] = Field(default_factory=list)   # issued versions: {name, issued_at, note, project}
+    annotations: Optional[list[dict]] = None              # chart notes: {id, date, activity_id|None, text}
     levelled: bool = False
     # computed
     finish: Optional[datetime] = None

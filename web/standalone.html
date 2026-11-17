@@ -3749,6 +3749,7 @@ function fidelityReport(project, fmt) {
   const codeVals = x => x.activities.reduce((t, a) => t + Object.keys(a.codes || {}).length, 0);
   if (codeVals(p)) add(codeVals(q) >= codeVals(p), `${codeVals(q)} of ${codeVals(p)} activity code values`, codeVals(q) < codeVals(p) ? (fmt === 'xml' ? 'MS Project XML has no activity codes; they are left out.' : '') : '');
   const notes = p.activities.filter(a => a.notes).length; if (notes) add(q.activities.filter(a => a.notes).length >= notes, `${q.activities.filter(a => a.notes).length} of ${notes} activity notes`);
+  if ((p.annotations || []).length) add(false, `${p.annotations.length} chart note${p.annotations.length > 1 ? 's' : ''} not carried`, 'Notes on the chart print on the PDF but have no place in this format.');
   if (p.must_finish_by) add(!!q.must_finish_by, q.must_finish_by ? 'Deadline (must finish by) carried' : 'Deadline (must finish by) not carried', q.must_finish_by ? '' : 'This format has no field for it. Add it as a constraint on the completion milestone if the other tool must see it.');
   const days = (a, b) => a && b ? Math.round((new Date(b) - new Date(a)) / 864e5) : null, fd = days(p.finish, q.finish);
   add(fd === 0, fd === 0 ? `Finish ${String(p.finish).slice(0, 10)} matches after recalculation` : fd == null ? 'Finish could not be recalculated from the file' : `Finish recalculates ${fd > 0 ? fd + ' days later' : -fd + ' days earlier'} (${String(q.finish).slice(0, 10)})`, fd ? 'Usually calendar or constraint conversion; check the items above.' : '');
@@ -6058,6 +6059,11 @@ function chart(rs, t0, t1, W, H, bandH) {
     }
     s += '</g>';
   });
+  (p.annotations || []).forEach(n => {          // notes pinned to a date (and a row) on the chart
+    const i = n.activity_id ? rs.findIndex(r => r.act && r.act.id === n.activity_id) : -1; if (n.activity_id && i < 0) return;
+    const ax = x(n.date), ay = i >= 0 ? i * RH + 3 : 4, w = Math.min(220, 14 + n.text.length * 6.2);
+    s += `<g class="hit note" data-note="${esc(n.id)}" style="cursor:pointer"><line x1="${ax}" y1="${ay}" x2="${ax}" y2="${ay + RH - 6}" stroke="var(--warn)" stroke-width="2"/><rect x="${ax + 3}" y="${ay}" width="${w}" height="16" rx="4" fill="var(--warn)" opacity=".92"/><text x="${ax + 9}" y="${ay + 12}" fill="#111" font-size="11" font-weight="600">${esc(n.text.length > 34 ? n.text.slice(0, 33) + '…' : n.text)}</text><title>${esc(n.text)}</title></g>`;
+  });
   if (S.view.progress && progressPts.length) {
     let d = `M${x(dd)},0`; progressPts.forEach(([px_, py]) => { d += ` L${px_},${py}`; }); d += ` L${x(dd)},${H - bandH}`;
     s += `<path d="${d}" fill="none" stroke="var(--dd)" stroke-width="1.6" stroke-linejoin="round" opacity=".9"/>`;
@@ -6236,6 +6242,64 @@ function renderActivityPanel() {
 }
 
 
+
+// ---------- chart notes (annotations), stored with the programme ----------
+function noteDialog(n, date, actId) {
+  const isNew = !n; n = n || { id: 'N' + Date.now().toString(36), date: date || S.project.data_date || S.project.start, activity_id: actId || null, text: '' };
+  const { m } = modal(isNew ? 'Note on the chart' : 'Edit note', `<label>Note<textarea name="t" rows="3" style="width:100%" placeholder="e.g. Road closure booked; crane on site">${esc(n.text)}</textarea></label><div class="row2"><label>Date<input type="date" name="d" value="${String(n.date).slice(0, 10)}"></label><label>Row<select name="a"><option value="">Top of the chart</option>${S.project.activities.map(a => `<option value="${esc(a.id)}" ${a.id === n.activity_id ? 'selected' : ''}>${esc(a.id)} ${esc(a.name.slice(0, 40))}</option>`).join('')}</select></label></div>${isNew ? '' : '<button type="button" class="btn" id="nDel">Delete note</button>'}<p class="hint">Notes print as callouts on the PDF.</p>`,
+    mm => { const t = mm.querySelector('[name=t]').value.trim(); if (!t) return false; const d = mm.querySelector('[name=d]').value, a = mm.querySelector('[name=a]').value || null;
+      mutate(p => { p.annotations = (p.annotations || []).filter(x => x.id !== n.id).concat([{ id: n.id, date: (d || String(n.date).slice(0, 10)) + 'T12:00:00', activity_id: a, text: t }]); }, isNew ? 'Note added' : 'Note updated'); }, 'Save');
+  const del = m.querySelector('#nDel'); if (del) del.onclick = () => { modalClose(); mutate(p => { p.annotations = (p.annotations || []).filter(x => x.id !== n.id); }, 'Note deleted'); };
+}
+// ---------- PDF for issue: the programme as shown (filters, grouping, columns), on A4-A1 with a title block ----------
+function pdfDoc(o) {
+  const p = S.project, rs = S.rowsCache, cols = S.cols.filter(k => k !== 'preds' && k !== 'succs' && k !== 'notes' && k !== 'res').slice(0, 7);
+  const columns = cols.map(k => ({ title: ALL_COLS[k].t, width_mm: Math.max(9, Math.round(ALL_COLS[k].w * .2)), align: ALL_COLS[k].num || ['start', 'finish', 'astart', 'afinish', 'bstart', 'bfinish', 'ls', 'lf'].includes(k) ? 'right' : 'left', indent: k === 'name' }));
+  const clean = v => String(v == null ? '' : v).replace(/◆/g, '');
+  const idx = {}; rs.forEach((r, i) => { if (r.act) idx[r.act.id] = i; });
+  const rows = rs.map(r => {
+    if (r.act) { const a = r.act, ms = a.type !== 'task' || a.duration_hours === 0; return { kind: ms ? 'milestone' : 'task', depth: r.depth, cells: cols.map(k => clean(ALL_COLS[k].get(a))), start: a.actual_start || a.early_start, finish: a.actual_finish || a.early_finish, critical: !!a.critical, pct: a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0), baseline_start: a.baseline_start || null, baseline_finish: a.baseline_finish || null, late_finish: a.total_float_hours > 0 ? a.late_finish : null, label: barLabel(a) }; }
+    const name = r.wbs ? r.wbs.name : r.group;
+    return { kind: 'summary', depth: r.depth, cells: cols.map(k => k === 'name' ? name : k === 'id' ? (r.wbs ? r.wbs.code || '' : '') : k === 'start' ? fmtD(r.start) : k === 'finish' ? fmtD(r.finish) : k === 'pct' && r.pct != null ? Math.round(r.pct) + '%' : ''), start: r.start, finish: r.finish, critical: !!r.crit, pct: r.pct || 0, baseline_start: null, baseline_finish: null, late_finish: null, label: '' };
+  });
+  const links = p.relationships.filter(r => idx[r.predecessor_id] != null && idx[r.successor_id] != null).map(r => ({ from: idx[r.predecessor_id], to: idx[r.successor_id], type: r.type, critical: !!(byId(r.predecessor_id).critical && byId(r.successor_id).critical) }));
+  const annotations = (p.annotations || []).map(n => ({ date: n.date, row: n.activity_id ? (idx[n.activity_id] ?? null) : null, text: n.text })).filter(n => !(n.row === null && false));
+  const lastRev = (p.revisions || []).slice(-1)[0];
+  return {
+    meta: { project_name: p.name, project_id: p.id, client: o.client, revision: o.revision || (lastRev ? lastRev.name : ''), prepared_by: o.prepared_by, title: o.title || 'Construction programme', data_date: p.data_date || p.start, forecast_finish: p.finish, deadline: p.must_finish_by || null, printed_at: iso(new Date()), notes: o.notes || '' },
+    page: { size: o.size, orientation: o.orientation, margins_mm: 10 },
+    columns, rows, links, annotations,
+    range: { t0: o.t0 || iso(S.t0), t1: o.t1 || iso(S.t1) },
+    options: { show_links: S.view.links, show_float: S.view.float, show_baseline: S.view.baseline, show_progress_line: S.view.progress, legend: true, rows_per_page: o.rows || null, fit_to_pages_wide: o.wide || 1, colour: o.colour },
+  };
+}
+function printSheet() {
+  if (!S.project) return; const P = window.PlannerPDF; if (!P) return toast('PDF output is not available on this page');
+  if (S.screen !== 'plan') go('plan'); if (!S.rowsCache.length) render();
+  let saved = {}; try { saved = JSON.parse(localStorage.getItem('pdfOpts') || '{}'); } catch { }
+  const sel = (id, opts, v) => `<select id="${id}">${opts.map(([k, l]) => `<option value="${k}" ${String(v) === String(k) ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const { m } = modal('PDF for issue', `<p class="hint" style="margin-top:-4px">Prints the programme as shown: the current filter, grouping, outline level, columns and bar options. ${S.rowsCache.length} rows.</p>
+    <div class="risk-set">
+      <label>Paper${sel('pSize', [['A3', 'A3'], ['A4', 'A4'], ['A2', 'A2'], ['A1', 'A1']], saved.size || 'A3')}</label>
+      <label>Orientation${sel('pOri', [['landscape', 'Landscape'], ['portrait', 'Portrait']], saved.orientation || 'landscape')}</label>
+      <label>Timescale across${sel('pWide', [[1, '1 page'], [2, '2 pages'], [3, '3 pages'], [4, '4 pages']], saved.wide || 1)}</label>
+      <label>Rows per page${sel('pRows', [['', 'Fit to page'], [30, '30'], [45, '45'], [60, '60'], [100, '100']], saved.rows || '')}</label>
+      <label>From<input type="date" id="pT0" value="${iso(S.t0).slice(0, 10)}"></label><label>To<input type="date" id="pT1" value="${iso(S.t1).slice(0, 10)}"></label>
+      <label>Colour${sel('pCol', [['1', 'Colour'], ['0', 'Black and white']], saved.colour === false ? '0' : '1')}</label>
+    </div>
+    <h3>Title block</h3>
+    <div class="risk-set"><label>Title<input id="pTitle" value="${esc(saved.title || 'Construction programme')}"></label><label>Client<input id="pClient" value="${esc(saved.client || '')}"></label><label>Prepared by<input id="pBy" value="${esc(saved.prepared_by || '')}"></label><label>Revision<input id="pRev" value="${esc(((S.project.revisions || []).slice(-1)[0] || {}).name || '')}"></label></div>
+    <label>Notes in the title block<input id="pNotes" placeholder="e.g. Programme for acceptance; durations in working days"></label>
+    <p class="hint" id="pPlan"></p>`, async mm => {
+      const o = readOpts(mm); try { localStorage.setItem('pdfOpts', JSON.stringify({ size: o.size, orientation: o.orientation, wide: o.wide, rows: o.rows, colour: o.colour, title: o.title, client: o.client, prepared_by: o.prepared_by })); } catch { }
+      let bytes; try { bytes = P.render(pdfDoc(o)); } catch (e) { toast('PDF failed: ' + (e.message || e)); return false; }
+      const name = `${S.project.id}${o.revision ? '-' + o.revision.replace(/\s+/g, '') : ''}.pdf`;
+      if (await saveBlob(name, new Blob([bytes], { type: 'application/pdf' }))) toast(`${name} saved`);
+    }, 'Create PDF', { wide: true });
+  const readOpts = mm => ({ size: mm.querySelector('#pSize').value, orientation: mm.querySelector('#pOri').value, wide: +mm.querySelector('#pWide').value, rows: +mm.querySelector('#pRows').value || null, colour: mm.querySelector('#pCol').value === '1', t0: mm.querySelector('#pT0').value ? mm.querySelector('#pT0').value + 'T00:00:00' : null, t1: mm.querySelector('#pT1').value ? mm.querySelector('#pT1').value + 'T23:59:00' : null, title: mm.querySelector('#pTitle').value, client: mm.querySelector('#pClient').value, prepared_by: mm.querySelector('#pBy').value, revision: mm.querySelector('#pRev').value, notes: mm.querySelector('#pNotes').value });
+  const plan = () => { try { const L = P.layout(pdfDoc(readOpts(m))); m.querySelector('#pPlan').textContent = `${L.pages || L.page_count} page${(L.pages || L.page_count) === 1 ? '' : 's'}: ${L.rows_per_page} rows a page${L.pages_wide > 1 ? `, ${L.pages_wide} pages across` : ''}.`; } catch (e) { m.querySelector('#pPlan').textContent = ''; } };
+  m.querySelectorAll('select, input').forEach(el => el.addEventListener('change', plan)); plan();
+}
 // ---------- issued revisions and version comparison ----------
 const nextRev = p => 'Rev ' + String.fromCharCode(65 + ((p && p.revisions) || []).length % 26);
 function revisionDialog() {
@@ -6391,7 +6455,8 @@ function scrollToRow(i) { const sheet = $('#sheet'); const y = HDR + i * RH; if 
 // ---------- chart wiring: drag move / resize / link ----------
 function wireChart() {
   const svg = $('svg.chart'); if (!svg) return;
-  svg.querySelectorAll('.rowbg').forEach(r => { r.onmousedown = e => { if (e.button === 0) selectRow(r.dataset.key, e); }; r.oncontextmenu = e => { e.preventDefault(); if (!S.sel.has(r.dataset.key)) selectRow(r.dataset.key, e); contextMenu(e.clientX, e.clientY); }; });
+  svg.querySelectorAll('.rowbg').forEach(r => { r.onmousedown = e => { if (e.button === 0) selectRow(r.dataset.key, e); }; r.oncontextmenu = e => { e.preventDefault(); if (!S.sel.has(r.dataset.key)) selectRow(r.dataset.key, e); const pt = svgPoint(svg, e); S.ctxAt = { date: iso(new Date(+S.t0 + (pt.x - GX) / S.view.pxDay * DAY)), key: r.dataset.key }; contextMenu(e.clientX, e.clientY); S.ctxAt = null; }; });
+  svg.querySelectorAll('.note[data-note]').forEach(n => { n.onmousedown = e => e.stopPropagation(); n.onclick = e => { e.stopPropagation(); const a = (S.project.annotations || []).find(x => x.id === n.dataset.note); if (a) noteDialog(a); }; });
   svg.querySelectorAll('.bar[data-id]').forEach(b => {
     b.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); if (!S.sel.has(b.dataset.id)) selectRow(b.dataset.id, e); startDrag(e, 'move', b.dataset.id, b); };
     b.onmousemove = e => tipFor(e, byId(b.dataset.id)); b.onmouseleave = hideTip;
@@ -6646,6 +6711,7 @@ function contextMenu(x, y) {
     one && one.constraint !== 'none' ? ['Clear constraint', () => mutate(p => { one.constraint = 'none'; one.constraint_date = null; }, 'Constraint cleared')] : null,
     acts.length ? ['Toggle milestone', toggleMilestone] : null,
     one ? ['Notes…', () => notesDialog(one)] : null,
+    S.ctxAt ? ['Add a note on the chart here', (at => () => noteDialog(null, at.date, byId(at.key) ? at.key : null))(S.ctxAt)] : null,
   ].filter(x => x !== undefined);
   m.innerHTML = items.map(it => it === null ? '<hr>' : `<div>${esc(it[0])}</div>`).join('');
   let k = 0; m.querySelectorAll('div').forEach(el => { const it = items.filter(x => x !== null)[k++]; el.onclick = () => { m.hidden = true; it[1](); }; });
@@ -7300,6 +7366,8 @@ function palActions() {
     S.project && ['Critical path drag: what to accelerate', 'Analyse', () => computeDrag()],
     S.project && ['Out-of-sequence progress', 'Check', oosDialog],
     S.project && ['Compare versions', 'Analyse', () => compareSheet()],
+    S.project && ['PDF for issue (print)', 'File', printSheet],
+    S.project && ['Add a note on the chart', 'Plan', () => noteDialog(null, null, S.active && byId(S.active) ? S.active : null)],
     S.project && ['Issue revision', 'Plan', revisionDialog],
     S.project && ['Share and export', 'File', shareSheet],
     S.project && ['Export to Excel (CSV)', 'File', exportCsv],
@@ -7471,13 +7539,13 @@ function summaryText() {
 function shareSheet() {
   if (!S.project) return;
   const file = '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/>';
-  const tiles = [['bundle', 'All three formats', 'One .zip for P6, Asta and MS Project', '<path d="M5 9h18v14H5z"/><path d="M5 9l3-5h12l3 5M12 13h4"/>'], ['xer', 'Primavera P6', '.xer file. Asta imports it too', file], ['xml', 'MS Project and Asta', 'MS Project XML (MSPDI)', file], ['json', 'Planner file', '.json to open here again', file], ['csv', 'Excel', '.csv of the activities as shown', '<path d="M5 4h18v20H5z"/><path d="M5 10h18M5 16h18M11 4v20"/>']];
+  const tiles = [['bundle', 'All three formats', 'One .zip for P6, Asta and MS Project', '<path d="M5 9h18v14H5z"/><path d="M5 9l3-5h12l3 5M12 13h4"/>'], ['xer', 'Primavera P6', '.xer file. Asta imports it too', file], ['xml', 'MS Project and Asta', 'MS Project XML (MSPDI)', file], ['json', 'Planner file', '.json to open here again', file], ['csv', 'Excel', '.csv of the activities as shown', '<path d="M5 4h18v20H5z"/><path d="M5 10h18M5 16h18M11 4v20"/>'], ['pdf', 'PDF for issue', 'Print-ready, with a title block', '<path d="M7 3h10l5 5v17H7z"/><path d="M10 14h8M10 18h8M10 10h4"/>']];
   const { m } = modal('Share and export', `<p class="hint" style="margin-top:-4px">Send the programme to the tools your client and contractors use.</p><div class="exports">${tiles.map(([f, t, s, ic], i) => `<button type="button" class="tile ${i === 0 ? 'on' : ''}" data-x="${f}"><svg viewBox="0 0 28 28" aria-hidden="true">${ic}</svg><b>${t}</b><span>${s}</span></button>`).join('')}</div>
     <h3>Status note</h3><p class="hint" style="margin:0 0 8px">A short update to paste into an email or message.</p><textarea id="shareText" rows="7" style="width:100%" readonly>${esc(summaryText())}</textarea>
-    <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="shareCopy">Copy status note</button>${LOCAL ? '' : '<button type="button" class="btn" id="sharePrint">Print the programme</button>'}</div>`, null, '', { wide: true });
-  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; if (x === 'csv') return exportCsv(); if (['xer', 'xml', 'bundle'].includes(x) && window.PlannerEngine && window.PlannerEngine.fidelityReport) return exportCheck(x); exportAs(x); });
+    <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="shareCopy">Copy status note</button></div>`, null, '', { wide: true });
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; if (x === 'csv') return exportCsv(); if (x === 'pdf') return printSheet(); if (['xer', 'xml', 'bundle'].includes(x) && window.PlannerEngine && window.PlannerEngine.fidelityReport) return exportCheck(x); exportAs(x); });
   m.querySelector('#shareCopy').onclick = async () => { const ta = m.querySelector('#shareText'); try { await navigator.clipboard.writeText(ta.value); toast('Status note copied'); } catch { ta.focus(); ta.select(); toast('Selected. Press Ctrl+C or ⌘C to copy.'); } };
-  const pr = m.querySelector('#sharePrint'); if (pr) pr.onclick = () => { modalClose(); go('plan'); setTimeout(() => window.print(), 300); };
+
 }
 // before a P6 / MS Project / Asta file leaves: show what the other tool will actually receive
 function exportCheck(fmt) {
