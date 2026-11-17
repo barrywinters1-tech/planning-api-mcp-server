@@ -9,7 +9,7 @@ Pure code. No AI service, no API key, nothing leaves your machine.
 | Layer | File | What |
 |---|---|---|
 | Model | `planner/model.py` | Project, WBS, activities, calendars (working days, hours, exceptions), links FS/SS/FF/SF with lag, constraints, resources, progress |
-| Engine | `planner/cpm.py` | Forward and backward pass, per-activity calendars, lag on the predecessor calendar (P6 default), constraints, retained-logic progress against a data date, total and free float, critical or longest path, loop detection |
+| Engine | `planner/cpm.py` | Forward and backward pass, per-activity calendars, lag on the predecessor calendar (P6 default), constraints, retained-logic progress against a data date, total and free float, loop detection. Critical = the longest path: the chain of driving links (each link that actually sets its successor's date) traced back from the finish, as in P6's longest-path option and Asta's driving logic. With mixed calendars this is not the same as float ≤ 0: a five-day task feeding a seven-day cure can carry calendar float and still drive the finish |
 | Health | `planner/dcma.py` | DCMA 14-point assessment (logic, leads, lags, FS share, hard constraints, high float, negative float, high duration, invalid dates, resources, missed tasks, critical path test, CPLI, BEI) plus open-ends and dangling-logic checks |
 | Generator | `planner/generator.py` | `parse_brief` pulls type, storeys, area, units, frame, foundations, envelope, dates and site flags out of plain English with keyword rules. `generate` builds WBS, activities, durations (from the `RATES` table), trade flow and milestones |
 | Repairer | `planner/repair.py` | Turns failing checks into patch operations: closes open ends, removes leads, softens hard constraints, splits over-long activities, closes dangling logic. Negative float is explained, not silently compressed |
@@ -20,6 +20,7 @@ Pure code. No AI service, no API key, nothing leaves your machine.
 | Anything else | `planner/mpxj_bridge.py` | Optional. With `pip install mpxj JPype1` and Java 11+, reads Asta `.pp`, MS Project `.mpp`, P3, SureTrak and more through [MPXJ](https://www.mpxj.org) |
 | Levelling, baselines | `planner/levelling.py` | Serial-method resource levelling against `max_units_per_day`; named baselines |
 | Analysis | `planner/analysis.py` | Resource histograms, cost S-curve, earned value (BCWS, BCWP, ACWP, SPI, CPI), baseline variance |
+| Risk | `planner/risk.py` | Monte Carlo schedule risk: triangular duration ranges, extra for weather-exposed work, correlation, P10/P50/P80/P90, chance of the deadline, criticality index. Seeded, so the browser and Python give identical answers |
 | History | `planner/history.py` | Undo / redo as snapshots next to the project file |
 | Web | `api.py`, `web/` | Ribbon UI: spreadsheet with inline editing and keyboard navigation, Gantt with drag-to-move, drag-to-resize, drag-to-link, link selection, context menu, indent/outdent, insert/delete summaries and activities, undo/redo, zoom, baseline bars, float bars, progress line, colour-by code or resource, group and sort and filter, calendar / resource / code editors, resource histogram and cost bands pinned under the chart, time–location (line of balance) view, DCMA health with auto-repair, command bar, print, import/export |
 | MCP | `mcp_server.py` | Optional. Exposes the same engine as tools for an MCP client. The engine itself never calls a model |
@@ -87,11 +88,42 @@ Tools: `generate_programme`, `run_command`, `repair_schedule`, `create_project_f
 
 Tune `RATES` in `planner/generator.py` to your own outputs. Everything is deterministic: same brief, same programme.
 
-## What it covers of Asta Powerproject
+## Against Asta Powerproject
 
-Done: bar chart with spreadsheet, hierarchy (summaries, indent/outdent, expand/collapse), links with lags and all four types, constraints (flags), milestones, hammocks, calendars with exceptions, per-activity calendars, resources with limits and rates, resource histogram, levelling, baselines and variance, progress with data date and progress line, cost and earned value, activity codes with colour-coding, group / sort / filter, undo/redo, time–location chart, print, XER / P6 XML / MSPDI interop, `.pp` through the MPXJ bridge.
+Reviewed against Asta's own documentation and release notes, ranked by how often a working planner uses each feature. "Better" means it does something Asta does not; anything not marked is parity at best.
 
-Not yet: multi-project and sub-projects, task splitting, multiple named views and print profiles, Site Progress mobile, risk analysis, code libraries shared across projects, cash-flow with payment terms, timesheets.
+**Have**
+
+| Area | Status |
+|---|---|
+| Bar chart and spreadsheet, summaries, indent/outdent, expand/collapse, outline levels | Have |
+| Links (FS/SS/FF/SF, lags), constraints, milestones, hammocks, per-activity calendars with exceptions | Have |
+| Critical path as longest path, driving links | Have |
+| Logic tracing: driving path back, everything held up forward, longest path to completion, "only these" | Have |
+| Quick filters (critical, near-critical, next 3 weeks, in progress, behind baseline, milestones), text and code filters, group and sort | Have |
+| Bar text options, colour by code or resource, float bars, baseline bars, progress line | Have |
+| Resources, histograms under the chart, serial levelling | Have |
+| Baselines and variance, progress against a data date, cost S-curve and earned value | Have |
+| Time–location (line of balance) view | Have |
+| DCMA 14-point check with auto-repair | Better: Asta's schedule check reports; this also fixes |
+| Schedule risk (Monte Carlo) | Better: Asta Risk is a separate product; here it is built in, reproducible, and flags activities that are not critical today but take over the path in some runs |
+| Programme from a plain-English brief, command language, AI assistant | Better: no equivalent |
+| Interop: XER and P6 XML read, XER write, MSPDI XML read/write, `.pp` via MPXJ, CSV export | Have (Asta reads XER and MSPDI) |
+| Runs in a browser with no install, phone layout | Better |
+
+**Backlog, in order**
+
+1. Lag calendar option (predecessor, successor, 24-hour, project default). Imported P6 and Asta jobs that use successor or 24-hour lag calendars schedule differently here today, so this is a correctness item.
+2. Several tasks on one bar line. Asta's signature presentation, used for zone-by-zone and repetitive work. Needs a "line" concept above activities, plus import/export mapping.
+3. Annotations: text, arrows and boxes pinned to dates on the chart.
+4. Print and PDF page setup: title block, logo, revision box, legend, date range, fit to pages. Programmes are issued as PDFs, so this matters more than its size suggests.
+5. Progress periods: several report dates per project, a progress line per period, and dragging the progress line to record progress.
+6. Views saved with the project: filters with several conditions, columns, bar styles and grouping in one named view (now in browser storage only).
+7. User-defined fields and code libraries shared across projects.
+8. Subprojects and multi-project (expanded tasks, master programmes).
+9. Cash flow with payment terms; cost centres.
+10. Split tasks and buffer tasks.
+11. Site progress companion app (phase 2, agreed separately).
 
 ## Tests
 
@@ -101,21 +133,22 @@ pytest -q
 
 Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real files; the generator across building types; the repairer; the command language.
 
-`tests/test_parity.py` is a golden-master check that the browser engine (`web/engine.js`) and the Python engine agree exactly. A corpus of projects (every link type and constraint, progress, hammocks, a year of DST changes) and briefs runs through both, and every date, float, critical flag, DCMA result, levelling delay, repair, command patch, histogram and cost figure is diffed, along with Python's rounding and number formatting over a few thousand values. Node runs it under UTC, London, Santiago (clocks change at midnight) and Lord Howe (30-minute DST). It needs `node` on the path and skips without it.
+`tests/test_parity.py` is a golden-master check that the browser engine (`web/engine.js`) and the Python engine agree exactly. A corpus of projects (every link type and constraint, progress, hammocks, a year of DST changes) and briefs runs through both, and every date, float, critical flag, DCMA result, levelling delay, repair, command patch, histogram, cost figure and Monte Carlo result (same seeded draws) is diffed, along with Python's rounding and number formatting over a few thousand values. Node runs it under UTC, London, Santiago (clocks change at midnight) and Lord Howe (30-minute DST). It needs `node` on the path and skips without it.
 
 ## Known limits
 
 - One shift per working day per calendar. P6 multi-shift calendars collapse to hours per day. A shift is looked up by the date it starts on, so shifts that run past midnight (nights, 24-hour working) are not modelled correctly.
 - Schedule times are kept to the whole second.
-- No resource levelling. Resources and assignments are carried through so P6 / Asta can level.
+- Levelling is the serial method with day-level demand; no resource curves or smoothing. Risk analysis does not re-level inside its runs.
 - Progress uses retained logic only.
+- Lags use the predecessor's calendar (P6's default); there is no per-link or project lag-calendar option yet.
 - `must_finish_by` has no MSPDI field, so it does not survive an XML round trip.
 - The brief parser is keyword-based. If it misreads something, correct the form before generating.
 - Generator rates are generic UK tender figures, not your firm's. Tune them.
 
 ## Browser build (no backend)
 
-`web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. `tests/test_parity.py` holds the two engines to identical output in four timezones (see Tests); the engine keeps dates as naive wall-clock times in UTC-pinned `Date`s so daylight saving cannot shift them. Python also reads back the browser-written XER and MSPDI. The browser build imports its own JSON export; Primavera XER, P6 XML and Asta .pp import stay in the full local app.
+`web/engine.js` is a faithful JavaScript port of the Python engine (CPM, DCMA, generator, levelling, analysis, risk, patches, commands, repairer) plus XER / MS Project XML writers. `web/local_backend.js` runs the same REST shapes against `localStorage`, so `web/standalone.html` is a single self-contained page that needs no server. `tests/test_parity.py` holds the two engines to identical output in four timezones (see Tests); the engine keeps dates as naive wall-clock times in UTC-pinned `Date`s so daylight saving cannot shift them. Python also reads back the browser-written XER and MSPDI. The browser build imports its own JSON export; Primavera XER, P6 XML and Asta .pp import stay in the full local app.
 
 ## Guided setup and one-click interoperability
 
