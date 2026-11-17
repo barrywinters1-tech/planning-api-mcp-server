@@ -378,12 +378,13 @@ def write_mspdi(project: Project) -> str:
         return el
 
     outline(None, 1, "")
-    # predecessor links need every UID assigned first
+    # predecessor links need every UID assigned first; MS Project allows one link per pair
+    kept_links = project.export_relationships()[0]
     for el in tasks.findall(_q("Task")):
         wbs = _text(el, "WBS")
         if _text(el, "Summary") == "1" or wbs not in task_uid:
             continue
-        for r in project.predecessors_of(wbs):
+        for r in [x for x in kept_links if x.successor_id == wbs]:
             if r.predecessor_id not in task_uid:
                 continue
             link = _sub(el, "PredecessorLink")

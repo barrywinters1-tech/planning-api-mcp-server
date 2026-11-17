@@ -110,3 +110,32 @@ def test_mspdi_progress_survives():
     q2 = read_xer(write_xer(p))
     c = q2.activity("A1010")
     assert c.status == Status.IN_PROGRESS and c.remaining_hours == 20
+
+
+def test_duplicate_pair_links_export_as_the_driving_one():
+    """P6 and MS Project allow one link per pair; an SS+FF ladder exports as its driving link."""
+    from datetime import datetime
+    from planner import Activity, LinkType, Project, Relationship, schedule
+    from planner.mspxml import read_mspdi, write_mspdi
+    from planner.xer import read_xer, write_xer
+    p = Project(id="T", name="T", start=datetime(2026, 1, 5, 8)); p.ensure_default_calendar()
+    p.activities = [Activity(id="A", name="A", duration_hours=40), Activity(id="B", name="B", duration_hours=24)]
+    p.relationships = [Relationship(predecessor_id="A", successor_id="B", type=LinkType.SS, lag_hours=8),
+                       Relationship(predecessor_id="A", successor_id="B", type=LinkType.FF, lag_hours=8)]
+    schedule(p)
+    kept, dropped = p.export_relationships()
+    assert [r.type for r in kept] == [LinkType.FF] and [r.type for r in dropped] == [LinkType.SS]
+    assert [r.type for r in read_mspdi(write_mspdi(p)).relationships] == [LinkType.FF]
+    assert [r.type for r in read_xer(write_xer(p)).relationships] == [LinkType.FF]
+
+
+def test_xer_carries_activity_notes():
+    from datetime import datetime
+    from planner import Activity, Project, schedule
+    from planner.xer import read_xer, write_xer
+    p = Project(id="N", name="N", start=datetime(2026, 1, 5, 8)); p.ensure_default_calendar()
+    p.activities = [Activity(id="A", name="A", duration_hours=8, notes="Line one\nCafé £5 & <b>x</b>")]
+    schedule(p)
+    text = write_xer(p)
+    assert "%T\tTASKMEMO" in text and "%T\tMEMOTYPE" in text
+    assert read_xer(text).activities[0].notes == "Line one\nCafé £5 & <b>x</b>"

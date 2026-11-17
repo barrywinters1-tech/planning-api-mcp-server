@@ -606,6 +606,15 @@ body.splitting, body.splitting * { cursor: col-resize !important; user-select: n
 }
 @media (max-width: 640px) { .planbar, .facts { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); } }
 
+/* ---------- export / import reports ---------- */
+ul.fid { list-style: none; padding: 0; margin: 6px 0 14px; display: flex; flex-direction: column; gap: 6px; }
+ul.fid li { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; }
+ul.fid .fi { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; background: var(--ok); margin-top: 1px; }
+ul.fid li.warn .fi { background: var(--warn); }
+ul.fid li .hint { font-size: 12px; margin-top: 2px; }
+ul.fid.counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; }
+ul.fid.counts li { display: block; }
+
 </style>
 
 <div class="app" id="app">
@@ -1210,7 +1219,7 @@ function parseBrief(text) {
     else if (/planning|condition|discharg/.test(before)) b.planning_condition_date = dt;
     else if (!b.start_date) b.start_date = dt; else if (!b.deadline) b.deadline = dt;
   }
-  m = text.match(/\s*([^.\n]{8,80})/); if (m) { let n = m[1].trim().replace(/,+$/, '').slice(0, 60); b.name = n.charAt(0).toUpperCase() + n.slice(1); }
+  m = text.match(/^\s*([^.\n]{8,80})/); if (m) { let n = m[1].trim(); const first = n.split(',')[0].trim(); n = (first.length >= 8 ? first : n).replace(/,+$/, '').slice(0, 60); b.name = n.charAt(0).toUpperCase() + n.slice(1); }
   return b;
 }
 function defaults(b) {
@@ -1643,6 +1652,14 @@ function buildClndrData(cal) {
   return '(0||CalendarType()( 0||DaysOfWeek()( ' + days.join(' ') + ' ) 0||VIEW(ShowTotal|Y)() 0||Exceptions()( ' + exc.join(' ') + ' ) ))';
 }
 
+// P6 and MS Project allow one link between two activities; this model allows several (an SS+FF ladder).
+// Keep the driving link of each pair (the first if none drives). Port of Project.export_relationships.
+function exportRelationships(p) {
+  const best = new Map();
+  for (const r of p.relationships) { const k = r.predecessor_id + '\u0000' + r.successor_id; const b = best.get(k); if (!b || (r.driving && !b.driving)) best.set(k, r); }
+  const keep = new Set(best.values());
+  return [p.relationships.filter(r => keep.has(r)), p.relationships.filter(r => !keep.has(r))];
+}
 function writeXer(p) {
   E.ensureCalendars(p); const now = E.nowISO(); const nowS = fmtDt(now); const pid = 1;
   const calIds = {}; Object.keys(p.calendars).forEach((c, i) => calIds[c] = i + 1);
@@ -1663,7 +1680,7 @@ function writeXer(p) {
   const taskFields = ['task_id', 'proj_id', 'wbs_id', 'clndr_id', 'phys_complete_pct', 'complete_pct_type', 'task_type', 'duration_type', 'status_code', 'task_code', 'task_name', 'total_float_hr_cnt', 'free_float_hr_cnt', 'remain_drtn_hr_cnt', 'target_drtn_hr_cnt', 'cstr_date', 'act_start_date', 'act_end_date', 'late_start_date', 'late_end_date', 'early_start_date', 'early_end_date', 'restart_date', 'reend_date', 'target_start_date', 'target_end_date', 'rem_late_start_date', 'rem_late_end_date', 'cstr_type', 'priority_type', 'driving_path_flag', 'create_date', 'update_date', 'create_user', 'update_user'];
   const taskRows = p.activities.map(a => { const rem = a.remaining_hours != null ? a.remaining_hours : (a.status === 'complete' ? 0 : a.duration_hours); return { task_id: taskIds[a.id], proj_id: pid, wbs_id: a.wbs_id ? (wbsIds[a.wbs_id] || 1) : 1, clndr_id: calIds[a.calendar_id || p.default_calendar_id] || calIds[p.default_calendar_id], phys_complete_pct: a.percent_complete, complete_pct_type: 'CP_Drtn', task_type: TASK_TYPE_OUT[a.type], duration_type: 'DT_FixedDrtn', status_code: STATUS_OUT[a.status], task_code: a.id.slice(0, 20), task_name: a.name.slice(0, 120), total_float_hr_cnt: a.total_float_hours == null ? '' : a.total_float_hours, free_float_hr_cnt: a.free_float_hours == null ? '' : a.free_float_hours, remain_drtn_hr_cnt: rem, target_drtn_hr_cnt: a.duration_hours, cstr_date: a.constraint !== 'none' ? fmtDt(a.constraint_date) : '', act_start_date: fmtDt(a.actual_start), act_end_date: fmtDt(a.actual_finish), late_start_date: fmtDt(a.late_start), late_end_date: fmtDt(a.late_finish), early_start_date: fmtDt(a.early_start), early_end_date: fmtDt(a.early_finish), restart_date: fmtDt(a.early_start), reend_date: fmtDt(a.early_finish), target_start_date: fmtDt(a.baseline_start || aStart(a)), target_end_date: fmtDt(a.baseline_finish || aFinish(a)), rem_late_start_date: fmtDt(a.late_start), rem_late_end_date: fmtDt(a.late_finish), cstr_type: CSTR_OUT[a.constraint] || '', priority_type: 'PT_Normal', driving_path_flag: a.critical ? 'Y' : 'N', create_date: nowS, update_date: nowS, create_user: 'admin', update_user: 'admin' }; });
   const task = table('TASK', taskFields, taskRows);
-  const taskpred = table('TASKPRED', ['task_pred_id', 'task_id', 'pred_task_id', 'proj_id', 'pred_proj_id', 'pred_type', 'lag_hr_cnt'], p.relationships.filter(r => taskIds[r.successor_id] && taskIds[r.predecessor_id]).map((r, i) => ({ task_pred_id: i + 1, task_id: taskIds[r.successor_id], pred_task_id: taskIds[r.predecessor_id], proj_id: pid, pred_proj_id: pid, pred_type: LINK_OUT[r.type], lag_hr_cnt: r.lag_hours })));
+  const taskpred = table('TASKPRED', ['task_pred_id', 'task_id', 'pred_task_id', 'proj_id', 'pred_proj_id', 'pred_type', 'lag_hr_cnt'], exportRelationships(p)[0].filter(r => taskIds[r.successor_id] && taskIds[r.predecessor_id]).map((r, i) => ({ task_pred_id: i + 1, task_id: taskIds[r.successor_id], pred_task_id: taskIds[r.predecessor_id], proj_id: pid, pred_proj_id: pid, pred_type: LINK_OUT[r.type], lag_hr_cnt: r.lag_hours })));
   const taskrsrc = table('TASKRSRC', ['taskrsrc_id', 'task_id', 'proj_id', 'cost_qty_link_flag', 'rsrc_id', 'skill_level', 'remain_qty', 'target_qty', 'target_cost', 'remain_cost', 'rollup_dates_flag', 'rate_type', 'cost_per_qty_source_type', 'create_user', 'create_date', 'has_rsrchours'], p.assignments.filter(x => taskIds[x.activity_id] && rsrcIds[x.resource_id]).map((x, i) => ({ taskrsrc_id: i + 1, task_id: taskIds[x.activity_id], proj_id: pid, cost_qty_link_flag: 'Y', rsrc_id: rsrcIds[x.resource_id], skill_level: 3, remain_qty: x.units, target_qty: x.units, target_cost: x.cost, remain_cost: x.cost, rollup_dates_flag: 'Y', rate_type: 'COST_PER_QTY', cost_per_qty_source_type: 'ST_Rsrc', create_user: 'admin', create_date: nowS, has_rsrchours: 'N' })));
   const lib = {}; for (const kv of Object.entries(p.code_types || {})) lib[kv[0]] = Object.assign({}, kv[1]);
   for (const a of p.activities) for (const cv of Object.entries(a.codes || {})) { lib[cv[0]] = lib[cv[0]] || {}; if (!(cv[1] in lib[cv[0]])) lib[cv[0]][cv[1]] = '#7a8aa6'; }
@@ -1674,7 +1691,10 @@ function writeXer(p) {
   const actvcode = table('ACTVCODE', ['actv_code_id', 'parent_actv_code_id', 'actv_code_type_id', 'actv_code_name', 'short_name', 'seq_num', 'color', 'total_assign_cnt'], actvRows);
   const taskactvRows = []; for (const a of p.activities) for (const cv of Object.entries(a.codes || {})) if (valIds[KEY(cv[0], cv[1])]) taskactvRows.push({ task_id: taskIds[a.id], actv_code_type_id: typeIds[cv[0]], actv_code_id: valIds[KEY(cv[0], cv[1])], proj_id: pid });
   const taskactv = table('TASKACTV', ['task_id', 'actv_code_type_id', 'actv_code_id', 'proj_id'], taskactvRows);
-  return [header, currtype, calendar, projT, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, '%E', ''].join('\n');
+  const memoHtml = t => '<HTML><BODY>' + t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\t/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>') + '</BODY></HTML>';
+  const memotype = table('MEMOTYPE', ['memo_type_id', 'seq_num', 'eps_flag', 'proj_flag', 'wbs_flag', 'task_flag', 'memo_type'], [{ memo_type_id: 1, seq_num: 0, eps_flag: 'N', proj_flag: 'N', wbs_flag: 'Y', task_flag: 'Y', memo_type: 'Notes' }]);
+  const taskmemo = table('TASKMEMO', ['memo_id', 'task_id', 'memo_type_id', 'proj_id', 'task_memo'], p.activities.filter(a => a.notes && taskIds[a.id]).map((a, i) => ({ memo_id: i + 1, task_id: taskIds[a.id], memo_type_id: 1, proj_id: pid, task_memo: memoHtml(a.notes) })));
+  return [header, currtype, memotype, calendar, projT, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, taskmemo, '%E', ''].join('\n');
 }
 
 function writeMspdi(p) {
@@ -1695,7 +1715,7 @@ function writeMspdi(p) {
   L.push('<Task>'); el('UID', 0); el('ID', 0); el('Name', p.name); el('Type', 1); el('OutlineNumber', 0); el('OutlineLevel', 0); el('Summary', 1); el('Start', fmtDtSec(p.start)); el('Finish', fmtDtSec(p.finish || p.start)); L.push('</Task>');
   const children = {}; p.wbs.forEach(w => { const k = w.parent_id || ''; (children[k] = children[k] || []).push(w); });
   const wset = new Set(p.wbs.map(w => w.id)); const actsByWbs = {}; p.activities.forEach(a => { const k = (a.wbs_id && wset.has(a.wbs_id)) ? a.wbs_id : ''; (actsByWbs[k] = actsByWbs[k] || []).push(a); });
-  const taskUid = {}; let counter = 0; const emit = [];
+  const taskUid = {}; let counter = 0; const emit = []; const kept = exportRelationships(p)[0];
   function walk(parent, level, prefix) { let n = 0; (children[parent] || []).slice().sort((a, b) => a.seq - b.seq || a.name.localeCompare(b.name)).forEach(w => { n++; counter++; emit.push({ wbs: w, uid: counter, level: level, outlineNo: prefix + n }); walk(w.id, level + 1, prefix + n + '.'); }); (actsByWbs[parent] || []).forEach(a => { n++; counter++; taskUid[a.id] = counter; emit.push({ act: a, uid: counter, level: level, outlineNo: prefix + n }); }); }
   walk('', 1, '');
   const fmtSlack = h => Math.round(h * 600);
@@ -1716,7 +1736,7 @@ function writeMspdi(p) {
     if (a.actual_finish) el('ActualFinish', fmtDtSec(a.actual_finish));
     if (a.notes) el('Notes', a.notes);
     if (a.baseline_start || a.baseline_finish) { L.push('<Baseline>'); el('Number', 0); el('Start', fmtDtSec(a.baseline_start)); el('Finish', fmtDtSec(a.baseline_finish)); L.push('</Baseline>'); }
-    for (const r of E.predsOf(p, a.id)) { if (taskUid[r.predecessor_id] == null) continue; L.push('<PredecessorLink>'); el('PredecessorUID', taskUid[r.predecessor_id]); el('Type', LINK_MSP[r.type]); el('CrossProject', 0); el('LinkLag', Math.round(r.lag_hours * 600)); el('LagFormat', 7); L.push('</PredecessorLink>'); }
+    for (const r of kept.filter(x => x.successor_id === a.id)) { if (taskUid[r.predecessor_id] == null) continue; L.push('<PredecessorLink>'); el('PredecessorUID', taskUid[r.predecessor_id]); el('Type', LINK_MSP[r.type]); el('CrossProject', 0); el('LinkLag', Math.round(r.lag_hours * 600)); el('LagFormat', 7); L.push('</PredecessorLink>'); }
     L.push('</Task>');
   }
   L.push('</Tasks>');
@@ -1734,7 +1754,7 @@ function writeAny(p, fmt) {
   if (fmt === 'xml' || fmt === 'mspdi' || fmt === 'msproject') return [writeMspdi(p), 'application/xml', p.id + '.xml'];
   throw new Error('format must be json, xer or xml');
 }
-Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData });
+Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 6: export bundle (store-only ZIP of .xer + .xml + .json) ---- */
@@ -2023,6 +2043,15 @@ const newCalendar = (id, name = 'Standard', hpd = 8) => ({ id, name, hours_per_d
 function localMorning() { const n = new Date(); return `${n.getFullYear()}-${P2(n.getMonth() + 1)}-${P2(n.getDate())}T08:00:00`; }   // datetime.now().replace(hour=8, ...)
 
 // ---------- read ----------
+const MEMO_ENT = [['&lt;', '<'], ['&gt;', '>'], ['&quot;', '"'], ['&#39;', "'"], ['&apos;', "'"], ['&nbsp;', ' ']];
+function memoText(s) {
+  s = String(s).split('\x7f\x7f').join('\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n').replace(/<[^>]*>/g, '');
+  for (const [k, v] of MEMO_ENT) s = s.split(k).join(v);
+  s = s.replace(/&#([0-9]{1,7});/g, (m, d) => { const n = parseInt(d, 10); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : ''; });
+  s = s.split('&amp;').join('&');
+  return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').map(l => l.replace(/\s+$/, '')).join('\n').trim();
+}
 function readXer(text, projectIndex = 0) {
   const t = parseTables(String(text));
   const tbl = n => t.get(n) || [];
@@ -2141,6 +2170,13 @@ function readXer(text, projectIndex = 0) {
     put(actMap.get(idByTask.get(ti)).codes, ctype, val);
     if (!own(codeLib, ctype)) put(codeLib, ctype, {});
     put(codeLib[ctype], val, colorHex(color));
+  }
+
+  // notebook topics (TASKMEMO): HTML, with line breaks as <br> or two DEL characters (port of xer._memo_text)
+  for (const r of tbl('TASKMEMO')) {
+    const ti = get(r, 'task_id'); if (!idByTask.has(ti)) continue;
+    const txt = memoText(getd(r, 'task_memo', '')); if (!txt) continue;
+    const a = actMap.get(idByTask.get(ti)); a.notes = a.notes ? a.notes + '\n\n' + txt : txt;
   }
 
   const defaultCal = get(pr, 'clndr_id') || (cals.size ? cals.keys().next().value : 'std');
@@ -3621,7 +3657,49 @@ function readAny(filename, bytes) {
   throw new Error('Unrecognised file. ' + ACCEPTS);
 }
 
-Object.assign(E, { readAny, IMPORT_ACCEPTS: ACCEPTS });
+// ---------- what the other tool will receive ----------
+// Write the file, read it back with our own readers (which mirror what P6 / MS Project / Asta accept),
+// re-schedule, and list what survived, what changed and what was dropped. Honest by construction:
+// anything the round trip loses is reported, not assumed.
+function fidelityReport(project, fmt) {
+  const p = JSON.parse(JSON.stringify(project)); E.schedule(p);
+  const content = E.writeAny(p, fmt)[0];
+  const q = fmt === 'xer' ? E.readXer(content) : E.readMspdi(content);
+  try { E.schedule(q); } catch (e) { /* reported below through the finish line */ }
+  const tool = fmt === 'xer' ? 'Primavera P6 (and Asta via XER import)' : 'MS Project (and Asta via XML import)';
+  const items = [];
+  const add = (ok, text, detail) => items.push({ ok, text, detail: detail || '' });
+  const byName = new Map(q.activities.map(a => [a.name, a])), byId = new Map(q.activities.map(a => [a.id, a]));
+  const twin = a => byId.get(a.id) || byName.get(a.name);
+  const missing = p.activities.filter(a => !twin(a));
+  add(!missing.length && q.activities.length === p.activities.length, `${q.activities.length} of ${p.activities.length} activities`, missing.slice(0, 5).map(a => a.id + ' ' + a.name).join('; '));
+  const [kept, dropped] = E.exportRelationships(p);
+  add(!dropped.length, `${q.relationships.length} of ${p.relationships.length} links`, dropped.length ? `${tool.split(' (')[0]} allows one link between two activities, so ${dropped.length} extra link${dropped.length > 1 ? 's' : ''} of a pair ${dropped.length > 1 ? 'were' : 'was'} left out (the driving one is kept): ` + dropped.slice(0, 6).map(r => `${r.predecessor_id}→${r.successor_id} ${r.type}`).join(', ') : '');
+  const lagLost = kept.filter(r => { const t = q.relationships.find(x => (twin(p.activities.find(a => a.id === r.predecessor_id)) || {}).id === x.predecessor_id && (twin(p.activities.find(a => a.id === r.successor_id)) || {}).id === x.successor_id); return t && (t.type !== r.type || Math.abs(t.lag_hours - r.lag_hours) > 0.01); });
+  if (lagLost.length) add(false, `${lagLost.length} links changed type or lag`, lagLost.slice(0, 6).map(r => `${r.predecessor_id}→${r.successor_id}`).join(', '));
+  const cons = a => a.constraint && a.constraint !== 'none' ? a.constraint + '@' + String(a.constraint_date || '').slice(0, 10) : '';
+  const conLost = p.activities.filter(a => cons(a) && twin(a) && cons(twin(a)) !== cons(a));
+  if (p.activities.some(a => cons(a))) add(!conLost.length, `${p.activities.filter(a => cons(a)).length - conLost.length} of ${p.activities.filter(a => cons(a)).length} constraints`, conLost.slice(0, 6).map(a => `${a.id} ${a.constraint.replaceAll('_', ' ')}`).join('; '));
+  const loe = p.activities.filter(a => a.type === 'level_of_effort'), loeLost = loe.filter(a => twin(a) && twin(a).type !== 'level_of_effort');
+  if (loe.length) add(!loeLost.length, `${loe.length - loeLost.length} of ${loe.length} hammocks (level of effort)`, loeLost.length ? 'These become ordinary tasks in the other tool: ' + loeLost.slice(0, 6).map(a => a.id).join(', ') : '');
+  const prog = p.activities.filter(a => a.status !== 'not_started'), progLost = prog.filter(a => twin(a) && (twin(a).status !== a.status || String(twin(a).actual_start || '').slice(0, 10) !== String(a.actual_start || '').slice(0, 10)));
+  if (prog.length) add(!progLost.length, `${prog.length - progLost.length} of ${prog.length} progressed activities`, progLost.slice(0, 6).map(a => a.id).join(', '));
+  const nCal = Object.keys(p.calendars).length, nCalQ = Object.keys(q.calendars).length;
+  const exc = c => Object.keys(c.exceptions || {}).length, excP = Object.values(p.calendars).reduce((t, c) => t + exc(c), 0), excQ = Object.values(q.calendars).reduce((t, c) => t + exc(c), 0);
+  add(nCalQ >= nCal && excQ >= excP, `${nCalQ} of ${nCal} calendars, ${excQ} of ${excP} holidays and exceptions`);
+  const bl = p.activities.filter(a => a.baseline_finish), blQ = q.activities.filter(a => a.baseline_finish);
+  if (bl.length) add(blQ.length >= bl.length, `${blQ.length} of ${bl.length} baseline dates`, blQ.length < bl.length ? (fmt === 'xer' ? 'XER carries the current schedule only; send the baseline as its own XER, or use MS Project XML.' : 'Some baseline dates were not carried.') : '');
+  const nRes = (p.resources || []).length; if (nRes) add((q.resources || []).length >= nRes, `${(q.resources || []).length} of ${nRes} resources, ${(q.assignments || []).length} of ${(p.assignments || []).length} assignments`);
+  const codeVals = x => x.activities.reduce((t, a) => t + Object.keys(a.codes || {}).length, 0);
+  if (codeVals(p)) add(codeVals(q) >= codeVals(p), `${codeVals(q)} of ${codeVals(p)} activity code values`, codeVals(q) < codeVals(p) ? (fmt === 'xml' ? 'MS Project XML has no activity codes; they are left out.' : '') : '');
+  const notes = p.activities.filter(a => a.notes).length; if (notes) add(q.activities.filter(a => a.notes).length >= notes, `${q.activities.filter(a => a.notes).length} of ${notes} activity notes`);
+  if (p.must_finish_by) add(!!q.must_finish_by, q.must_finish_by ? 'Deadline (must finish by) carried' : 'Deadline (must finish by) not carried', q.must_finish_by ? '' : 'This format has no field for it. Add it as a constraint on the completion milestone if the other tool must see it.');
+  const days = (a, b) => a && b ? Math.round((new Date(b) - new Date(a)) / 864e5) : null, fd = days(p.finish, q.finish);
+  add(fd === 0, fd === 0 ? `Finish ${String(p.finish).slice(0, 10)} matches after recalculation` : fd == null ? 'Finish could not be recalculated from the file' : `Finish recalculates ${fd > 0 ? fd + ' days later' : -fd + ' days earlier'} (${String(q.finish).slice(0, 10)})`, fd ? 'Usually calendar or constraint conversion; check the items above.' : '');
+  return { format: fmt, tool, items, ok: items.every(i => i.ok) };
+}
+
+Object.assign(E, { readAny, IMPORT_ACCEPTS: ACCEPTS, fidelityReport });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -5756,9 +5834,25 @@ function shareSheet() {
   const { m } = modal('Share and export', `<p class="hint" style="margin-top:-4px">Send the programme to the tools your client and contractors use.</p><div class="exports">${tiles.map(([f, t, s, ic], i) => `<button type="button" class="tile ${i === 0 ? 'on' : ''}" data-x="${f}"><svg viewBox="0 0 28 28" aria-hidden="true">${ic}</svg><b>${t}</b><span>${s}</span></button>`).join('')}</div>
     <h3>Status note</h3><p class="hint" style="margin:0 0 8px">A short update to paste into an email or message.</p><textarea id="shareText" rows="7" style="width:100%" readonly>${esc(summaryText())}</textarea>
     <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="shareCopy">Copy status note</button>${LOCAL ? '' : '<button type="button" class="btn" id="sharePrint">Print the programme</button>'}</div>`, null, '', { wide: true });
-  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => b.dataset.x === 'csv' ? exportCsv() : exportAs(b.dataset.x));
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; if (x === 'csv') return exportCsv(); if (['xer', 'xml', 'bundle'].includes(x) && window.PlannerEngine && window.PlannerEngine.fidelityReport) return exportCheck(x); exportAs(x); });
   m.querySelector('#shareCopy').onclick = async () => { const ta = m.querySelector('#shareText'); try { await navigator.clipboard.writeText(ta.value); toast('Status note copied'); } catch { ta.focus(); ta.select(); toast('Selected. Press Ctrl+C or ⌘C to copy.'); } };
   const pr = m.querySelector('#sharePrint'); if (pr) pr.onclick = () => { modalClose(); go('plan'); setTimeout(() => window.print(), 300); };
+}
+// before a P6 / MS Project / Asta file leaves: show what the other tool will actually receive
+function exportCheck(fmt) {
+  const E = window.PlannerEngine; let reps;
+  try { reps = (fmt === 'bundle' ? ['xer', 'xml'] : [fmt]).map(f => E.fidelityReport(S.project, f)); }
+  catch (e) { return exportAs(fmt); }                  // never block an export on the check itself
+  const ok = reps.every(r => r.ok);
+  const sec = r => `<h3>${esc(r.tool)}</h3><ul class="fid">${r.items.map(i => `<li class="${i.ok ? 'ok' : 'warn'}"><span class="fi" aria-hidden="true">${i.ok ? '✓' : '!'}</span><div><b>${esc(i.text)}</b>${i.detail ? `<div class="hint">${esc(i.detail)}</div>` : ''}</div></li>`).join('')}</ul>`;
+  modal('What the other tool will receive', `<p class="hint" style="margin-top:-4px">${ok ? 'Everything survives the round trip.' : 'Checked by writing the file and reading it back. Items marked ! will not arrive as they are here.'}</p>${reps.map(sec).join('')}`, () => exportAs(fmt), fmt === 'bundle' ? 'Download all three' : 'Download', { wide: true });
+}
+function importSummary(p, r) {
+  const n = (x, w) => `<li><b>${x}</b> ${w}</li>`, exc = Object.values(p.calendars).reduce((t, c) => t + Object.keys(c.exceptions || {}).length, 0);
+  const prog = p.activities.filter(a => a.status !== 'not_started').length, cons = p.activities.filter(a => a.constraint && a.constraint !== 'none').length;
+  const failing = r ? r.checks.filter(c => c.applicable && !c.passed).map(c => c.title) : [];
+  modal('Imported', `<p class="hint" style="margin-top:-4px">${esc(p.name)}. Recalculated here from the file's logic and calendars.</p><ul class="fid counts">${[n(p.activities.length, 'activities'), n(p.relationships.length, 'links'), n(p.wbs.length, 'WBS summaries'), n(Object.keys(p.calendars).length, `calendars, ${exc} holidays and exceptions`), n((p.resources || []).length, `resources, ${(p.assignments || []).length} assignments`), n(Object.keys(p.code_types || {}).length, 'activity code types'), n(p.activities.filter(a => a.baseline_finish).length, 'activities with baseline dates'), n(prog, 'activities with progress'), n(cons, 'constraints')].join('')}</ul>
+    <p>Data date <b>${fmtD(p.data_date || p.start)}</b> · finish <b>${fmtD(p.finish)}</b>${p.must_finish_by ? ` · deadline <b>${fmtD(p.must_finish_by)}</b>` : ''} · health <b>${r ? r.score : '–'}</b></p>${failing.length ? `<p class="hint">Failing checks: ${esc(failing.join(', '))}. Open Monitor for details, or Auto-repair from More.</p>` : ''}`, null, '', { wide: false });
 }
 function projectsPop(trigger) {
   const pop = $('#popProjects');
@@ -5790,7 +5884,7 @@ function wireToolbar() {
   $('#btnCmd').onclick = openPalette; $('#btnShare').onclick = shareSheet; $('#btnTheme').onclick = toggleTheme;
   const handleImport = async f => {
     toast('Importing ' + f.name);
-    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities, ${S.project.relationships.length} links`); }
+    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities, ${S.project.relationships.length} links`, { ms: 7000, action: { label: 'Details', fn: () => importSummary(S.project, S.report) } }); }
     catch (err) { toast((err && err.detail) || err.message, { ms: 9000 }); }
   };
   $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (f) await handleImport(f); e.target.value = ''; };

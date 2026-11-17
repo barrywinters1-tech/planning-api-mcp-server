@@ -2039,9 +2039,25 @@ function shareSheet() {
   const { m } = modal('Share and export', `<p class="hint" style="margin-top:-4px">Send the programme to the tools your client and contractors use.</p><div class="exports">${tiles.map(([f, t, s, ic], i) => `<button type="button" class="tile ${i === 0 ? 'on' : ''}" data-x="${f}"><svg viewBox="0 0 28 28" aria-hidden="true">${ic}</svg><b>${t}</b><span>${s}</span></button>`).join('')}</div>
     <h3>Status note</h3><p class="hint" style="margin:0 0 8px">A short update to paste into an email or message.</p><textarea id="shareText" rows="7" style="width:100%" readonly>${esc(summaryText())}</textarea>
     <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="shareCopy">Copy status note</button>${LOCAL ? '' : '<button type="button" class="btn" id="sharePrint">Print the programme</button>'}</div>`, null, '', { wide: true });
-  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => b.dataset.x === 'csv' ? exportCsv() : exportAs(b.dataset.x));
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; if (x === 'csv') return exportCsv(); if (['xer', 'xml', 'bundle'].includes(x) && window.PlannerEngine && window.PlannerEngine.fidelityReport) return exportCheck(x); exportAs(x); });
   m.querySelector('#shareCopy').onclick = async () => { const ta = m.querySelector('#shareText'); try { await navigator.clipboard.writeText(ta.value); toast('Status note copied'); } catch { ta.focus(); ta.select(); toast('Selected. Press Ctrl+C or ⌘C to copy.'); } };
   const pr = m.querySelector('#sharePrint'); if (pr) pr.onclick = () => { modalClose(); go('plan'); setTimeout(() => window.print(), 300); };
+}
+// before a P6 / MS Project / Asta file leaves: show what the other tool will actually receive
+function exportCheck(fmt) {
+  const E = window.PlannerEngine; let reps;
+  try { reps = (fmt === 'bundle' ? ['xer', 'xml'] : [fmt]).map(f => E.fidelityReport(S.project, f)); }
+  catch (e) { return exportAs(fmt); }                  // never block an export on the check itself
+  const ok = reps.every(r => r.ok);
+  const sec = r => `<h3>${esc(r.tool)}</h3><ul class="fid">${r.items.map(i => `<li class="${i.ok ? 'ok' : 'warn'}"><span class="fi" aria-hidden="true">${i.ok ? '✓' : '!'}</span><div><b>${esc(i.text)}</b>${i.detail ? `<div class="hint">${esc(i.detail)}</div>` : ''}</div></li>`).join('')}</ul>`;
+  modal('What the other tool will receive', `<p class="hint" style="margin-top:-4px">${ok ? 'Everything survives the round trip.' : 'Checked by writing the file and reading it back. Items marked ! will not arrive as they are here.'}</p>${reps.map(sec).join('')}`, () => exportAs(fmt), fmt === 'bundle' ? 'Download all three' : 'Download', { wide: true });
+}
+function importSummary(p, r) {
+  const n = (x, w) => `<li><b>${x}</b> ${w}</li>`, exc = Object.values(p.calendars).reduce((t, c) => t + Object.keys(c.exceptions || {}).length, 0);
+  const prog = p.activities.filter(a => a.status !== 'not_started').length, cons = p.activities.filter(a => a.constraint && a.constraint !== 'none').length;
+  const failing = r ? r.checks.filter(c => c.applicable && !c.passed).map(c => c.title) : [];
+  modal('Imported', `<p class="hint" style="margin-top:-4px">${esc(p.name)}. Recalculated here from the file's logic and calendars.</p><ul class="fid counts">${[n(p.activities.length, 'activities'), n(p.relationships.length, 'links'), n(p.wbs.length, 'WBS summaries'), n(Object.keys(p.calendars).length, `calendars, ${exc} holidays and exceptions`), n((p.resources || []).length, `resources, ${(p.assignments || []).length} assignments`), n(Object.keys(p.code_types || {}).length, 'activity code types'), n(p.activities.filter(a => a.baseline_finish).length, 'activities with baseline dates'), n(prog, 'activities with progress'), n(cons, 'constraints')].join('')}</ul>
+    <p>Data date <b>${fmtD(p.data_date || p.start)}</b> · finish <b>${fmtD(p.finish)}</b>${p.must_finish_by ? ` · deadline <b>${fmtD(p.must_finish_by)}</b>` : ''} · health <b>${r ? r.score : '–'}</b></p>${failing.length ? `<p class="hint">Failing checks: ${esc(failing.join(', '))}. Open Monitor for details, or Auto-repair from More.</p>` : ''}`, null, '', { wide: false });
 }
 function projectsPop(trigger) {
   const pop = $('#popProjects');
@@ -2073,7 +2089,7 @@ function wireToolbar() {
   $('#btnCmd').onclick = openPalette; $('#btnShare').onclick = shareSheet; $('#btnTheme').onclick = toggleTheme;
   const handleImport = async f => {
     toast('Importing ' + f.name);
-    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities, ${S.project.relationships.length} links`); }
+    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities, ${S.project.relationships.length} links`, { ms: 7000, action: { label: 'Details', fn: () => importSummary(S.project, S.report) } }); }
     catch (err) { toast((err && err.detail) || err.message, { ms: 9000 }); }
   };
   $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (f) await handleImport(f); e.target.value = ''; };

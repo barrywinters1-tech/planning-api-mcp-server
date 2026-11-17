@@ -284,6 +284,17 @@ class Project(BaseModel):
     def successors_of(self, act_id: str) -> list[Relationship]:
         return [r for r in self.relationships if r.predecessor_id == act_id]
 
+    def export_relationships(self) -> tuple[list[Relationship], list[Relationship]]:
+        """(kept, dropped): P6 and MS Project allow one link between two activities; this model allows
+        several (an SS+FF ladder). Keep the driving link of each pair (the first if none drives)."""
+        best: dict[tuple[str, str], Relationship] = {}
+        for r in self.relationships:
+            k = (r.predecessor_id, r.successor_id)
+            if k not in best or (r.driving and not best[k].driving):
+                best[k] = r
+        keep = {id(r) for r in best.values()}
+        return [r for r in self.relationships if id(r) in keep], [r for r in self.relationships if id(r) not in keep]
+
     def ensure_default_calendar(self) -> Calendar:
         if self.default_calendar_id not in self.calendars:
             self.calendars[self.default_calendar_id] = Calendar(id=self.default_calendar_id)

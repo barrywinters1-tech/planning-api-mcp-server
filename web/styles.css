@@ -600,3 +600,12 @@ body.splitting, body.splitting * { cursor: col-resize !important; user-select: n
   .facts .pname, .facts .f-opt, .facts .chartkey { display: none; }
 }
 @media (max-width: 640px) { .planbar, .facts { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); } }
+
+/* ---------- export / import reports ---------- */
+ul.fid { list-style: none; padding: 0; margin: 6px 0 14px; display: flex; flex-direction: column; gap: 6px; }
+ul.fid li { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; }
+ul.fid .fi { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; background: var(--ok); margin-top: 1px; }
+ul.fid li.warn .fi { background: var(--warn); }
+ul.fid li .hint { font-size: 12px; margin-top: 2px; }
+ul.fid.counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; }
+ul.fid.counts li { display: block; }

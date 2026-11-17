@@ -61,5 +61,47 @@ function readAny(filename, bytes) {
   throw new Error('Unrecognised file. ' + ACCEPTS);
 }
 
-Object.assign(E, { readAny, IMPORT_ACCEPTS: ACCEPTS });
+// ---------- what the other tool will receive ----------
+// Write the file, read it back with our own readers (which mirror what P6 / MS Project / Asta accept),
+// re-schedule, and list what survived, what changed and what was dropped. Honest by construction:
+// anything the round trip loses is reported, not assumed.
+function fidelityReport(project, fmt) {
+  const p = JSON.parse(JSON.stringify(project)); E.schedule(p);
+  const content = E.writeAny(p, fmt)[0];
+  const q = fmt === 'xer' ? E.readXer(content) : E.readMspdi(content);
+  try { E.schedule(q); } catch (e) { /* reported below through the finish line */ }
+  const tool = fmt === 'xer' ? 'Primavera P6 (and Asta via XER import)' : 'MS Project (and Asta via XML import)';
+  const items = [];
+  const add = (ok, text, detail) => items.push({ ok, text, detail: detail || '' });
+  const byName = new Map(q.activities.map(a => [a.name, a])), byId = new Map(q.activities.map(a => [a.id, a]));
+  const twin = a => byId.get(a.id) || byName.get(a.name);
+  const missing = p.activities.filter(a => !twin(a));
+  add(!missing.length && q.activities.length === p.activities.length, `${q.activities.length} of ${p.activities.length} activities`, missing.slice(0, 5).map(a => a.id + ' ' + a.name).join('; '));
+  const [kept, dropped] = E.exportRelationships(p);
+  add(!dropped.length, `${q.relationships.length} of ${p.relationships.length} links`, dropped.length ? `${tool.split(' (')[0]} allows one link between two activities, so ${dropped.length} extra link${dropped.length > 1 ? 's' : ''} of a pair ${dropped.length > 1 ? 'were' : 'was'} left out (the driving one is kept): ` + dropped.slice(0, 6).map(r => `${r.predecessor_id}→${r.successor_id} ${r.type}`).join(', ') : '');
+  const lagLost = kept.filter(r => { const t = q.relationships.find(x => (twin(p.activities.find(a => a.id === r.predecessor_id)) || {}).id === x.predecessor_id && (twin(p.activities.find(a => a.id === r.successor_id)) || {}).id === x.successor_id); return t && (t.type !== r.type || Math.abs(t.lag_hours - r.lag_hours) > 0.01); });
+  if (lagLost.length) add(false, `${lagLost.length} links changed type or lag`, lagLost.slice(0, 6).map(r => `${r.predecessor_id}→${r.successor_id}`).join(', '));
+  const cons = a => a.constraint && a.constraint !== 'none' ? a.constraint + '@' + String(a.constraint_date || '').slice(0, 10) : '';
+  const conLost = p.activities.filter(a => cons(a) && twin(a) && cons(twin(a)) !== cons(a));
+  if (p.activities.some(a => cons(a))) add(!conLost.length, `${p.activities.filter(a => cons(a)).length - conLost.length} of ${p.activities.filter(a => cons(a)).length} constraints`, conLost.slice(0, 6).map(a => `${a.id} ${a.constraint.replaceAll('_', ' ')}`).join('; '));
+  const loe = p.activities.filter(a => a.type === 'level_of_effort'), loeLost = loe.filter(a => twin(a) && twin(a).type !== 'level_of_effort');
+  if (loe.length) add(!loeLost.length, `${loe.length - loeLost.length} of ${loe.length} hammocks (level of effort)`, loeLost.length ? 'These become ordinary tasks in the other tool: ' + loeLost.slice(0, 6).map(a => a.id).join(', ') : '');
+  const prog = p.activities.filter(a => a.status !== 'not_started'), progLost = prog.filter(a => twin(a) && (twin(a).status !== a.status || String(twin(a).actual_start || '').slice(0, 10) !== String(a.actual_start || '').slice(0, 10)));
+  if (prog.length) add(!progLost.length, `${prog.length - progLost.length} of ${prog.length} progressed activities`, progLost.slice(0, 6).map(a => a.id).join(', '));
+  const nCal = Object.keys(p.calendars).length, nCalQ = Object.keys(q.calendars).length;
+  const exc = c => Object.keys(c.exceptions || {}).length, excP = Object.values(p.calendars).reduce((t, c) => t + exc(c), 0), excQ = Object.values(q.calendars).reduce((t, c) => t + exc(c), 0);
+  add(nCalQ >= nCal && excQ >= excP, `${nCalQ} of ${nCal} calendars, ${excQ} of ${excP} holidays and exceptions`);
+  const bl = p.activities.filter(a => a.baseline_finish), blQ = q.activities.filter(a => a.baseline_finish);
+  if (bl.length) add(blQ.length >= bl.length, `${blQ.length} of ${bl.length} baseline dates`, blQ.length < bl.length ? (fmt === 'xer' ? 'XER carries the current schedule only; send the baseline as its own XER, or use MS Project XML.' : 'Some baseline dates were not carried.') : '');
+  const nRes = (p.resources || []).length; if (nRes) add((q.resources || []).length >= nRes, `${(q.resources || []).length} of ${nRes} resources, ${(q.assignments || []).length} of ${(p.assignments || []).length} assignments`);
+  const codeVals = x => x.activities.reduce((t, a) => t + Object.keys(a.codes || {}).length, 0);
+  if (codeVals(p)) add(codeVals(q) >= codeVals(p), `${codeVals(q)} of ${codeVals(p)} activity code values`, codeVals(q) < codeVals(p) ? (fmt === 'xml' ? 'MS Project XML has no activity codes; they are left out.' : '') : '');
+  const notes = p.activities.filter(a => a.notes).length; if (notes) add(q.activities.filter(a => a.notes).length >= notes, `${q.activities.filter(a => a.notes).length} of ${notes} activity notes`);
+  if (p.must_finish_by) add(!!q.must_finish_by, q.must_finish_by ? 'Deadline (must finish by) carried' : 'Deadline (must finish by) not carried', q.must_finish_by ? '' : 'This format has no field for it. Add it as a constraint on the completion milestone if the other tool must see it.');
+  const days = (a, b) => a && b ? Math.round((new Date(b) - new Date(a)) / 864e5) : null, fd = days(p.finish, q.finish);
+  add(fd === 0, fd === 0 ? `Finish ${String(p.finish).slice(0, 10)} matches after recalculation` : fd == null ? 'Finish could not be recalculated from the file' : `Finish recalculates ${fd > 0 ? fd + ' days later' : -fd + ' days earlier'} (${String(q.finish).slice(0, 10)})`, fd ? 'Usually calendar or constraint conversion; check the items above.' : '');
+  return { format: fmt, tool, items, ok: items.every(i => i.ok) };
+}
+
+Object.assign(E, { readAny, IMPORT_ACCEPTS: ACCEPTS, fidelityReport });
 })(typeof window !== 'undefined' ? window : globalThis);

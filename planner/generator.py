@@ -234,7 +234,9 @@ def parse_brief(text: str) -> Brief:
 
     m = re.match(r"\s*([^.\n]{8,80})", text)
     if m:
-        b.name = m[1].strip().rstrip(",")[:60]
+        n = m[1].strip()
+        first = n.split(",")[0].strip()          # "Two-storey house in York, brick, start ..." -> the first clause
+        b.name = (first if len(first) >= 8 else n).rstrip(",")[:60]
         b.name = b.name[0].upper() + b.name[1:]
     return b
 

@@ -153,6 +153,7 @@ BRIEFS = [
     "Three-storey care home, masonry, render, 2100 m2, gas main diversion, start 7 September 2026, handover by June 2027",
     "Six-storey office, 4,800 m2, start 1 February 2027, finish by end of 2028",
     "Two-storey house in York, start 6 April 2026, finish by end of November 2026",
+    "Hi. Three-storey office in Leeds, steel frame, start 1 June 2026",
 ]
 
 COMMANDS = ["add 2 weeks to A1040", "link A1010 -> A1030 SS+2d", "finish by 1 Nov 2026", "set A1060 to 15d",

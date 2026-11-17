@@ -53,6 +53,7 @@ def cases() -> list[tuple[str, bytes]]:
     for i in (0, 2, 6):
         p = Project.model_validate(_generated(BRIEFS[i]))
         p.activities[3].name = "Café façade – phase 2 & <east>"
+        p.activities[4].notes = "Hold point: engineer to inspect.\nCafé £5 & <b>bold</b>\tend"
         schedule(p)
         cs.append((f"gen{i}.xer", _xer_bytes(p)))
         cs.append((f"gen{i}.xml", write_mspdi(p).encode("utf-8")))

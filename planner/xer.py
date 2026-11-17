@@ -206,6 +206,30 @@ def build_clndr_data(cal: Calendar) -> str:
 # --------------------------------------------------------------------------------------
 # read
 # --------------------------------------------------------------------------------------
+_MEMO_ENTITIES = {"&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&apos;": "'", "&nbsp;": " "}
+
+
+def _memo_text(s: str) -> str:
+    """P6 notebook HTML -> plain text. Small, explicit rules so the browser reader matches exactly."""
+    s = s.replace("\x7f\x7f", "\n")
+    s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+    s = re.sub(r"(?i)</(p|div|li)>", "\n", s)
+    s = re.sub(r"<[^>]*>", "", s)
+    for k, v in _MEMO_ENTITIES.items():
+        s = s.replace(k, v)
+    s = re.sub(r"&#([0-9]{1,7});", lambda m: chr(int(m[1])) if 0 < int(m[1]) < 0x110000 else "", s)
+    s = s.replace("&amp;", "&")
+    lines = [ln.rstrip() for ln in s.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(lines).strip()
+
+
+def _memo_html(text: str) -> str:
+    """Plain text -> P6 notebook HTML on one XER line (no tabs or raw newlines)."""
+    esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\t", " ")
+    esc = esc.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+    return "<HTML><BODY>" + esc + "</BODY></HTML>"
+
+
 def read_xer(text: str, project_index: int = 0) -> Project:
     t = parse_tables(text)
     projects = [r for r in t.get("PROJECT", []) if r.get("export_flag", "Y") != "N"] or t.get("PROJECT", [])
@@ -301,6 +325,14 @@ def read_xer(text: str, project_index: int = 0) -> Project:
                 continue
             act_map[id_by_task[r["task_id"]]].codes[ctype] = val
             code_lib.setdefault(ctype, {})[val] = _color_hex(color)
+
+    # notebook topics (TASKMEMO): HTML, with line breaks as <br> or two DEL characters
+    for r in t.get("TASKMEMO", []):
+        if r.get("task_id") in id_by_task:
+            txt = _memo_text(r.get("task_memo", ""))
+            if txt:
+                a = act_map[id_by_task[r["task_id"]]]
+                a.notes = a.notes + "\n\n" + txt if a.notes else txt
 
     default_cal = pr.get("clndr_id") or (next(iter(cals)) if cals else "std")
     proj = Project(
@@ -476,7 +508,7 @@ def write_xer(project: Project, currency: str = "GBP") -> str:
                                    "lag_hr_cnt", "comments", "float_path", "aref", "arls"],
                       [{"task_pred_id": i + 1, "task_id": task_ids[r.successor_id], "pred_task_id": task_ids[r.predecessor_id],
                         "proj_id": pid, "pred_proj_id": pid, "pred_type": LINK_OUT[r.type], "lag_hr_cnt": r.lag_hours}
-                       for i, r in enumerate(project.relationships)
+                       for i, r in enumerate(project.export_relationships()[0])
                        if r.successor_id in task_ids and r.predecessor_id in task_ids])
 
     taskrsrc = _table("TASKRSRC", ["taskrsrc_id", "task_id", "proj_id", "cost_qty_link_flag", "role_id", "acct_id", "rsrc_id",
@@ -523,7 +555,12 @@ def write_xer(project: Project, currency: str = "GBP") -> str:
     taskactv = _table("TASKACTV", ["task_id", "actv_code_type_id", "actv_code_id", "proj_id"],
                       [{"task_id": task_ids[a.id], "actv_code_type_id": type_ids[ct], "actv_code_id": val_ids[(ct, val)], "proj_id": pid}
                        for a in project.activities for ct, val in a.codes.items() if (ct, val) in val_ids])
-    return "\n".join([header, currtype, calendar, proj_t, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, "%E", ""])
+    memotype = _table("MEMOTYPE", ["memo_type_id", "seq_num", "eps_flag", "proj_flag", "wbs_flag", "task_flag", "memo_type"],
+                      [{"memo_type_id": 1, "seq_num": 0, "eps_flag": "N", "proj_flag": "N", "wbs_flag": "Y", "task_flag": "Y", "memo_type": "Notes"}])
+    taskmemo = _table("TASKMEMO", ["memo_id", "task_id", "memo_type_id", "proj_id", "task_memo"],
+                      [{"memo_id": i + 1, "task_id": task_ids[a.id], "memo_type_id": 1, "proj_id": pid, "task_memo": _memo_html(a.notes)}
+                       for i, a in enumerate([a for a in project.activities if a.notes and a.id in task_ids])])
+    return "\n".join([header, currtype, memotype, calendar, proj_t, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, taskmemo, "%E", ""])
 
 
 def write_xer_file(project: Project, path: str) -> None:

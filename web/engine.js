@@ -454,7 +454,7 @@ function parseBrief(text) {
     else if (/planning|condition|discharg/.test(before)) b.planning_condition_date = dt;
     else if (!b.start_date) b.start_date = dt; else if (!b.deadline) b.deadline = dt;
   }
-  m = text.match(/\s*([^.\n]{8,80})/); if (m) { let n = m[1].trim().replace(/,+$/, '').slice(0, 60); b.name = n.charAt(0).toUpperCase() + n.slice(1); }
+  m = text.match(/^\s*([^.\n]{8,80})/); if (m) { let n = m[1].trim(); const first = n.split(',')[0].trim(); n = (first.length >= 8 ? first : n).replace(/,+$/, '').slice(0, 60); b.name = n.charAt(0).toUpperCase() + n.slice(1); }
   return b;
 }
 function defaults(b) {
@@ -887,6 +887,14 @@ function buildClndrData(cal) {
   return '(0||CalendarType()( 0||DaysOfWeek()( ' + days.join(' ') + ' ) 0||VIEW(ShowTotal|Y)() 0||Exceptions()( ' + exc.join(' ') + ' ) ))';
 }
 
+// P6 and MS Project allow one link between two activities; this model allows several (an SS+FF ladder).
+// Keep the driving link of each pair (the first if none drives). Port of Project.export_relationships.
+function exportRelationships(p) {
+  const best = new Map();
+  for (const r of p.relationships) { const k = r.predecessor_id + '\u0000' + r.successor_id; const b = best.get(k); if (!b || (r.driving && !b.driving)) best.set(k, r); }
+  const keep = new Set(best.values());
+  return [p.relationships.filter(r => keep.has(r)), p.relationships.filter(r => !keep.has(r))];
+}
 function writeXer(p) {
   E.ensureCalendars(p); const now = E.nowISO(); const nowS = fmtDt(now); const pid = 1;
   const calIds = {}; Object.keys(p.calendars).forEach((c, i) => calIds[c] = i + 1);
@@ -907,7 +915,7 @@ function writeXer(p) {
   const taskFields = ['task_id', 'proj_id', 'wbs_id', 'clndr_id', 'phys_complete_pct', 'complete_pct_type', 'task_type', 'duration_type', 'status_code', 'task_code', 'task_name', 'total_float_hr_cnt', 'free_float_hr_cnt', 'remain_drtn_hr_cnt', 'target_drtn_hr_cnt', 'cstr_date', 'act_start_date', 'act_end_date', 'late_start_date', 'late_end_date', 'early_start_date', 'early_end_date', 'restart_date', 'reend_date', 'target_start_date', 'target_end_date', 'rem_late_start_date', 'rem_late_end_date', 'cstr_type', 'priority_type', 'driving_path_flag', 'create_date', 'update_date', 'create_user', 'update_user'];
   const taskRows = p.activities.map(a => { const rem = a.remaining_hours != null ? a.remaining_hours : (a.status === 'complete' ? 0 : a.duration_hours); return { task_id: taskIds[a.id], proj_id: pid, wbs_id: a.wbs_id ? (wbsIds[a.wbs_id] || 1) : 1, clndr_id: calIds[a.calendar_id || p.default_calendar_id] || calIds[p.default_calendar_id], phys_complete_pct: a.percent_complete, complete_pct_type: 'CP_Drtn', task_type: TASK_TYPE_OUT[a.type], duration_type: 'DT_FixedDrtn', status_code: STATUS_OUT[a.status], task_code: a.id.slice(0, 20), task_name: a.name.slice(0, 120), total_float_hr_cnt: a.total_float_hours == null ? '' : a.total_float_hours, free_float_hr_cnt: a.free_float_hours == null ? '' : a.free_float_hours, remain_drtn_hr_cnt: rem, target_drtn_hr_cnt: a.duration_hours, cstr_date: a.constraint !== 'none' ? fmtDt(a.constraint_date) : '', act_start_date: fmtDt(a.actual_start), act_end_date: fmtDt(a.actual_finish), late_start_date: fmtDt(a.late_start), late_end_date: fmtDt(a.late_finish), early_start_date: fmtDt(a.early_start), early_end_date: fmtDt(a.early_finish), restart_date: fmtDt(a.early_start), reend_date: fmtDt(a.early_finish), target_start_date: fmtDt(a.baseline_start || aStart(a)), target_end_date: fmtDt(a.baseline_finish || aFinish(a)), rem_late_start_date: fmtDt(a.late_start), rem_late_end_date: fmtDt(a.late_finish), cstr_type: CSTR_OUT[a.constraint] || '', priority_type: 'PT_Normal', driving_path_flag: a.critical ? 'Y' : 'N', create_date: nowS, update_date: nowS, create_user: 'admin', update_user: 'admin' }; });
   const task = table('TASK', taskFields, taskRows);
-  const taskpred = table('TASKPRED', ['task_pred_id', 'task_id', 'pred_task_id', 'proj_id', 'pred_proj_id', 'pred_type', 'lag_hr_cnt'], p.relationships.filter(r => taskIds[r.successor_id] && taskIds[r.predecessor_id]).map((r, i) => ({ task_pred_id: i + 1, task_id: taskIds[r.successor_id], pred_task_id: taskIds[r.predecessor_id], proj_id: pid, pred_proj_id: pid, pred_type: LINK_OUT[r.type], lag_hr_cnt: r.lag_hours })));
+  const taskpred = table('TASKPRED', ['task_pred_id', 'task_id', 'pred_task_id', 'proj_id', 'pred_proj_id', 'pred_type', 'lag_hr_cnt'], exportRelationships(p)[0].filter(r => taskIds[r.successor_id] && taskIds[r.predecessor_id]).map((r, i) => ({ task_pred_id: i + 1, task_id: taskIds[r.successor_id], pred_task_id: taskIds[r.predecessor_id], proj_id: pid, pred_proj_id: pid, pred_type: LINK_OUT[r.type], lag_hr_cnt: r.lag_hours })));
   const taskrsrc = table('TASKRSRC', ['taskrsrc_id', 'task_id', 'proj_id', 'cost_qty_link_flag', 'rsrc_id', 'skill_level', 'remain_qty', 'target_qty', 'target_cost', 'remain_cost', 'rollup_dates_flag', 'rate_type', 'cost_per_qty_source_type', 'create_user', 'create_date', 'has_rsrchours'], p.assignments.filter(x => taskIds[x.activity_id] && rsrcIds[x.resource_id]).map((x, i) => ({ taskrsrc_id: i + 1, task_id: taskIds[x.activity_id], proj_id: pid, cost_qty_link_flag: 'Y', rsrc_id: rsrcIds[x.resource_id], skill_level: 3, remain_qty: x.units, target_qty: x.units, target_cost: x.cost, remain_cost: x.cost, rollup_dates_flag: 'Y', rate_type: 'COST_PER_QTY', cost_per_qty_source_type: 'ST_Rsrc', create_user: 'admin', create_date: nowS, has_rsrchours: 'N' })));
   const lib = {}; for (const kv of Object.entries(p.code_types || {})) lib[kv[0]] = Object.assign({}, kv[1]);
   for (const a of p.activities) for (const cv of Object.entries(a.codes || {})) { lib[cv[0]] = lib[cv[0]] || {}; if (!(cv[1] in lib[cv[0]])) lib[cv[0]][cv[1]] = '#7a8aa6'; }
@@ -918,7 +926,10 @@ function writeXer(p) {
   const actvcode = table('ACTVCODE', ['actv_code_id', 'parent_actv_code_id', 'actv_code_type_id', 'actv_code_name', 'short_name', 'seq_num', 'color', 'total_assign_cnt'], actvRows);
   const taskactvRows = []; for (const a of p.activities) for (const cv of Object.entries(a.codes || {})) if (valIds[KEY(cv[0], cv[1])]) taskactvRows.push({ task_id: taskIds[a.id], actv_code_type_id: typeIds[cv[0]], actv_code_id: valIds[KEY(cv[0], cv[1])], proj_id: pid });
   const taskactv = table('TASKACTV', ['task_id', 'actv_code_type_id', 'actv_code_id', 'proj_id'], taskactvRows);
-  return [header, currtype, calendar, projT, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, '%E', ''].join('\n');
+  const memoHtml = t => '<HTML><BODY>' + t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\t/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>') + '</BODY></HTML>';
+  const memotype = table('MEMOTYPE', ['memo_type_id', 'seq_num', 'eps_flag', 'proj_flag', 'wbs_flag', 'task_flag', 'memo_type'], [{ memo_type_id: 1, seq_num: 0, eps_flag: 'N', proj_flag: 'N', wbs_flag: 'Y', task_flag: 'Y', memo_type: 'Notes' }]);
+  const taskmemo = table('TASKMEMO', ['memo_id', 'task_id', 'memo_type_id', 'proj_id', 'task_memo'], p.activities.filter(a => a.notes && taskIds[a.id]).map((a, i) => ({ memo_id: i + 1, task_id: taskIds[a.id], memo_type_id: 1, proj_id: pid, task_memo: memoHtml(a.notes) })));
+  return [header, currtype, memotype, calendar, projT, projwbs, rsrc, actvtype, actvcode, task, taskpred, taskrsrc, taskactv, taskmemo, '%E', ''].join('\n');
 }
 
 function writeMspdi(p) {
@@ -939,7 +950,7 @@ function writeMspdi(p) {
   L.push('<Task>'); el('UID', 0); el('ID', 0); el('Name', p.name); el('Type', 1); el('OutlineNumber', 0); el('OutlineLevel', 0); el('Summary', 1); el('Start', fmtDtSec(p.start)); el('Finish', fmtDtSec(p.finish || p.start)); L.push('</Task>');
   const children = {}; p.wbs.forEach(w => { const k = w.parent_id || ''; (children[k] = children[k] || []).push(w); });
   const wset = new Set(p.wbs.map(w => w.id)); const actsByWbs = {}; p.activities.forEach(a => { const k = (a.wbs_id && wset.has(a.wbs_id)) ? a.wbs_id : ''; (actsByWbs[k] = actsByWbs[k] || []).push(a); });
-  const taskUid = {}; let counter = 0; const emit = [];
+  const taskUid = {}; let counter = 0; const emit = []; const kept = exportRelationships(p)[0];
   function walk(parent, level, prefix) { let n = 0; (children[parent] || []).slice().sort((a, b) => a.seq - b.seq || a.name.localeCompare(b.name)).forEach(w => { n++; counter++; emit.push({ wbs: w, uid: counter, level: level, outlineNo: prefix + n }); walk(w.id, level + 1, prefix + n + '.'); }); (actsByWbs[parent] || []).forEach(a => { n++; counter++; taskUid[a.id] = counter; emit.push({ act: a, uid: counter, level: level, outlineNo: prefix + n }); }); }
   walk('', 1, '');
   const fmtSlack = h => Math.round(h * 600);
@@ -960,7 +971,7 @@ function writeMspdi(p) {
     if (a.actual_finish) el('ActualFinish', fmtDtSec(a.actual_finish));
     if (a.notes) el('Notes', a.notes);
     if (a.baseline_start || a.baseline_finish) { L.push('<Baseline>'); el('Number', 0); el('Start', fmtDtSec(a.baseline_start)); el('Finish', fmtDtSec(a.baseline_finish)); L.push('</Baseline>'); }
-    for (const r of E.predsOf(p, a.id)) { if (taskUid[r.predecessor_id] == null) continue; L.push('<PredecessorLink>'); el('PredecessorUID', taskUid[r.predecessor_id]); el('Type', LINK_MSP[r.type]); el('CrossProject', 0); el('LinkLag', Math.round(r.lag_hours * 600)); el('LagFormat', 7); L.push('</PredecessorLink>'); }
+    for (const r of kept.filter(x => x.successor_id === a.id)) { if (taskUid[r.predecessor_id] == null) continue; L.push('<PredecessorLink>'); el('PredecessorUID', taskUid[r.predecessor_id]); el('Type', LINK_MSP[r.type]); el('CrossProject', 0); el('LinkLag', Math.round(r.lag_hours * 600)); el('LagFormat', 7); L.push('</PredecessorLink>'); }
     L.push('</Task>');
   }
   L.push('</Tasks>');
@@ -978,7 +989,7 @@ function writeAny(p, fmt) {
   if (fmt === 'xml' || fmt === 'mspdi' || fmt === 'msproject') return [writeMspdi(p), 'application/xml', p.id + '.xml'];
   throw new Error('format must be json, xer or xml');
 }
-Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData });
+Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 6: export bundle (store-only ZIP of .xer + .xml + .json) ---- */

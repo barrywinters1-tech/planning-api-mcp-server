@@ -249,6 +249,15 @@ const newCalendar = (id, name = 'Standard', hpd = 8) => ({ id, name, hours_per_d
 function localMorning() { const n = new Date(); return `${n.getFullYear()}-${P2(n.getMonth() + 1)}-${P2(n.getDate())}T08:00:00`; }   // datetime.now().replace(hour=8, ...)
 
 // ---------- read ----------
+const MEMO_ENT = [['&lt;', '<'], ['&gt;', '>'], ['&quot;', '"'], ['&#39;', "'"], ['&apos;', "'"], ['&nbsp;', ' ']];
+function memoText(s) {
+  s = String(s).split('\x7f\x7f').join('\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n').replace(/<[^>]*>/g, '');
+  for (const [k, v] of MEMO_ENT) s = s.split(k).join(v);
+  s = s.replace(/&#([0-9]{1,7});/g, (m, d) => { const n = parseInt(d, 10); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : ''; });
+  s = s.split('&amp;').join('&');
+  return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').map(l => l.replace(/\s+$/, '')).join('\n').trim();
+}
 function readXer(text, projectIndex = 0) {
   const t = parseTables(String(text));
   const tbl = n => t.get(n) || [];
@@ -367,6 +376,13 @@ function readXer(text, projectIndex = 0) {
     put(actMap.get(idByTask.get(ti)).codes, ctype, val);
     if (!own(codeLib, ctype)) put(codeLib, ctype, {});
     put(codeLib[ctype], val, colorHex(color));
+  }
+
+  // notebook topics (TASKMEMO): HTML, with line breaks as <br> or two DEL characters (port of xer._memo_text)
+  for (const r of tbl('TASKMEMO')) {
+    const ti = get(r, 'task_id'); if (!idByTask.has(ti)) continue;
+    const txt = memoText(getd(r, 'task_memo', '')); if (!txt) continue;
+    const a = actMap.get(idByTask.get(ti)); a.notes = a.notes ? a.notes + '\n\n' + txt : txt;
   }
 
   const defaultCal = get(pr, 'clndr_id') || (cals.size ? cals.keys().next().value : 'std');
