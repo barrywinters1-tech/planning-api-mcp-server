@@ -17,7 +17,7 @@ const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 const S = {
   screen: 'projects', pid: null, project: null, report: null, history: { undo: 0, redo: 0 },
   sel: new Set(), active: null, activeCol: 'name', collapsed: new Set(), selLink: null,
-  view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '', show: 'all', level: 0, barText: 'name' },
+  view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '', show: 'all', level: 0, barText: 'name', periods: 'none' },
   trace: null,
   cols: ['id', 'name', 'dur', 'start', 'finish', 'tf', 'preds', 'pct'],
   panel: null, histRes: '', hist: null, costs: null, editing: null, drag: null, rowsCache: [],
@@ -433,6 +433,7 @@ function syncViewControls() {
   const maxD = Math.max(0, ...S.project.wbs.map(depth)) + 1;
   const vl = $('#vLevel'); if (vl) { vl.innerHTML = '<option value="0">All levels</option>' + Array.from({ length: Math.min(maxD, 6) }, (_, i) => `<option value="${i + 1}">Summaries to level ${i + 1}</option>`).join(''); vl.value = String(S.view.level || 0); }
   const vb = $('#vBarText'); if (vb) vb.value = S.view.barText || 'name';
+  const vp = $('#vPeriods'); if (vp) vp.value = S.view.periods || 'none';
   $('#vSort').value = S.view.sort; if (document.activeElement !== $('#vFilter')) $('#vFilter').value = S.view.filter;
 }
 function barLabel(a) {
@@ -757,6 +758,7 @@ function chart(rs, t0, t1, W, H, bandH) {
     let d = `M${x(dd)},0`; progressPts.forEach(([px_, py]) => { d += ` L${px_},${py}`; }); d += ` L${x(dd)},${H - bandH}`;
     s += `<path d="${d}" fill="none" stroke="var(--dd)" stroke-width="1.6" stroke-linejoin="round" opacity=".9"/>`;
   }
+  s += periodLines(p, rs, x, RH, H - bandH);
   return s;
 }
 function renderTimeLocation(gw, W, t0, t1) {
@@ -988,6 +990,137 @@ function printSheet() {
   const readOpts = mm => ({ size: mm.querySelector('#pSize').value, orientation: mm.querySelector('#pOri').value, wide: +mm.querySelector('#pWide').value, rows: +mm.querySelector('#pRows').value || null, colour: mm.querySelector('#pCol').value === '1', t0: mm.querySelector('#pT0').value ? mm.querySelector('#pT0').value + 'T00:00:00' : null, t1: mm.querySelector('#pT1').value ? mm.querySelector('#pT1').value + 'T23:59:00' : null, title: mm.querySelector('#pTitle').value, client: mm.querySelector('#pClient').value, prepared_by: mm.querySelector('#pBy').value, revision: mm.querySelector('#pRev').value, notes: mm.querySelector('#pNotes').value });
   const plan = () => { try { const L = P.layout(pdfDoc(readOpts(m))); m.querySelector('#pPlan').textContent = `${L.pages || L.page_count} page${(L.pages || L.page_count) === 1 ? '' : 's'}: ${L.rows_per_page} rows a page${L.pages_wide > 1 ? `, ${L.pages_wide} pages across` : ''}.`; } catch (e) { m.querySelector('#pPlan').textContent = ''; } };
   m.querySelectorAll('select, input').forEach(el => el.addEventListener('change', plan)); plan();
+}
+// ---------- progress periods: close a period, keep its record, draw its progress line ----------
+// A period record is compact: for each activity [start, finish, % complete, status] as it stood at
+// that data date, plus the headline numbers. Enough for its progress line and the as-built record.
+function periodSnap(p) {
+  const acts = {};
+  p.activities.forEach(a => { const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (!st || !fi) return; acts[a.id] = [st.slice(0, 16), fi.slice(0, 16), a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0), a.status === 'complete' ? 'c' : a.status === 'in_progress' ? 'p' : 'n']; });
+  const pr = progressOf(p);
+  return { pct: Math.round(pr.pct * 10) / 10, planned_pct: Math.round(pr.planned * 10) / 10, finish: p.finish || null, acts };
+}
+const periodsOf = p => (p && p.progress_periods) || [];
+const nextPeriod = p => 'Period ' + (periodsOf(p).length + 1);
+function periodsShown(p) { const all = periodsOf(p), v = S.view.periods || 'none'; return v === 'all' ? all : v === 'last3' ? all.slice(-3) : v === 'last' ? all.slice(-1) : []; }
+async function closePeriod(name, keepCopy) {
+  const p = S.project, dd = p.data_date || p.start;
+  const rec = { id: 'P' + Date.now().toString(36), name, data_date: dd, closed_at: iso(new Date()), ...periodSnap(p) };
+  p.progress_periods = periodsOf(p).filter(x => x.data_date.slice(0, 10) !== dd.slice(0, 10)).concat([rec]).sort((a, b) => a.data_date.localeCompare(b.data_date));
+  if (!S.view.periods || S.view.periods === 'none') { S.view.periods = 'last3'; const vp = $('#vPeriods'); if (vp) vp.value = 'last3'; }
+  await save(`${name} closed at ${fmtD(dd)}. Its progress line is on the Gantt.`);
+  if (keepCopy) await act('/revision', { name, note: 'Progress period closed at data date ' + fmtD(dd) });
+}
+function closePeriodDialog() {
+  const p = S.project; if (!p) return; const dd = (p.data_date || p.start).slice(0, 10);
+  const dup = periodsOf(p).find(x => x.data_date.slice(0, 10) === dd);
+  modal('Close progress period', `<p class="hint" style="margin-top:-4px">Records where every activity stands at the data date, <b>${fmtD(dd)}</b>: actual dates, % complete and the forecast. Each closed period keeps its own progress line, and the as-built record builds up from them.</p>${dup ? `<p class="hint crit">${esc(dup.name)} already has this data date. Closing again replaces it.</p>` : ''}<label>Name<input name="n" value="${esc(dup ? dup.name : nextPeriod(p))}"></label><label class="sw" style="margin-top:6px"><span>Keep a full copy, so this period can be compared with later ones</span><input type="checkbox" name="rev" checked><i></i></label>`,
+    m => closePeriod(m.querySelector('[name=n]').value.trim() || nextPeriod(p), m.querySelector('[name=rev]').checked), 'Close period');
+}
+function deletePeriod(id) { const pp = periodsOf(S.project).find(x => x.id === id); if (!pp) return; mutate(p => { p.progress_periods = periodsOf(p).filter(x => x.id !== id); }, `${pp.name} removed`); }
+function periodLines(p, rs, x, RH, H) {      // dashed line per closed period, drawn from what was recorded then
+  const per = periodsShown(p); let s = '';
+  per.forEach((pp, k) => {
+    const pdx = x(pp.data_date), op = (.45 + .45 * (k + 1) / per.length).toFixed(2); let d = `M${pdx},0`, any = false;
+    rs.forEach((r, i) => { if (!r.act) return; const v = pp.acts[r.act.id]; if (!v) return; const [st, fi, pc, k2] = v, cy = i * RH + RH / 2;
+      const px = k2 === 'c' ? pdx : k2 === 'p' ? x(st) + (x(fi) - x(st)) * pc / 100 : Math.min(x(st), pdx); d += ` L${px.toFixed(1)},${cy}`; any = true; });
+    if (!any) return; d += ` L${pdx},${H}`;
+    s += `<path class="pline" d="${d}" fill="none" stroke="var(--period)" stroke-width="1.5" stroke-dasharray="6 3" stroke-linejoin="round" opacity="${op}" pointer-events="none"/><text x="${pdx + 4}" y="11" font-size="10" font-weight="600" fill="var(--period)" opacity="${op}" pointer-events="none">${esc(pp.name)}</text>`;
+  });
+  return s;
+}
+function periodsPanel(p) {
+  const per = periodsOf(p), revs = new Set((p.revisions || []).map(r => r.name));
+  const rows = per.map((pp, i) => { const prev = per[i - 1]; const mv = prev && prev.finish && pp.finish ? Math.round((ms(pp.finish.slice(0, 10)) - ms(prev.finish.slice(0, 10))) / DAY) : null;
+    return `<div class="li"><div style="min-width:0"><div class="t">${esc(pp.name)} <span class="hint" style="font-weight:400">· ${fmtD(pp.data_date)}</span></div><div class="s">${Math.round(pp.pct)}% done against ${Math.round(pp.planned_pct)}% expected · finish ${fmtD(pp.finish)}${mv == null ? '' : mv === 0 ? ' · finish held' : ` · finish <b class="${mv > 0 ? 'crit' : 'okc'}">${Math.abs(mv)} day${Math.abs(mv) === 1 ? '' : 's'} ${mv > 0 ? 'later' : 'earlier'}</b>`}</div></div><span style="display:flex;gap:6px">${revs.has(pp.name) ? `<button type="button" class="btn" data-pcmp="${esc(pp.name)}">Compare</button>` : ''}<button type="button" class="icon" data-pdel="${esc(pp.id)}" aria-label="Remove ${esc(pp.name)}" title="Remove this period"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></span></div>`; }).reverse().join('');
+  return `<section class="panel" aria-labelledby="hPer"><div class="panel-head"><h2 id="hPer">Progress periods</h2><span style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="perBuilt" ${per.length || p.activities.some(a => a.actual_start) ? '' : 'disabled'}>As-built record</button><button type="button" class="primary" id="perClose">Close period</button></span></div>
+    ${per.length ? `<div class="list">${rows}</div>` : '<p class="hint" style="margin:0">None closed yet. Record progress (Site update), then close the period: it keeps a progress line on the Gantt and builds the as-built record.</p>'}</section>`;
+}
+// as-built record: actual against baseline, and the period each activity started and finished in
+const csvCell = v => { if (typeof v === 'number') return String(v); v = v == null ? '' : String(v); const f = /^[=+\-@\t\r]/.test(v); return f || /[",\n\r]/.test(v) ? '"' + (f ? "'" : '') + v.replace(/"/g, '""') + '"' : v; };
+function asBuiltCsv(p) {
+  const per = periodsOf(p), d10 = s => (s || '').slice(0, 10), days = (a, b) => a && b ? Math.round((ms(d10(b)) - ms(d10(a))) / DAY) : '';
+  const firstIn = (id, ok) => { const pp = per.find(q => q.acts[id] && ok(q.acts[id][3])); return pp ? pp.name : ''; };
+  const head = ['ID', 'Activity', 'WBS', 'Status', '% complete', 'Planned duration (working days)', 'Baseline start', 'Baseline finish', 'Actual start', 'Actual finish', 'Actual duration (calendar days)', 'Start variance (days, + is late)', 'Finish variance (days, + is late)', 'Started in period', 'Finished in period'];
+  const lines = [head.map(csvCell).join(',')];
+  p.activities.filter(a => a.type !== 'wbs_summary').forEach(a => {
+    const w = wbsById(a.wbs_id);
+    lines.push([a.id, a.name, w ? w.name : '', a.status === 'complete' ? 'Complete' : a.status === 'in_progress' ? 'In progress' : 'Not started', a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0), a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) : 0, d10(a.baseline_start), d10(a.baseline_finish), d10(a.actual_start), d10(a.actual_finish),
+      a.actual_start && a.actual_finish ? days(a.actual_start, a.actual_finish) + 1 : '', a.actual_start && a.baseline_start ? days(a.baseline_start, a.actual_start) : '', a.actual_finish && a.baseline_finish ? days(a.baseline_finish, a.actual_finish) : '',
+      firstIn(a.id, k => k !== 'n'), firstIn(a.id, k => k === 'c')].map(csvCell).join(','));
+  });
+  return '﻿' + lines.join('\r\n') + '\r\n';
+}
+async function exportAsBuilt() {
+  const p = S.project; if (!p) return; const n = p.activities.filter(a => a.actual_start).length;
+  if (await saveBlob(`${p.id}-as-built.csv`, new Blob([asBuiltCsv(p)], { type: 'text/csv;charset=utf-8' }))) toast(`As-built record saved: ${n} activit${n === 1 ? 'y' : 'ies'} started${p.baselines.length ? '' : '. Set a baseline to get variances.'}`, { ms: 4200 });
+}
+
+// ---------- site update: a phone-first sheet for recording progress on the activities in hand ----------
+function siteList(p) {
+  const dd = new Date(p.data_date || p.start), horizon = +dd + 14 * DAY;
+  return p.activities.filter(a => (a.type === 'task' || a.type.endsWith('milestone')) && a.status !== 'complete' && (a.status === 'in_progress' || (a.early_start && +new Date(a.early_start) <= horizon) || (a.baseline_start && +new Date(a.baseline_start) <= +dd)))
+    .sort((a, b) => (b.status === 'in_progress') - (a.status === 'in_progress') || (a.actual_start || a.early_start || '').localeCompare(b.actual_start || b.early_start || '')).slice(0, 60);
+}
+function siteUpdateSheet() {
+  const p = S.project; if (!p) return; const acts = siteList(p);
+  const asOf0 = (p.data_date || p.start).slice(0, 10), today = iso(new Date()).slice(0, 10);
+  const U = {};       // staged updates by id: {st:'n'|'p'|'c', sdate, fdate, pct, left, mode}
+  const init = a => ({ st: a.status === 'in_progress' ? 'p' : 'n', sdate: a.actual_start ? a.actual_start.slice(0, 10) : '', fdate: '', pct: Math.round(a.percent_complete || 0), left: +fmt1(daysOf(a, a.remaining_hours != null ? a.remaining_hours : a.duration_hours)), mode: 'pct' });
+  const ms_ = a => a.type !== 'task';
+  const card = a => { const u = U[a.id] || init(a), o = init(a), ch = !!U[a.id]; const behind = a.status === 'not_started' && a.baseline_start && a.baseline_start.slice(0, 10) < asOf0;
+    const seg = ms_(a) ? [['n', 'Not yet'], ['c', 'Achieved']] : [['n', 'Not started'], ['p', 'Started'], ['c', 'Finished']];
+    return `<div class="su ${ch ? 'changed' : ''}" data-id="${esc(a.id)}"><div class="su-h"><div style="min-width:0"><b>${a.critical ? '<span class="swatch" style="background:var(--crit)" title="Critical"></span>' : ''}${esc(a.name)}</b><div class="hint"><span class="mono">${esc(a.id)}</span> · ${a.status === 'in_progress' ? 'started ' + fmtD(a.actual_start) : (ms_(a) ? 'due ' : 'planned ') + fmtD(a.early_start)}${ms_(a) ? '' : ' to ' + fmtD(a.early_finish)}${behind ? ' · <b class="crit">behind baseline</b>' : ''}</div></div></div>
+      <div class="miniseg su-st" role="group" aria-label="Status of ${esc(a.name)}">${seg.map(([k, l]) => `<button type="button" data-st="${k}" class="${u.st === k ? 'on' : ''}" aria-pressed="${u.st === k}">${l}</button>`).join('')}</div>
+      ${u.st === 'p' && !ms_(a) ? `<div class="su-row"><span class="su-l">Done</span><div class="miniseg su-pct">${[10, 25, 50, 75, 90].map(v => `<button type="button" data-pct="${v}" class="${u.mode === 'pct' && u.pct === v ? 'on' : ''}">${v}%</button>`).join('')}</div></div>
+        <div class="su-row"><span class="su-l">or days left</span><div class="stepper"><button type="button" data-left="-1" aria-label="One day fewer">−</button><output>${fmt1(u.left)}</output><button type="button" data-left="1" aria-label="One day more">+</button></div><span class="hint">${u.mode === 'left' ? `about ${u.pct}% done` : ''}</span></div>` : ''}
+      ${(u.st === 'p' && o.st !== 'p') || (u.st === 'c' && !a.actual_start && !ms_(a)) ? `<label class="su-row"><span class="su-l">Started on</span><input type="date" data-d="sdate" value="${u.sdate || ''}"></label>` : ''}
+      ${u.st === 'c' ? `<label class="su-row"><span class="su-l">${ms_(a) ? 'Achieved on' : 'Finished on'}</span><input type="date" data-d="fdate" value="${u.fdate || ''}"></label>` : ''}
+    </div>`; };
+  const { m } = modal('Site update', `<p class="hint" style="margin-top:-4px">Work in progress, and anything due in the next two weeks. Tap what happened. A start left blank is taken as planned; a finish left blank is the as-of date.</p>
+    <div class="su-asof"><label>As of<input type="date" id="suAsOf" value="${asOf0}"></label>${today > asOf0 ? `<button type="button" class="btn" id="suToday">Today</button>` : ''}<span class="hint" id="suCount"></span></div>
+    <div id="suList">${acts.length ? '' : '<div class="empty"><b>Nothing in hand</b>No work is in progress or due in the next two weeks.</div>'}</div>
+    <label class="sw" style="margin-top:10px"><span>Close the progress period after saving</span><input type="checkbox" id="suClose"><i></i></label>`,
+    async () => {
+      const asOf = m.querySelector('#suAsOf').value || asOf0, ids = Object.keys(U);
+      if (!ids.length) { toast('Nothing changed'); return false; }
+      const bad = ids.find(id => [U[id].sdate, U[id].fdate].some(d => d && d > asOf)); if (bad) { toast(`${bad}: a date is after the as-of date ${fmtD(asOf)}`, { ms: 4200 }); return false; }
+      const bad2 = ids.find(id => U[id].sdate && U[id].fdate && U[id].fdate < U[id].sdate); if (bad2) { toast(`${bad2}: finishes before it starts`, { ms: 4200 }); return false; }
+      ids.forEach(id => { const a = byId(id); if (a) applySiteUpdate(a, U[id], asOf); });
+      S.project.data_date = asOf + 'T08:00:00';
+      const closeAfter = m.querySelector('#suClose').checked;
+      await save(`Site update: ${ids.length} activit${ids.length === 1 ? 'y' : 'ies'} as of ${fmtD(asOf)}`);
+      if (closeAfter) await closePeriod(nextPeriod(S.project), true);
+    }, 'Save update', { wide: true });
+  m.classList.add('su-sheet');
+  const list = m.querySelector('#suList'), byIdLocal = Object.fromEntries(acts.map(a => [a.id, a]));
+  const count = () => { const n = Object.keys(U).length; m.querySelector('#suCount').textContent = n ? `${n} change${n === 1 ? '' : 's'}` : ''; };
+  const paint = id => { const a = byIdLocal[id], el = list.querySelector(`.su[data-id="${CSS.escape(id)}"]`); const t = document.createElement('div'); t.innerHTML = card(a); el.replaceWith(t.firstElementChild); count(); };
+  if (acts.length) list.innerHTML = acts.map(card).join('');
+  const touch = (a, f) => { const u = U[a.id] || init(a); f(u); const o = init(a); if (u.st === o.st && u.pct === o.pct && u.left === o.left && !u.fdate && u.sdate === o.sdate) delete U[a.id]; else U[a.id] = u; paint(a.id); };
+  list.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return; const a = byIdLocal[b.closest('.su').dataset.id]; if (!a) return;
+    const dur = daysOf(a, a.duration_hours);
+    if (b.dataset.st) touch(a, u => { u.st = b.dataset.st; if (u.st === 'p' && u.pct === 0 && a.status !== 'in_progress') { u.pct = 0; } });
+    else if (b.dataset.pct) touch(a, u => { u.pct = +b.dataset.pct; u.mode = 'pct'; u.left = +fmt1(dur * (1 - u.pct / 100)); });
+    else if (b.dataset.left) touch(a, u => { u.left = Math.max(0.5, +fmt1(u.left + +b.dataset.left)); u.mode = 'left'; u.pct = dur ? Math.max(0, Math.min(99, Math.round(100 * (1 - u.left / dur)))) : 0; });
+  });
+  list.addEventListener('change', e => { const inp = e.target.closest('input[data-d]'); if (!inp) return; const a = byIdLocal[inp.closest('.su').dataset.id]; touch(a, u => { u[inp.dataset.d] = inp.value; }); });
+  const td = m.querySelector('#suToday'); if (td) td.onclick = () => { m.querySelector('#suAsOf').value = today; td.remove(); };
+}
+function applySiteUpdate(a, u, asOf) {
+  const at = (d, t) => (d || asOf) + t, h = hpd(a);
+  const st0 = () => u.sdate ? u.sdate + 'T08:00:00' : a.early_start && a.early_start.slice(0, 10) <= asOf ? a.early_start : asOf + 'T08:00:00';   // no date given: as planned, unless that is after the as-of date
+  if (u.st === 'n') { setProgress(a, 0, null); return; }
+  if (u.st === 'c') {
+    if (a.type !== 'task') { const t = at(u.fdate, a.type === 'finish_milestone' ? 'T16:00:00' : 'T08:00:00'); a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; a.actual_start = a.actual_finish = t; }
+    else { a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start || u.sdate) a.actual_start = st0(); if (u.fdate && a.actual_start.slice(0, 10) > u.fdate) a.actual_start = u.fdate + 'T08:00:00'; a.actual_finish = at(u.fdate, 'T16:00:00'); }
+  } else {
+    a.status = 'in_progress'; a.actual_finish = null; if (!a.actual_start || u.sdate) a.actual_start = st0();
+    if (u.mode === 'left') { a.remaining_hours = Math.max(0, u.left * h); a.percent_complete = u.pct; }
+    else { a.percent_complete = u.pct; a.remaining_hours = a.duration_hours * (1 - u.pct / 100); }
+  }
+  actualiseStartMilestones(a);
 }
 // ---------- issued revisions and version comparison ----------
 const nextRev = p => 'Rev ' + String.fromCharCode(65 + ((p && p.revisions) || []).length % 26);
@@ -1799,7 +1932,7 @@ function renderMonitor() {
   const progNote = pr.baselined ? `${Math.round(pr.planned)}% expected by the data date against the baseline` : `${Math.round(pr.planned)}% scheduled by the data date. Set a baseline to track slippage.`;
   el.innerHTML = `<div class="page">
     <div class="page-head"><div style="min-width:0"><h1 class="display">${esc(p.name)}</h1><p class="lede">Data date ${fmtLong(p.data_date || p.start)} · <span class="chip ${cls}">${label}</span></p></div>
-      <div class="head-actions"><button type="button" class="btn" id="mPlan">Open the programme</button></div></div>
+      <div class="head-actions"><button type="button" class="primary" id="mSite">Site update</button><button type="button" class="btn" id="mPlan">Open the programme</button></div></div>
     <div class="kpis">
       <div class="kpi"><div class="k">Forecast finish</div><div class="big" ${spare != null && spare < 0 ? 'style="color:var(--crit)"' : ''}>${fmtD(p.finish)}</div><div class="note">${finishNote}</div></div>
       <div class="kpi"><div class="k">Schedule health</div><div class="kpi-ring"><svg class="ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="track" cx="32" cy="32" r="27"/><circle id="ringArc" cx="32" cy="32" r="27" stroke="${healthColour(score)}" stroke-dasharray="${C}" stroke-dashoffset="${ringFrom}" style="transition:stroke-dashoffset .9s cubic-bezier(.2,.8,.2,1)"/></svg><div><div class="big">${r ? score : '–'}</div><div class="note">${failing.length ? `${failing.length} of ${failing.length + passing} checks failing` : 'All DCMA checks pass'}</div></div></div></div>
@@ -1812,6 +1945,7 @@ function renderMonitor() {
           ${ahead.length ? ahead.map(a => { const v = S.staged[a.id] ?? (a.status === 'complete' ? 100 : Math.round(a.percent_complete)); return `<div class="upd ${S.staged[a.id] != null ? 'changed' : ''}" data-id="${esc(a.id)}"><div style="min-width:0"><div class="t" style="font-weight:600;overflow-wrap:anywhere">${a.critical ? '<span class="swatch" style="background:var(--crit)" title="Critical"></span>' : ''}${esc(a.name)}</div><div class="s hint" style="font-size:12px"><span class="mono">${esc(a.id)}</span> · ${a.status === 'in_progress' ? 'started ' + fmtD(a.actual_start) : 'starts ' + fmtD(a.early_start)} · finishes ${fmtD(a.early_finish)}</div></div><input type="range" min="0" max="100" step="5" value="${v}" aria-label="Percent complete for ${esc(a.name)}" id="upd_${esc(a.id)}"><span class="pct">${v}%</span></div>`; }).join('') : '<div class="empty"><b>Nothing due</b>No activities start or run in the next three weeks.</div>'}
           <div class="upd-foot"><label class="datefield" style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--ink-2)">As of<input type="date" id="updAsOf" value="${(p.data_date || p.start).slice(0, 10)}"></label><span class="hint" id="updCount">${Object.keys(S.staged).length ? Object.keys(S.staged).length + ' unsaved' : ''}</span><button type="button" class="primary" id="updSave" ${Object.keys(S.staged).length ? '' : 'disabled'}>Save progress</button></div>
         </section>
+        ${periodsPanel(p)}
         <section class="panel" aria-labelledby="hDrive"><div class="panel-head"><h2 id="hDrive">What is driving the finish</h2><span class="hint">The critical path, in order</span></div>
           <div class="list">${crit.slice(0, 10).map(a => `<div class="li click" data-goto="${esc(a.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s"><span class="mono">${esc(a.id)}</span> · ${fmtD(a.actual_start || a.early_start)} to ${fmtD(a.early_finish)} · ${fmt1(daysOf(a, a.duration_hours))}d</div></div><span class="chip ${a.total_float_hours < 0 ? 'bad' : 'plain'}">${fmt1(daysOf(a, a.total_float_hours || 0))}d float</span></div>`).join('') || '<div class="empty"><b>No critical path</b>Every remaining activity has spare time.</div>'}${crit.length > 10 ? `<div class="li"><span class="hint">and ${crit.length - 10} more</span></div>` : ''}</div>
         </section>
@@ -1831,6 +1965,9 @@ function renderMonitor() {
   el.scrollTop = scroll; drawViz(el);
   if (!S.ringShown[p.id]) { S.ringShown[p.id] = true; requestAnimationFrame(() => requestAnimationFrame(() => { const arc = $('#ringArc'); if (arc) arc.style.strokeDashoffset = C * (1 - score / 100); })); }
   el.querySelector('#mPlan').onclick = () => go('plan');
+  el.querySelector('#mSite').onclick = siteUpdateSheet; el.querySelector('#perClose').onclick = closePeriodDialog; el.querySelector('#perBuilt').onclick = exportAsBuilt;
+  el.querySelectorAll('[data-pdel]').forEach(b => b.onclick = () => deletePeriod(b.dataset.pdel));
+  el.querySelectorAll('[data-pcmp]').forEach(b => b.onclick = () => { const r = (p.revisions || []).find(x => x.name === b.dataset.pcmp); if (r && window.PlannerEngine) compareSheet(window.PlannerEngine.compareProjects(r.project, S.project)); });
   const fix = el.querySelector('#mFix'); if (fix) fix.onclick = () => act('/repair');
   el.querySelectorAll('[data-goto]').forEach(n => { const goTo = () => { const id = n.dataset.goto; if (!byId(id)) return; go('plan'); S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(q => rowKey(q) === id); if (i >= 0) scrollToRow(i); if (S.inspector) renderInspector(); }; n.onclick = goTo; n.onkeydown = e => { if (e.key === 'Enter') goTo(); }; });
   el.querySelectorAll('[data-bl]').forEach(b => b.onclick = () => { act('/baseline/use', { name: b.dataset.bl }); S.view.baseline = true; $('#vBaseline').checked = true; });
@@ -1856,7 +1993,7 @@ function sCurveData(p) {
   let t0 = Math.min(...all.map(x => x[1]), ms(p.start)), t1 = Math.max(...all.map(x => x[2]));
   const d0 = new Date(t0); t0 = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() - ((d0.getDay() + 6) % 7)).getTime();
   const weeks = []; for (let t = t0; t <= t1 + 7 * DAY; t += 7 * DAY) weeks.push(t);
-  return { weeks, fc: weeks.map(t => cumAt(fc, t, tot)), bl: bl ? weeks.map(t => cumAt(bl, t, tot)) : null, dd: ms(p.data_date || p.start), actual: progressOf(p).pct };
+  return { weeks, fc: weeks.map(t => cumAt(fc, t, tot)), bl: bl ? weeks.map(t => cumAt(bl, t, tot)) : null, dd: ms(p.data_date || p.start), actual: progressOf(p).pct, periods: periodsOf(p).filter(q => ms(q.data_date) < ms(p.data_date || p.start)).map(q => [ms(q.data_date), q.pct, q.name]) };
 }
 function phaseRows(p) {
   const dd = ms(p.data_date || p.start); const top = id => { let n = p.wbs.find(x => x.id === id); while (n && n.parent_id) n = p.wbs.find(x => x.id === n.parent_id); return n; };
@@ -1921,6 +2058,10 @@ function drawSCurve(el, W) {
   s += `<path d="${path(d.fc)}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
   const ddx = Math.min(W - m.r, Math.max(m.l, X(d.dd)));
   s += `<line x1="${ddx}" x2="${ddx}" y1="${m.t}" y2="${m.t + ih}" stroke="var(--dd)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+  if (d.periods.length) {   // actual progress as recorded at each closed period, joined up to today's figure
+    const cl = t => Math.min(W - m.r, Math.max(m.l, X(t))); s += `<path d="${d.periods.map(([t, v], i) => `${i ? 'L' : 'M'}${cl(t).toFixed(1)},${Y(v).toFixed(1)}`).join('')}L${ddx},${Y(d.actual)}" fill="none" stroke="var(--ink)" stroke-width="1.6" stroke-linejoin="round"/>`;
+    d.periods.forEach(([t, v, n]) => { s += `<circle cx="${cl(t)}" cy="${Y(v)}" r="3.5" fill="var(--ink)" stroke="var(--surface)" stroke-width="1.5"><title>${esc(n)}: ${Math.round(v)}% done</title></circle>`; });
+  }
   const ay = Y(d.actual); s += `<circle cx="${ddx}" cy="${ay}" r="5" fill="var(--ink)" stroke="var(--surface)" stroke-width="2"/>`;
   const lbl = `${Math.round(d.actual)}% done`, right = ddx + 10 + lbl.length * 6.4 < W - m.r;
   s += `<text x="${right ? ddx + 9 : ddx - 9}" y="${ay - 7}" text-anchor="${right ? 'start' : 'end'}" fill="var(--ink)" font-size="11" font-weight="650">${lbl}</text>`;
@@ -2058,6 +2199,9 @@ function palActions() {
     S.project && ['PDF for issue (print)', 'File', printSheet],
     S.project && ['Add a note on the chart', 'Plan', () => noteDialog(null, null, S.active && byId(S.active) ? S.active : null)],
     S.project && ['Issue revision', 'Plan', revisionDialog],
+    S.project && ['Site update: record progress on site', 'Progress', siteUpdateSheet],
+    S.project && ['Close progress period', 'Progress', closePeriodDialog],
+    S.project && ['As-built record (CSV)', 'File', exportAsBuilt],
     S.project && ['Share and export', 'File', shareSheet],
     S.project && ['Export to Excel (CSV)', 'File', exportCsv],
     S.project && ['Show the longest path to completion', 'Trace', () => setTrace(finishDrivers(), 'back', 'Longest path to completion')],
@@ -2310,6 +2454,7 @@ function wireToolbar() {
   $('#vShow').onchange = e => { S.view.show = e.target.value; render(); };
   $('#vLevel').onchange = e => { S.view.level = +e.target.value; render(); };
   $('#vBarText').onchange = e => { S.view.barText = e.target.value; render(); };
+  $('#vPeriods').onchange = e => { S.view.periods = e.target.value; render(); if (e.target.value !== 'none' && !periodsOf(S.project).length) toast('No progress periods closed yet. Close one from More or Monitor.'); };
   $('#btnColumns').onclick = () => { closePops(); columnsDialog(); }; $('#btnViews').onclick = () => { closePops(); viewsDialog(); };
   $$('#modeSeg [data-mode]').forEach(b => b.onclick = () => { S.view.mode = b.dataset.mode; render(); });
   $$('#paneSeg [data-pane]').forEach(b => b.onclick = () => paneMode(b.dataset.pane));
@@ -2320,6 +2465,7 @@ function wireToolbar() {
   $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
   $('#btnRisk').onclick = riskSheet; $('#btnDrag').onclick = () => computeDrag();
   $('#btnRevision').onclick = revisionDialog; $('#btnCompare').onclick = () => compareSheet();
+  $('#btnSite').onclick = siteUpdateSheet; $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));

@@ -101,6 +101,10 @@
   <button id="btnDrag" role="menuitem">Critical path drag</button>
   <button id="btnRevision" role="menuitem">Issue revision…</button>
   <button id="btnCompare" role="menuitem">Compare versions…</button>
+  <div class="pop-sec">Progress</div>
+  <button id="btnSite" role="menuitem">Site update…</button>
+  <button id="btnPeriod" role="menuitem">Close progress period…</button>
+  <button id="btnAsBuilt" role="menuitem">As-built record (CSV)</button>
   <button id="btnUnlevel" role="menuitem">Remove levelling</button>
   <button data-panel="histogram" role="menuitem">Resource histogram</button>
   <button data-panel="cost" role="menuitem">Cost and earned value</button>
@@ -119,6 +123,7 @@
   <label class="sw"><span>Float</span><input type="checkbox" id="vFloat" checked><i></i></label>
   <label class="sw"><span>Baseline</span><input type="checkbox" id="vBaseline"><i></i></label>
   <label class="sw"><span>Progress line</span><input type="checkbox" id="vProgress"><i></i></label>
+  <label class="fld"><span>Period lines</span><select id="vPeriods"><option value="none">None</option><option value="last">Last period</option><option value="last3">Last 3 periods</option><option value="all">All periods</option></select></label>
   <label class="fld"><span>Bar text</span><select id="vBarText"><option value="name">Name</option><option value="id">ID and name</option><option value="dates">Dates</option><option value="float">Duration and float</option><option value="res">Resources</option><option value="none">None</option></select></label>
   <div class="pop-sec">Show</div>
   <label class="fld"><span>Activities</span><select id="vShow"></select></label>

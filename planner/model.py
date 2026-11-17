@@ -257,6 +257,7 @@ class Project(BaseModel):
     baselines: list[Baseline] = Field(default_factory=list)
     revisions: list[dict] = Field(default_factory=list)   # issued versions: {name, issued_at, note, project}
     annotations: Optional[list[dict]] = None              # chart notes: {id, date, activity_id|None, text}
+    progress_periods: Optional[list[dict]] = None         # closed periods: {id, name, data_date, closed_at, pct, planned_pct, finish, acts{id: [start, finish, pct, n|p|c]}}
     levelled: bool = False
     # computed
     finish: Optional[datetime] = None

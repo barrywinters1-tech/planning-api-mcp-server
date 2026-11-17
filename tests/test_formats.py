@@ -139,3 +139,14 @@ def test_xer_carries_activity_notes():
     text = write_xer(p)
     assert "%T\tTASKMEMO" in text and "%T\tMEMOTYPE" in text
     assert read_xer(text).activities[0].notes == "Line one\nCafé £5 & <b>x</b>"
+
+
+def test_progress_periods_and_chart_notes_survive_json_roundtrip():
+    p = sample()
+    p.annotations = [{"id": "N1", "date": "2026-03-04T08:00:00", "activity_id": None, "text": "Crane booked"}]
+    p.progress_periods = [{"id": "P1", "name": "Period 1", "data_date": "2026-03-09T08:00:00", "closed_at": "2026-03-09T17:00:00",
+                           "pct": 6.0, "planned_pct": 6.0, "finish": "2026-10-05T16:00:00", "acts": {"A": ["2026-03-02T08:00", "2026-03-06T16:00", 100, "c"]}}]
+    back = Project.model_validate_json(p.model_dump_json())
+    assert back.progress_periods == p.progress_periods
+    assert back.annotations == p.annotations
+    assert Project.model_validate_json(sample().model_dump_json()).progress_periods is None

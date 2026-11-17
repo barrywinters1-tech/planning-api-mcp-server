@@ -25,6 +25,7 @@
   --warn: #e07b00;
   --warn-soft: rgba(224, 123, 0, .14);
   --dd: #8a4fe0;            /* data date */
+  --period: #0d8a7d;        /* closed progress periods */
   --bar: #4a78c8;            /* Asta-style activity blue */
   --done-ink: #0b1a33;       /* darkens the completed part of a bar */
   --bar-2: #9fb1d6;
@@ -55,7 +56,7 @@
     --line: rgba(220, 226, 240, .13); --line-2: rgba(220, 226, 240, .06);
     --accent: #3d8bff; --accent-soft: rgba(61, 139, 255, .18); --sel: rgba(61, 139, 255, .22);
     --crit: #ff5a5d; --crit-soft: rgba(255, 90, 93, .16); --ok: #36c477; --ok-soft: rgba(54, 196, 119, .16);
-    --warn: #ffa53a; --warn-soft: rgba(255, 165, 58, .16); --dd: #b78bff;
+    --warn: #ffa53a; --warn-soft: rgba(255, 165, 58, .16); --dd: #b78bff; --period: #3fcab6;
     --bar: #6f97e0; --done-ink: #000; --bar-2: #4c5d82; --summary: #d4d9e4; --baseline: #59606f; --progress: #36c477; --hist: #6f99f0; --over: #ff5a5d;
     --weekend: rgba(255, 255, 255, .04); --glass: rgba(24, 27, 34, .72); --glass-edge: rgba(255, 255, 255, .08); --scrim: rgba(0, 0, 0, .5);
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .4); --shadow-2: 0 12px 34px rgba(0, 0, 0, .45); --shadow-3: 0 30px 90px rgba(0, 0, 0, .6);
@@ -68,7 +69,7 @@
   --line: rgba(220, 226, 240, .13); --line-2: rgba(220, 226, 240, .06);
   --accent: #3d8bff; --accent-soft: rgba(61, 139, 255, .18); --sel: rgba(61, 139, 255, .22);
   --crit: #ff5a5d; --crit-soft: rgba(255, 90, 93, .16); --ok: #36c477; --ok-soft: rgba(54, 196, 119, .16);
-  --warn: #ffa53a; --warn-soft: rgba(255, 165, 58, .16); --dd: #b78bff;
+  --warn: #ffa53a; --warn-soft: rgba(255, 165, 58, .16); --dd: #b78bff; --period: #3fcab6;
   --bar: #6f97e0; --done-ink: #000; --bar-2: #4c5d82; --summary: #d4d9e4; --baseline: #59606f; --progress: #36c477; --hist: #6f99f0; --over: #ff5a5d;
   --weekend: rgba(255, 255, 255, .04); --glass: rgba(24, 27, 34, .72); --glass-edge: rgba(255, 255, 255, .08); --scrim: rgba(0, 0, 0, .5);
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .4); --shadow-2: 0 12px 34px rgba(0, 0, 0, .45); --shadow-3: 0 30px 90px rgba(0, 0, 0, .6);
@@ -623,3 +624,21 @@ details.why .linkchip { margin-right: 4px; }
 .cmp-text { font-size: 14px; line-height: 1.55; background: var(--surface-2); border-radius: 12px; padding: 4px 14px; }
 .cmp-text p { margin: 10px 0; }
 .ai .msg.review { border: 1px solid var(--accent); }
+
+/* site update: big targets, one card per activity */
+.okc { color: var(--ok); }
+.su-asof { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin: 4px 0 12px; }
+.su-asof label { margin: 0; }
+#suList { display: grid; gap: 10px; }
+.su { border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: var(--surface); display: grid; gap: 10px; transition: border-color .15s, box-shadow .15s; }
+.su.changed { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.su-h b { display: block; overflow-wrap: anywhere; }
+.su-h .hint { font-size: 12px; margin-top: 2px; }
+.su .miniseg { display: flex; flex-wrap: wrap; width: 100%; }
+.su .miniseg button { flex: 1 1 auto; min-height: 40px; }
+.su-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0; }
+.su-row .su-l { font-size: 12.5px; color: var(--ink-2); min-width: 78px; }
+.su-row input[type=date] { flex: 1 1 150px; }
+.su .stepper output { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+.su .stepper button { width: 44px; min-height: 40px; }
+@media (max-width: 640px) { .su-row .su-l { min-width: 0; width: 100%; } }
