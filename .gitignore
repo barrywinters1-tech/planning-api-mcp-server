@@ -7,3 +7,4 @@ examples/*.xer
 examples/*.xml
 *.mpp
 
+.claude/worktrees/
