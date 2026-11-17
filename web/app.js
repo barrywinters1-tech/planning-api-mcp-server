@@ -1230,18 +1230,26 @@ const TYPE_ICONS = {
   generic: '<path d="M5 8l9-4 9 4v12l-9 4-9-4z"/><path d="M5 8l9 4 9-4M14 12v12"/>',
 };
 function sparkSvg(p, w = 300, h = 64) {
-  const tops = p.wbs.filter(x => !x.parent_id).sort((a, b) => a.seq - b.seq).slice(0, 7);
-  const t0 = new Date(p.start).getTime(), t1 = new Date(p.finish || p.start).getTime() || t0 + DAY; const span = Math.max(DAY, t1 - t0);
+  // top-level summaries: nodes whose parent is not in the list (P6 hangs WBS off a project node it does
+  // not export); a single root is stepped through to its children; no WBS at all draws activities
+  const ids = new Set(p.wbs.map(x => x.id)), isTop = x => !x.parent_id || !ids.has(x.parent_id);
+  let tops = p.wbs.filter(isTop);
+  while (tops.length === 1 && p.wbs.some(x => x.parent_id === tops[0].id)) { const r = tops[0].id; tops = p.wbs.filter(x => x.parent_id === r); }
+  tops = tops.sort((a, b) => a.seq - b.seq).slice(0, 7);
+  const dates = p.activities.flatMap(a => [a.actual_start || a.early_start, a.actual_finish || a.early_finish]).filter(Boolean).map(d => new Date(d).getTime());
+  const t0 = Math.min(new Date(p.start).getTime(), ...dates), t1 = Math.max(new Date(p.finish || p.start).getTime() || t0 + DAY, ...dates); const span = Math.max(DAY, t1 - t0);
   const X = t => 6 + (new Date(t).getTime() - t0) / span * (w - 12);
-  const inW = {}; const parent = id => { let n = p.wbs.find(x => x.id === id); while (n && n.parent_id) n = p.wbs.find(x => x.id === n.parent_id); return n ? n.id : null; };
+  const inW = {}; const topIds = new Set(tops.map(x => x.id));
+  const parent = id => { let n = p.wbs.find(x => x.id === id), g = 0; while (n && !topIds.has(n.id) && n.parent_id && g++ < 50) n = p.wbs.find(x => x.id === n.parent_id); return n && topIds.has(n.id) ? n.id : null; };
   p.activities.forEach(a => { const k = parent(a.wbs_id); if (k) (inW[k] = inW[k] || []).push(a); });
+  if (!tops.length) { const acts = p.activities.filter(a => a.early_start || a.actual_start).sort((a, b) => (a.actual_start || a.early_start).localeCompare(b.actual_start || b.early_start)); const per = Math.ceil(acts.length / 7) || 1; for (let i = 0; i < acts.length; i += per) { const id = '__g' + i; tops.push({ id }); inW[id] = acts.slice(i, i + per); } }
   const rowH = (h - 10) / Math.max(1, tops.length); let s = `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">`;
   tops.forEach((wb, i) => {
     const acts = inW[wb.id] || []; const st = acts.map(a => a.actual_start || a.early_start).filter(Boolean).sort()[0], fi = acts.map(a => a.actual_finish || a.early_finish).filter(Boolean).sort().slice(-1)[0];
     if (!st || !fi) return; const y = 5 + i * rowH + rowH * .2, bh = Math.max(3, rowH * .6);
     const crit = acts.some(a => a.critical && a.status !== 'complete');
     const tot = acts.reduce((t, a) => t + a.duration_hours, 0) || 1; const pc = acts.reduce((t, a) => t + a.duration_hours * (a.status === 'complete' ? 100 : a.percent_complete), 0) / tot;
-    const x0 = X(st), bw = Math.max(3, X(fi) - x0);
+    const bw = Math.max(bh, X(fi) - X(st)), x0 = Math.max(6, Math.min(X(st), w - 6 - bw));   // keep short bars inside the card
     s += `<rect x="${x0}" y="${y}" width="${bw}" height="${bh}" rx="${bh / 2}" fill="${crit ? 'var(--crit)' : 'var(--bar)'}" opacity="${crit ? .85 : .7}"/>`;
     if (pc > 0) s += `<rect x="${x0}" y="${y}" width="${Math.max(bh, bw * pc / 100)}" height="${bh}" rx="${bh / 2}" fill="var(--progress)"/>`;
   });

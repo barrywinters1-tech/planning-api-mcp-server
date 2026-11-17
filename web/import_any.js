@@ -44,7 +44,7 @@ function readAny(filename, bytes) {
     return E.readXer(stripBom(decodeXer(bytes)));
   }
   if (['.xml', '.mspdi', '.pmxml'].includes(ext) || startsWithBytes(h, '<?xml') || startsWithBytes(h, '<Project')) {
-    if (!E.readMspdi || !E.xmlRootTag) throw new Error('XML import is not available in this build.');
+    if (!E.readMspdi || !E.xmlRootTag) throw new Error('XML import is not in this preview yet. Export Primavera P6 XER instead (in Asta: File > Export > Primavera P6 XER) and import that.');
     const text = stripBom(utf8(bytes, false));
     const root = E.xmlRootTag(bytes);
     if (root === 'Project') return E.readMspdi(text);
