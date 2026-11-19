@@ -4,6 +4,17 @@ Describe a project. The generator drafts the programme from production rates and
 
 Pure code. No AI service, no API key, nothing leaves your machine.
 
+## How it feels to use
+
+The engine does the arithmetic; the shell is built around a planner's week.
+
+- **Overview first.** Opening a programme lands on a page that reports its own state: a journey spine (Brief → Build → Baseline → Update → Issue) with the next step on each stage, a written briefing (headline, what changed since the last period, revision or baseline, what to watch, the next two weeks, what to do next), milestones, and an Ask box. Everything on it is computed from the schedule by `web/briefing.js` / `planner/briefing.py`; Claude only polishes the prose if the viewer has it.
+- **Ask anything.** The ⌘K bar takes questions as well as commands: *when do we finish, what is driving the finish, why does the roof start on 11 June, what does brickwork hold up, what is happening next week, what if piling takes two weeks longer.* `web/ask.js` / `planner/ask.py` answer from the engine, deterministically, and every answer can be shown on the chart (highlight, trace the logic, filter, open). Same questions through the API (`POST /api/projects/{id}/ask`) and MCP (`ask_programme`).
+- **Try changes safely.** *Try* keeps the programme as it was; every change you make shows the finish delta live in a bar across the top, *What changed* opens the full comparison, *Keep* commits (with one click to issue as a revision), *Discard* puts it all back.
+- **Three faces.** *Build* has every tool. *Site* leads with the phone-sized site update and the next two weeks. *Client* is read-only: briefing, milestones, chart and PDF for issue, with the editing tools gone and every change blocked.
+- **Bars that explain themselves.** Hover a bar for its dates, float, baseline variance, constraint, why it starts when it does (its driving predecessor) and what it holds up.
+- **Issue.** PDF for issue carries the briefing headline in the title block and, optionally, the briefing as a cover page.
+
 ## What it does
 
 | Layer | File | What |
