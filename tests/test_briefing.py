@@ -79,7 +79,8 @@ def revision_record(p: Project, name: str, issued_at: datetime) -> dict:
     return {"name": name, "issued_at": issued_at.isoformat(), "note": "", "project": p.model_dump(mode="json", exclude={"revisions"})}
 
 
-def tracked(i: int = 0, *, baseline=True, period=True, revision=True, revision_after_period=True, stale=False, second_period=False) -> Project:
+def tracked(i: int = 0, *, baseline=True, period=True, revision=True, revision_after_period=True, stale=False, second_period=False,
+            same_name=False) -> Project:
     """A generated house four weeks in: a Tender baseline, Period 1 closed at week two, Rev A issued either just
     after it (so the revision is the most recent record) or before it, then two more weeks of progress and a
     two-week slip on the critical foundations. `stale` records no progress on A1020 after Period 1."""
@@ -95,7 +96,9 @@ def tracked(i: int = 0, *, baseline=True, period=True, revision=True, revision_a
         _step(p, cmd)
     schedule(p)
     per = period_record(p, "Period 1")
-    rev = revision_record(p, "Rev A", datetime.combine(s + timedelta(days=14 if revision_after_period else 10), datetime.min.time()).replace(hour=12))
+    # same_name: the revision the UI issues alongside a closed period ("keep a full copy"), carrying the period's name
+    rev = revision_record(p, "Period 1" if same_name else "Rev A",
+                          datetime.combine(s + timedelta(days=14 if revision_after_period else 10), datetime.min.time()).replace(hour=12))
     steps = ["add 2 weeks to A1100", f"data date {(s + timedelta(days=28)).isoformat()}"]
     if not stale:
         steps.insert(0, f"progress A1020 40% as of {d(21)}")
@@ -222,7 +225,8 @@ def test_demo_house():
     # the stored critical flags are stale: the briefing reschedules, so the foundations show as critical and imminent
     top = b["watch"][0]
     assert top["id"] == "A1100" and top["reason"] == "critical_soon" and top["severity"] == 3
-    assert all(w["reason"] == "high_drag" for w in b["watch"][1:])
+    # with nothing started nearly every critical task carries drag: it is not news, so it is not watched
+    assert [w["reason"] for w in b["watch"]] == ["critical_soon"]
     assert b["next"]["from"] == "2026-03-02" and b["next"]["to"] == "2026-03-16"
     assert [x["id"] for x in b["next"]["milestones"]] == ["A1000"]
     assert [a["kind"] for a in b["actions"]] == ["set_baseline", "run_risk"]
@@ -254,8 +258,15 @@ def test_since_picks_the_most_recent_record():
     assert "finish moved" in b["since"]["summary"] and "duration" in b["since"]["summary"]
     assert any(it["id"] == "A1100" and "+10d" in it["text"] for it in b["since"]["items"])
 
+    b = briefing(tracked(same_name=True))                     # the "keep a full copy" revision, named after the period
+    assert b["since"]["kind"] == "revision" and b["since"]["name"] == "Period 1"
+    assert b["since"]["date"] == "2026-03-16T08:00:00", "dated by the period's data date, not the clock when it was issued"
+    assert b["since"]["summary"].startswith("What changed since Period 1 (data date 16 Mar 2026): finish moved ")
+    assert "What changed since Period 1 (data date 16 Mar 2026)" in b["prose"] and "issued" not in b["prose"]
+
     b = briefing(tracked(revision_after_period=False))        # Rev A predates Period 1
     assert b["since"]["kind"] == "period" and b["since"]["name"] == "Period 1"
+    assert b["since"]["summary"].startswith("What changed since Period 1 (data date 16 Mar 2026): ")
     assert b["since"]["finish_shift_days"] and b["since"]["finish_shift_days"] > 0
     assert "slipped" in b["since"]["summary"] and "progress " in b["since"]["summary"]
     assert len(b["since"]["items"]) == 8 and all(" later, " in it["text"] for it in b["since"]["items"])
@@ -303,8 +314,14 @@ def test_watch_reasons():
     assert acc["text"].startswith("Recover ") and "most drag" in acc["text"]
 
     b = briefing(tracked())
-    reasons = {w["reason"] for w in b["watch"]}
+    reasons = set()
+    for w in b["watch"]:
+        reasons |= reasons_in(w)
     assert "behind_baseline" in reasons
+    assert "high_drag" not in reasons, "drag is only watched when the programme is late or at risk"
+    assert not any("high_drag" in reasons_in(w) for w in briefing(demo_house())["watch"])
+    late = briefing(tight_deadline())
+    assert sum("high_drag" in reasons_in(w) for w in late["watch"]) <= 2
 
     b = briefing(Project.model_validate(constraints()))
     by = {w["id"]: w for w in b["watch"]}

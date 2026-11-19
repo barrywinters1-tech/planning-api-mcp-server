@@ -31,7 +31,8 @@ NEAR_DAYS = 28            # near-critical activities starting within this many c
 NEAR_FLOAT = 5            # working days of float that count as near-critical
 THIN_MARGIN = 5           # working days to the deadline below which the programme is at risk
 BEHIND_BASELINE = 5       # working days behind the baseline finish before an activity is watched
-HIGH_DRAG = 5             # working days of drag before an activity is watched
+HIGH_DRAG = 5             # working days of drag before an activity is watched (late / at-risk programmes only)
+MAX_DRAG_WATCH = 2        # the top activities by drag that are watched
 LONG_DURATION = 44        # working days remaining before an open activity is watched (DCMA)
 PERIOD_DUE = 21           # calendar days without a closed period before closing one is suggested
 REPAIR_BELOW = 70         # health score below which the repair is suggested
@@ -58,7 +59,7 @@ T = {
     "margin_exact": "meeting the {deadline} deadline exactly",
     "margin_beyond": "{n} beyond the {deadline} deadline",
     "since_none": "No baseline, revision or closed period yet.",
-    "since_period": "What changed since {name} ({date}): {parts}.",
+    "since_period": "What changed since {name} (data date {date}): {parts}.",
     "since_revision": "What changed since {name} (issued {date}): {parts}.",
     "since_baseline": "Against the {name} baseline (saved {date}): {parts}.",
     "since_baseline_nodate": "Against the {name} baseline: {parts}.",
@@ -322,7 +323,7 @@ def _change_text(c: dict) -> str:
 
 
 def _since(p: Project, acts: list[Activity], now: datetime, dcal: Calendar, finish: datetime,
-           period: Optional[dict], pct_now: float) -> dict:
+           period: Optional[dict], periods: list[dict], pct_now: float) -> dict:
     rev, bl = _last_revision(p), _last_baseline(p, acts)
     cands = [("period", period, _dt(period.get("closed_at")) or _dt(period["data_date"])) if period else None,
              ("revision", rev, _dt(rev.get("issued_at"))) if rev else None,
@@ -408,9 +409,13 @@ def _since(p: Project, acts: list[Activity], now: datetime, dcal: Calendar, fini
         if cnt["date_moves"]:
             extra.append(_t("cnt_moved", k=_k(cnt["date_moves"], "activity", "activities")))
         parts += extra if extra else [T["no_other_changes"]]
-        date_ = _iso(_dt(rec.get("issued_at")))
+        # a revision the UI issued when it closed a period carries the period's name: date it by the period's
+        # data date (the schedule's clock), not by when the button was pressed
+        twin = next((x for x in reversed(periods) if x.get("name") == rec.get("name")), None)
+        date_ = _iso(_dt(twin["data_date"])) if twin else _iso(_dt(rec.get("issued_at")))
         return {"kind": kind, "name": rec.get("name"), "date": date_, "finish_shift_days": shift,
-                "summary": _t("since_revision", name=rec.get("name"), date=_d(date_) if date_ else "", parts="; ".join(parts)), "items": items}
+                "summary": _t("since_period" if twin else "since_revision", name=rec.get("name"), date=_d(date_) if date_ else "",
+                              parts="; ".join(parts)), "items": items}
 
     # baseline
     bl_finish = _dt(rec["finish"])
@@ -516,7 +521,7 @@ def briefing(project: Project, *, today=None) -> dict:
         "weeks_remaining": _r1(max(0, _cal_days(now, finish)) / 7.0),
     }
 
-    since = _since(p, acts, now, dcal, finish, period, pct_now)
+    since = _since(p, acts, now, dcal, finish, period, periods, pct_now)
 
     # ---- watch ----
     watch: dict[str, dict] = {}
@@ -532,7 +537,8 @@ def briefing(project: Project, *, today=None) -> dict:
     oos_by: dict[str, list] = {}
     for x in oos:
         oos_by.setdefault(x["successor"], []).append(x)
-    drag_by = {d["id"]: d for d in drag}
+    # drag only matters when the finish is in question: on a fresh programme nearly every critical task carries it
+    drag_by = {d["id"]: d for d in drag[:MAX_DRAG_WATCH]} if status in ("late", "at_risk") else {}
     open_ends = set(next((c.items for c in report.checks if c.key == "logic"), [])) if report else set()
     pacts = (period_before.get("acts") or {}) if period_before else {}
     for a in open_:
