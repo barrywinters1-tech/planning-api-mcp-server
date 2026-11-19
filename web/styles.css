@@ -247,6 +247,7 @@ svg.chart { position: absolute; top: 0; pointer-events: none; }
 svg.chart .hit { pointer-events: all; }
 svg text { font-family: var(--font); font-size: 11.5px; }
 .bar { cursor: grab; touch-action: none; }
+svg.chart { touch-action: pan-y; }   /* fingers scroll up and down; sideways on empty space is panned in app.js; on a bar it drags */
 .handle, .linkdot { touch-action: none; }
 .bar.drag { cursor: grabbing; filter: drop-shadow(0 6px 10px rgba(20, 30, 60, .25)); }
 .handle { cursor: ew-resize; }

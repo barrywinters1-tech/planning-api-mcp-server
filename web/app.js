@@ -12,6 +12,7 @@ const fmtLong = s => s ? new Date(s).toLocaleDateString('en-GB', { weekday: 'sho
 const DAY = 864e5;
 const RH = 30, HDR = 60, GX = 20;
 const LOCAL = window.__local || null;          // in-browser backend (shareable single page)
+const TOUCH = matchMedia('(hover: none)').matches;
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 
 const S = {
@@ -571,7 +572,18 @@ function wireSplitter() {
     if (!pan.on) { if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) { if (Math.abs(dy) > 8) pan = null; return; } pan.on = true; }
     setGx(pan.gx - dx);
   });
-  const end = () => { pan = null; }; sheet.addEventListener('pointerup', end); sheet.addEventListener('pointercancel', end);
+  const end = () => { pan = null; cpan = null; }; sheet.addEventListener('pointerup', end); sheet.addEventListener('pointercancel', end);
+  // Chrome ignores touch-action on SVG shapes, so the chart allows vertical panning only (CSS) and a
+  // finger on empty chart space pans sideways here; a finger on a bar, handle or link dot drags it.
+  // a finger that lands on a bar, handle or link dot is a drag, never a scroll (also lets a link drag cross rows)
+  sheet.addEventListener('touchstart', e => { if (e.target.closest && e.target.closest('svg.chart .bar, svg.chart .handle, svg.chart .linkdot')) e.preventDefault(); }, { passive: false });
+  let cpan = null;
+  sheet.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse' && e.target.closest && e.target.closest('svg.chart') && !e.target.closest('.bar, .handle, .linkdot, .note')) cpan = { x: e.clientX, y: e.clientY, sl: sheet.scrollLeft, id: e.pointerId, on: false }; });
+  sheet.addEventListener('pointermove', e => {
+    if (!cpan || e.pointerId !== cpan.id) return; const dx = e.clientX - cpan.x, dy = e.clientY - cpan.y;
+    if (!cpan.on) { if (Math.abs(dx) < 6) { if (Math.abs(dy) > 10) cpan = null; return; } cpan.on = true; }
+    sheet.scrollLeft = cpan.sl - dx;
+  });
   addEventListener('resize', () => { if (S.screen === 'plan' && S.project) { clearTimeout(S._rz); S._rz = setTimeout(render, 120); } });
 }
 function paneMode(m) {
@@ -741,7 +753,7 @@ function chart(rs, t0, t1, W, H, bandH) {
         if (rx > sx + 1) s += `<rect x="${sx}" y="${by - 1}" width="${rx - sx}" height="${h + 2}" fill="var(--surface)" stroke="${fill}" stroke-dasharray="3 2" pointer-events="none"/><text x="${(sx + rx) / 2}" y="${by + h - 3}" text-anchor="middle" font-size="9" fill="var(--ink-3)" pointer-events="none">suspended</text>`;
       }
       if (a.constraint && a.constraint !== 'none' && a.constraint_date) { const cx = x(a.constraint_date); s += a.constraint.includes('start') ? `<polygon points="${cx},${by - 1} ${cx - 4},${by - 6} ${cx + 4},${by - 6}" fill="var(--warn)"/>` : `<polygon points="${cx},${by + h + 1} ${cx - 4},${by + h + 6} ${cx + 4},${by + h + 6}" fill="var(--warn)"/>`; }
-      const hw = Math.min(8, Math.max(4, bw / 4));     // grab zones at each end: drag to change start or finish
+      const hw = TOUCH ? Math.min(22, Math.max(10, bw / 3)) : Math.min(8, Math.max(4, bw / 4));     // grab zones at each end: drag to change start or finish (wider for a finger)
       s += `<rect class="hit handle hs" data-id="${a.id}" data-end="S" x="${bx - 2}" y="${by - 2}" width="${hw}" height="${h + 4}" fill="transparent"/>`;
       s += `<rect class="hit handle hf" data-id="${a.id}" data-end="F" x="${bx + bw - hw + 2}" y="${by - 2}" width="${hw}" height="${h + 4}" fill="transparent"/>`;
       s += `<circle class="hit linkdot" data-id="${a.id}" data-end="S" cx="${bx - 9}" cy="${y + mid}" r="5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6"/>`;
