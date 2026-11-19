@@ -20,7 +20,7 @@ def main():
     inner = re.sub(r'<script src="/static/[^"]+"></script>\s*', "", inner)
     engine = read("engine.js")
     # file readers (P6 XER, P6 XML, MS Project XML) ported from planner/*.py; parity tested
-    readers = "\n".join(read(f) for f in ("import_xer.js", "import_xml.js", "import_any.js", "compare.js", "pdf_export.js") if (HERE / f).exists())
+    readers = "\n".join(read(f) for f in ("import_xer.js", "import_xml.js", "import_any.js", "compare.js", "ask.js", "pdf_export.js") if (HERE / f).exists())
     backend = read("local_backend.js")
     app = read("app.js")
 
