@@ -378,3 +378,212 @@ def test_parses_with_pdf_library(rendered, tmp_path):
         assert "Riverside Café" in text and "Page 1 of 3" in text
         return
     pytest.skip("no pypdf or poppler available")
+
+
+# ----------------------------------------------------------------------------------------
+# cover (briefing) page: doc.cover
+# ----------------------------------------------------------------------------------------
+COVER = {
+    "title": "Programme briefing",
+    "subtitle": "Two-storey detached house, Harrogate · Rev B · issued 9 Mar 2026",
+    "headline": "On track: forecast finish 29 Sep 2026, 19 working days inside the 30 Oct 2026 deadline.",
+    "paragraphs": [
+        "The programme has been reissued at revision B following the two-week slip to the steel frame reported "
+        "in February. The fabricator has confirmed delivery for the week commencing 23 March, subject to mill "
+        "certificates, and the erection sequence has been re-planned to start at the north gable.",
+        "Progress to the data date stands at 6 per cent against 6 per cent planned. Groundworks and the ground-floor "
+        "slab are complete; the remaining critical works are the frame, the roof and the envelope, after which the "
+        "finishes trades run in parallel. Total float on the finishes is between eight and fifteen working days.",
+        "The Christmas shutdown is built into the calendar and the weather allowance for the envelope has been "
+        "kept at ten days; this will be reviewed once the roof is watertight.",
+        "Risks carried in this revision: late receipt of mill certificates (one week) and a lead time on the "
+        "curtain-wall brackets which the subcontractor is yet to confirm in writing.",
+    ],
+    "kpis": [["Forecast finish", "29 Sep 2026"], ["Deadline", "30 Oct 2026"], ["Progress", "6% (6% expected)"],
+             ["Critical activities", "31"]],
+    "milestones": [
+        {"name": "Start on site", "date": "2026-03-02", "baseline_date": "2026-03-02", "variance_days": 0, "status": "complete"},
+        {"name": "Frame complete", "date": "2026-05-15", "baseline_date": "2026-05-01", "variance_days": 10, "status": "late"},
+        {"name": "Watertight", "date": "2026-07-17", "baseline_date": "2026-07-10", "variance_days": 5, "status": "late"},
+        {"name": "Power on", "date": "2026-08-21", "baseline_date": None, "variance_days": None, "status": ""},
+        {"name": "Practical completion", "date": "2026-09-29", "baseline_date": "2026-10-02", "variance_days": -3, "status": "on track"},
+    ],
+    "watch": [
+        {"name": "Steel frame", "text": "Fabricator’s mill certificates outstanding; delivery slips a week if they are not received by 20 March."},
+        {"name": "Curtain wall", "text": "Bracket lead time not yet confirmed in writing by the subcontractor."},
+        {"name": "Boundary wall", "text": "Asbestos survey of the retained wall due this week."},
+    ],
+    "footer": "Prepared by Graeme · Printed 9 Mar 2026 14:02",
+}
+
+_FILLER = (" This sentence is here only to make the paragraph a great deal longer than any reasonable briefing"
+           " would be, so that the writer has to cut it.")
+LONG_COVER = dict(
+    COVER,
+    headline="A very long headline that goes on and on. " * 12,
+    paragraphs=[f"Paragraph {i + 1}." + _FILLER * 8 + f" UNIQUE-END-{i + 1}." for i in range(12)],
+    kpis=[[f"KPI label {i + 1}", f"Value number {i + 1}"] for i in range(8)],
+    milestones=[{"name": f"Milestone number {i + 1}", "date": f"2026-0{1 + i % 9}-1{i % 9}",
+                 "baseline_date": "2026-05-01" if i % 2 else None, "variance_days": i if i % 2 else None,
+                 "status": "late" if i % 3 else "on track"} for i in range(25)],
+    watch=[{"name": f"Watch item {i + 1} with a fairly long name",
+            "text": "A long explanation that goes on and on, far further than one line could hold on an A4 "
+                    "sheet, so it has to wrap and then be cut." * 2} for i in range(10)],
+)
+
+_COVER_SCRIPT = r"""
+const fs = require('fs');
+const [pdfJs, docPath, coverPath, out] = process.argv.slice(1);
+require(pdfJs);
+const P = globalThis.PlannerPDF;
+const doc = JSON.parse(fs.readFileSync(docPath, 'utf8'));
+const base = P.layout(doc);
+doc.cover = JSON.parse(fs.readFileSync(coverPath, 'utf8'));
+const bytes = P.render(doc);
+fs.writeFileSync(out, bytes);
+process.stdout.write(JSON.stringify({ base, layout: P.layout(doc), bytes: bytes.length, rows: doc.rows.length,
+  first_row: doc.rows[0].cells[1] }));
+"""
+
+
+def render_cover(tmp: Path, cover, page=None, options=None) -> dict:
+    """The runner's programme (via doc_out) with `cover` attached, rendered by PlannerPDF."""
+    case = {"doc_out": str(tmp / "doc.json")}
+    if page:
+        case["page"] = page
+    if options:
+        case["options"] = options
+    run_runner({"base": case}, tmp)
+    (tmp / "cover.json").write_text(json.dumps(cover), encoding="utf-8")
+    out = tmp / "cover.pdf"
+    proc = subprocess.run([NODE, "-e", _COVER_SCRIPT, str(PDF_JS), str(tmp / "doc.json"), str(tmp / "cover.json"), str(out)],
+                          capture_output=True, text=True, timeout=120, env=dict(os.environ, TZ="UTC"))
+    assert proc.returncode == 0, proc.stderr
+    r = json.loads(proc.stdout)
+    r["pdf"] = out.read_bytes()
+    return r
+
+
+def text_positions(content: bytes, w_mm: float, h_mm: float) -> list[tuple[float, float]]:
+    """(x, y) in mm from the top-left for every text string drawn in a content stream."""
+    pts = [(float(x), float(y)) for x, y in re.findall(rb"Tf ([-\d.]+) ([-\d.]+) Td \(", content)]
+    return [(x * 25.4 / 72, h_mm - y * 25.4 / 72) for x, y in pts]
+
+
+def test_cover_page(tmp_path):
+    r = render_cover(tmp_path, COVER, page={"size": "A3", "orientation": "landscape"})
+    L, base = r["layout"], r["base"]
+    assert base["cover"] is False and base["cover_pages"] == 0
+    assert L["cover"] is True and L["cover_pages"] == 1
+    assert L["page_count"] == base["page_count"] + 1 == 4
+    assert L["pages"] == L["page_count"]                      # app.js reads `pages || page_count` as a number
+    assert L["rows_per_page"] == base["rows_per_page"] and L["pages_tall"] == base["pages_tall"]
+    pdf = Pdf(r["pdf"])
+    pages = pdf.pages()
+    assert len(pages) == 4
+    texts = pdf.page_texts()
+    first, joined = texts[0], " ".join(texts[0])
+    # heading, headline, a KPI value, a milestone (with its baseline and variance), the watch text
+    assert "Programme briefing" in first
+    assert "Two-storey detached house, Harrogate · Rev B · issued 9 Mar 2026" in first
+    assert COVER["headline"] in joined
+    assert "29 Sep 2026" in first and "Forecast finish" in first and "6% (6% expected)" in first
+    assert "Watertight" in first and "17 Jul 26" in first and "10 Jul 26" in first and "+5d" in first and "-3d" in first
+    assert "Milestone" in first and "Date" in first and first.count("Baseline") == 2 and "Var" in first   # table + legend
+    assert "Steel frame" in first and "Curtain wall" in first
+    assert "Bracket lead time not yet confirmed in writing by the subcontractor." in joined
+    assert "Prepared by Graeme · Printed 9 Mar 2026 14:02" in first
+    assert "Fabricator’s mill certificates outstanding" in joined          # curly quote survives WinAnsi
+    # the full paragraphs are on the page, uncut
+    for para in COVER["paragraphs"]:
+        assert para in joined
+    assert not any(t.endswith("…") for t in first)
+    # same title block as the other pages: Page 1 of N, project and issue details
+    assert "Page 1 of 4" in first and PROJECT_NAME in first and "C03" in first and "J. Okafor (Planning)" in first
+    assert "Briefing" in first
+    # the Gantt pages follow, renumbered, with their row bands intact
+    assert "Page 2 of 4" in texts[1] and r["first_row"] in texts[1] and "Page 4 of 4" in texts[3]
+    assert any(t.startswith("Rows 1") for t in texts[1])
+    assert "Programme briefing" not in texts[1]
+    # a well-formed vector page: balanced clip, text ops only, every string inside the content area
+    content = pdf.page_content(pages[0])
+    ops = content.split(b"\n")
+    assert ops.count(b"q") == ops.count(b"Q") >= 1
+    assert sum(o.startswith(b"BT ") for o in ops) == sum(o.endswith(b" Tj ET") for o in ops) > 40
+    for x, y in text_positions(content, L["page_w_mm"], L["page_h_mm"]):
+        assert 10 <= x <= L["page_w_mm"] - 10 + 0.01 and 10 <= y <= L["page_h_mm"] - 10 + 0.01, (x, y)
+
+
+def test_cover_without_baseline_omits_columns(tmp_path):
+    cover = dict(COVER, milestones=[dict(m, baseline_date=None, variance_days=None) for m in COVER["milestones"]])
+    r = render_cover(tmp_path, cover, page={"size": "A4", "orientation": "landscape"})
+    first = Pdf(r["pdf"]).page_texts()[0]
+    assert "Watertight" in first and "17 Jul 26" in first
+    assert first.count("Baseline") == 1 and "Var" not in first and "10 Jul 26" not in first   # legend only
+
+
+@pytest.mark.parametrize("size,orientation,colour", [("A4", "portrait", False), ("A3", "landscape", True), ("A4", "landscape", True)])
+def test_cover_overflow_is_truncated(tmp_path, size, orientation, colour):
+    r = render_cover(tmp_path, LONG_COVER, page={"size": size, "orientation": orientation}, options={"colour": colour})
+    L = r["layout"]
+    assert L["page_count"] == r["base"]["page_count"] + 1
+    assert L["page_w_mm"] == PAGE_SIZES[size][0 if orientation == "portrait" else 1]
+    pdf = Pdf(r["pdf"])
+    pages = pdf.pages()
+    assert len(pages) == L["page_count"]
+    first, joined = pdf.page_texts()[0], " ".join(pdf.page_texts()[0])
+    assert "Page 1 of %d" % L["page_count"] in first and "Programme briefing" in first
+    # the text was cut with an ellipsis rather than drawn off the page
+    assert any(t.endswith("…") for t in first)
+    assert "Paragraph 1." in joined and "UNIQUE-END-12." not in joined
+    # at most 6 KPI tiles, 6 watch items, 18 milestone rows followed by "and N more"
+    assert "Value number 6" in first and "Value number 7" not in first
+    assert any(t.startswith("Watch item 6") for t in first) and not any(t.startswith("Watch item 7") for t in first)
+    shown = [m for m in LONG_COVER["milestones"] if m["name"] in first]
+    assert 1 <= len(shown) <= 18 and shown == LONG_COVER["milestones"][:len(shown)]
+    assert f"and {25 - len(shown)} more" in first
+    # every string sits inside the margins; nothing spills past the title block
+    content = pdf.page_content(pages[0])
+    for x, y in text_positions(content, L["page_w_mm"], L["page_h_mm"]):
+        assert 10 <= x <= L["page_w_mm"] - 10 + 0.01 and 10 <= y <= L["page_h_mm"] - 10 + 0.01, (x, y)
+    ops = content.split(b"\n")
+    assert ops.count(b"q") == ops.count(b"Q") >= 1
+    if not colour:
+        for r_, g_, b_ in re.findall(rb"([\d.]+) ([\d.]+) ([\d.]+) (?:rg|RG)", content):
+            assert r_ == g_ == b_, "greyscale cover must not contain colour"
+
+
+def test_cover_minimal_and_absent(tmp_path):
+    # a bare cover still renders as a full page; cover: null / false / {} absent means no page
+    r = render_cover(tmp_path, {"title": "Programme briefing"})
+    assert r["layout"]["page_count"] == r["base"]["page_count"] + 1
+    first = Pdf(r["pdf"]).page_texts()[0]
+    assert "Programme briefing" in first and "Page 1 of %d" % r["layout"]["page_count"] in first
+    for absent in (None, False):
+        r2 = render_cover(tmp_path, absent)
+        assert r2["layout"]["page_count"] == r2["base"]["page_count"] and r2["layout"]["cover"] is False
+        assert len(Pdf(r2["pdf"]).pages()) == r2["base"]["page_count"]
+
+
+def test_cover_parses_with_pdf_library(tmp_path):
+    r = render_cover(tmp_path, COVER, page={"size": "A3", "orientation": "landscape"})
+    path = tmp_path / "cover_a3.pdf"
+    path.write_bytes(r["pdf"])
+    py = _pypdf_python()
+    if py:
+        proc = subprocess.run([py, "-c", _CHECK, str(path)], capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, proc.stderr
+        res = json.loads(proc.stdout)
+        assert res["pages"] == 4
+        text = res["text"]
+        for s in ("Programme briefing", "29 Sep 2026", "Watertight", "Curtain wall", "Page 1 of 4", "Riverside Café"):
+            assert s in text, s
+        if "ink" in res:
+            assert 0.01 < res["ink"] < 0.5, res["ink"]
+        return
+    pdftotext = shutil.which("pdftotext")
+    if pdftotext:
+        text = subprocess.run([pdftotext, "-f", "1", "-l", "1", "-layout", str(path), "-"], capture_output=True, text=True, check=True).stdout
+        assert "Programme briefing" in text and "Watertight" in text and "Page 1 of 4" in text
+        return
+    pytest.skip("no pypdf or poppler available")
