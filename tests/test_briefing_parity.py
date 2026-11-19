@@ -59,6 +59,8 @@ def build_cases() -> list[tuple[str, dict]]:
         ("tracked-period-closed-today", {"project": _j(tracked(revision=False, second_period=True))}),
         ("tracked-today-given", {"project": _j(tracked()), "today": "2026-04-20"}),
         ("tracked-bare-period", {"project": _j(bare_period())}),
+        ("tracked-same-name-revision", {"project": _j(tracked(same_name=True))}),
+        ("fresh-house", {"project": _generated(BRIEFS[0])}),
         ("tight-deadline", {"project": _j(tight_deadline())}),
         ("tight-deadline-apartments", {"project": _j(tight_deadline(1))}),
         ("complete", {"project": _j(complete_house())}),
@@ -131,3 +133,9 @@ def test_cases_exercise_every_kind(py_results):
     assert kinds == {"period", "revision", "baseline", "none"}, kinds
     assert reasons == REASONS, REASONS - reasons
     assert actions == set(ORDER), set(ORDER) - actions
+    by_name = {n: r["result"] for (n, _), r in zip(CASES, py_results)}
+    # a fresh programme is not told about drag; a same-named revision is dated by its period's data date
+    for n in ("fresh-house", "demo-house"):
+        assert not any("high_drag" in reasons_in(w) for w in by_name[n]["watch"]), n
+    s = by_name["tracked-same-name-revision"]["since"]
+    assert s["kind"] == "revision" and s["date"] == "2026-03-16T08:00:00" and "(data date 16 Mar 2026)" in s["summary"]

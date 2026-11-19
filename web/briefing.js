@@ -17,6 +17,7 @@ const NEAR_FLOAT = 5;
 const THIN_MARGIN = 5;
 const BEHIND_BASELINE = 5;
 const HIGH_DRAG = 5;
+const MAX_DRAG_WATCH = 2;
 const LONG_DURATION = 44;
 const PERIOD_DUE = 21;
 const REPAIR_BELOW = 70;
@@ -44,7 +45,7 @@ const T = {
   margin_exact: 'meeting the {deadline} deadline exactly',
   margin_beyond: '{n} beyond the {deadline} deadline',
   since_none: 'No baseline, revision or closed period yet.',
-  since_period: 'What changed since {name} ({date}): {parts}.',
+  since_period: 'What changed since {name} (data date {date}): {parts}.',
   since_revision: 'What changed since {name} (issued {date}): {parts}.',
   since_baseline: 'Against the {name} baseline (saved {date}): {parts}.',
   since_baseline_nodate: 'Against the {name} baseline: {parts}.',
@@ -232,7 +233,7 @@ function changeText(c) {
   return T['ch_' + k];
 }
 
-function since(p, acts, now, dcal, finish, period, pctNow) {
+function since(p, acts, now, dcal, finish, period, periods, pctNow) {
   const rev = lastRevision(p), bl = lastBaseline(p, acts);
   const cands = [period ? ['period', period, dt(period.closed_at) || dt(period.data_date)] : null,
                  rev ? ['revision', rev, dt(rev.issued_at)] : null,
@@ -301,9 +302,12 @@ function since(p, acts, now, dcal, finish, period, pctNow) {
     if (cnt.progress_changes) extra.push(t('cnt_progress', { k: k_(cnt.progress_changes, 'activity', 'activities') }));
     if (cnt.date_moves) extra.push(t('cnt_moved', { k: k_(cnt.date_moves, 'activity', 'activities') }));
     for (const x of (extra.length ? extra : [T.no_other_changes])) parts.push(x);
-    const date = iso(rec.issued_at);
+    // a revision the UI issued when it closed a period carries the period's name: date it by the period's
+    // data date (the schedule's clock), not by when the button was pressed
+    let twin = null; for (const x of periods) if (x.name === rec.name) twin = x;
+    const date = twin ? iso(twin.data_date) : iso(rec.issued_at);
     return { kind, name: rec.name == null ? null : rec.name, date, finish_shift_days: shift,
-             summary: t('since_revision', { name: rec.name, date: date ? fd_(date) : '', parts: parts.join('; ') }), items };
+             summary: t(twin ? 'since_period' : 'since_revision', { name: rec.name, date: date ? fd_(date) : '', parts: parts.join('; ') }), items };
   }
 
   // baseline
@@ -388,7 +392,7 @@ function briefing(project, opts) {
     weeks_remaining: r1(Math.max(0, calDays(now, finish)) / 7),
   };
 
-  const sinceOut = since(p, acts, now, dcal, finish, period, pctNow);
+  const sinceOut = since(p, acts, now, dcal, finish, period, periods, pctNow);
 
   // ---- watch ----
   const watch = new Map();
@@ -400,7 +404,8 @@ function briefing(project, opts) {
   };
   const oosBy = {};
   for (const x of oos) (oosBy[x.successor] = oosBy[x.successor] || []).push(x);
-  const dragBy = {}; for (const d of drag) dragBy[d.id] = d;
+  // drag only matters when the finish is in question: on a fresh programme nearly every critical task carries it
+  const dragBy = {}; if (st === 'late' || st === 'at_risk') for (const d of drag.slice(0, MAX_DRAG_WATCH)) dragBy[d.id] = d;
   const logic = report ? report.checks.find(c => c.key === 'logic') : null;
   const openEnds = new Set(logic ? logic.items : []);
   const pacts = periodBefore ? (periodBefore.acts || {}) : {};
