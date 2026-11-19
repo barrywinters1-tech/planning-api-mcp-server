@@ -947,6 +947,15 @@ function noteDialog(n, date, actId) {
   const del = m.querySelector('#nDel'); if (del) del.onclick = () => { modalClose(); mutate(p => { p.annotations = (p.annotations || []).filter(x => x.id !== n.id); }, 'Note deleted'); };
 }
 // ---------- PDF for issue: the programme as shown (filters, grouping, columns), on A4-A1 with a title block ----------
+// the briefing as the cover page of an issued PDF
+function coverFor(o) {
+  const p = S.project, b = getBriefing(), k = b.kpis || {}; const lastRev = (p.revisions || []).slice(-1)[0];
+  const sub = [p.id, o.revision || (lastRev ? lastRev.name : ''), 'data date ' + fmtD(p.data_date || p.start)].filter(Boolean).join(' · ');
+  return { title: o.title || 'Construction programme', subtitle: `${p.name} · ${sub}`, headline: b.headline, paragraphs: String(b.prose || '').split(/\n\n+/).filter(Boolean),
+    kpis: [['Forecast finish', fmtD(k.finish || p.finish)], k.deadline ? ['Deadline', fmtD(k.deadline)] : null, ['Progress', `${Math.round(k.pct_complete || 0)}% (${Math.round(k.pct_expected || 0)}% expected)`], ['Critical activities', String(k.critical_open ?? 0)], k.spare_days != null ? [k.spare_days >= 0 ? 'Spare' : 'Overrun', `${fmt1(Math.abs(k.spare_days))} working days`] : null].filter(Boolean),
+    milestones: (b.milestones || []).filter(m => m.date).sort((x, y) => x.date.localeCompare(y.date)), watch: (b.watch || []).map(w => ({ name: w.name, text: w.text })),
+    footer: [o.prepared_by ? 'Prepared by ' + o.prepared_by : '', 'Printed ' + new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })].filter(Boolean).join(' · ') };
+}
 function pdfDoc(o) {
   const p = S.project, rs = S.rowsCache, cols = S.cols.filter(k => k !== 'preds' && k !== 'succs' && k !== 'notes' && k !== 'res').slice(0, 7);
   const columns = cols.map(k => ({ title: ALL_COLS[k].t, width_mm: Math.max(9, Math.round(ALL_COLS[k].w * .2)), align: ALL_COLS[k].num || ['start', 'finish', 'astart', 'afinish', 'bstart', 'bfinish', 'ls', 'lf'].includes(k) ? 'right' : 'left', indent: k === 'name' }));
@@ -965,6 +974,7 @@ function pdfDoc(o) {
     page: { size: o.size, orientation: o.orientation, margins_mm: 10 },
     columns, rows, links, annotations,
     range: { t0: o.t0 || iso(S.t0), t1: o.t1 || iso(S.t1) },
+    cover: o.cover ? coverFor(o) : null,
     options: { show_links: S.view.links, show_float: S.view.float, show_baseline: S.view.baseline, show_progress_line: S.view.progress, legend: true, rows_per_page: o.rows || null, fit_to_pages_wide: o.wide || 1, colour: o.colour },
   };
 }
@@ -984,14 +994,15 @@ function printSheet() {
     </div>
     <h3>Title block</h3>
     <div class="risk-set"><label>Title<input id="pTitle" value="${esc(saved.title || 'Construction programme')}"></label><label>Client<input id="pClient" value="${esc(saved.client || '')}"></label><label>Prepared by<input id="pBy" value="${esc(saved.prepared_by || '')}"></label><label>Revision<input id="pRev" value="${esc(((S.project.revisions || []).slice(-1)[0] || {}).name || '')}"></label></div>
+    <label class="sw" style="margin:8px 0"><span>Cover page: the briefing (status, what changed, watch list, milestones)</span><input type="checkbox" id="pCover" ${saved.cover === false ? '' : 'checked'}><i></i></label>
     <label>Notes in the title block<input id="pNotes" value="${esc((() => { try { return getBriefing().headline || ''; } catch { return ''; } })())}" placeholder="e.g. Programme for acceptance; durations in working days"></label>
     <p class="hint" id="pPlan"></p>`, async mm => {
-      const o = readOpts(mm); try { localStorage.setItem('pdfOpts', JSON.stringify({ size: o.size, orientation: o.orientation, wide: o.wide, rows: o.rows, colour: o.colour, title: o.title, client: o.client, prepared_by: o.prepared_by })); } catch { }
+      const o = readOpts(mm); try { localStorage.setItem('pdfOpts', JSON.stringify({ size: o.size, orientation: o.orientation, wide: o.wide, rows: o.rows, colour: o.colour, title: o.title, client: o.client, prepared_by: o.prepared_by, cover: o.cover })); } catch { }
       let bytes; try { bytes = P.render(pdfDoc(o)); } catch (e) { toast('PDF failed: ' + (e.message || e)); return false; }
       const name = `${S.project.id}${o.revision ? '-' + o.revision.replace(/\s+/g, '') : ''}.pdf`;
       if (await saveBlob(name, new Blob([bytes], { type: 'application/pdf' }))) toast(`${name} saved`);
     }, 'Create PDF', { wide: true });
-  const readOpts = mm => ({ size: mm.querySelector('#pSize').value, orientation: mm.querySelector('#pOri').value, wide: +mm.querySelector('#pWide').value, rows: +mm.querySelector('#pRows').value || null, colour: mm.querySelector('#pCol').value === '1', t0: mm.querySelector('#pT0').value ? mm.querySelector('#pT0').value + 'T00:00:00' : null, t1: mm.querySelector('#pT1').value ? mm.querySelector('#pT1').value + 'T23:59:00' : null, title: mm.querySelector('#pTitle').value, client: mm.querySelector('#pClient').value, prepared_by: mm.querySelector('#pBy').value, revision: mm.querySelector('#pRev').value, notes: mm.querySelector('#pNotes').value });
+  const readOpts = mm => ({ size: mm.querySelector('#pSize').value, orientation: mm.querySelector('#pOri').value, wide: +mm.querySelector('#pWide').value, rows: +mm.querySelector('#pRows').value || null, colour: mm.querySelector('#pCol').value === '1', t0: mm.querySelector('#pT0').value ? mm.querySelector('#pT0').value + 'T00:00:00' : null, t1: mm.querySelector('#pT1').value ? mm.querySelector('#pT1').value + 'T23:59:00' : null, title: mm.querySelector('#pTitle').value, client: mm.querySelector('#pClient').value, prepared_by: mm.querySelector('#pBy').value, revision: mm.querySelector('#pRev').value, notes: mm.querySelector('#pNotes').value, cover: mm.querySelector('#pCover').checked });
   const plan = () => { try { const L = P.layout(pdfDoc(readOpts(m))); m.querySelector('#pPlan').textContent = `${L.pages || L.page_count} page${(L.pages || L.page_count) === 1 ? '' : 's'}: ${L.rows_per_page} rows a page${L.pages_wide > 1 ? `, ${L.pages_wide} pages across` : ''}.`; } catch (e) { m.querySelector('#pPlan').textContent = ''; } };
   m.querySelectorAll('select, input').forEach(el => el.addEventListener('change', plan)); plan();
 }
@@ -2678,7 +2689,7 @@ function answerHtml(r, q) {
   const acts = (r.ids || []).map(byId).filter(Boolean), btns = [];
   if (acts.length) btns.push(`<button type="button" class="btn" data-ask="show">Show ${acts.length === 1 ? 'it' : 'these ' + acts.length} on the chart</button>`);
   if (r.trace && r.trace.ids && r.trace.ids.length) btns.push('<button type="button" class="btn" data-ask="trace">Trace the logic</button>');
-  if (r.filter) btns.push(`<button type="button" class="btn" data-ask="filter">Filter: ${esc(r.filter)}</button>`);
+  if (r.filter) btns.push(`<button type="button" class="btn" data-ask="filter">${r.filter.startsWith('quick:') ? 'Show: ' + esc((QUICK.find(q => q[0] === r.filter.slice(6)) || ['', r.filter.slice(6)])[1]) : 'Filter: ' + esc(r.filter)}</button>`);
   if (r.goto && byId(r.goto)) btns.push(`<button type="button" class="btn" data-ask="goto">Open ${esc(r.goto)}</button>`);
   if (r.kind === 'what_if' && !readOnly()) btns.push('<button type="button" class="btn" data-ask="try">Try it</button>');
   return `<div class="ans ${esc(r.confidence || '')}"><div class="ans-t">${esc(r.answer)}</div>${acts.length ? `<div class="ans-ids">${acts.slice(0, 8).map(a => `<button type="button" class="linkchip" data-goto="${esc(a.id)}" title="${esc(a.name)}">${esc(a.id)}</button>`).join('')}${acts.length > 8 ? `<span class="hint">+${acts.length - 8} more</span>` : ''}</div>` : ''}${btns.length ? `<div class="ans-b">${btns.join('')}</div>` : ''}${(r.suggestions || []).length ? `<div class="ans-s">${r.suggestions.slice(0, 3).map(s => `<button type="button" class="chipbtn" data-ask-q="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}</div>`;
@@ -2688,7 +2699,7 @@ function wireAnswer(el, r, q, onAsk) {
   el.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { leave(); goToActivity(b.dataset.goto); });
   el.querySelectorAll('[data-ask]').forEach(b => b.onclick = () => { const k = b.dataset.ask; leave();
     if (k === 'show') highlightIds(r.ids, q); else if (k === 'trace') setTrace(r.trace.ids, r.trace.dir || 'back', q);
-    else if (k === 'filter') { S.view.filter = r.filter; S.view.show = 'all'; if (S.screen !== 'plan') go('plan'); else render(); }
+    else if (k === 'filter') { if (r.filter.startsWith('quick:')) { S.view.show = r.filter.slice(6); S.view.filter = ''; } else { S.view.filter = r.filter; S.view.show = 'all'; } if (S.screen !== 'plan') go('plan'); else render(); }
     else if (k === 'goto') goToActivity(r.goto); else if (k === 'try') { tryStart(); openPalette(); $('#cmdIn').value = r.ids && r.ids[0] ? `add 1 week to ${r.ids[0]}` : ''; paintPalette(); } });
   el.querySelectorAll('[data-ask-q]').forEach(b => b.onclick = () => onAsk(b.dataset.askQ));
 }
