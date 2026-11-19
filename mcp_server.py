@@ -28,6 +28,7 @@ from planner.risk import risk_analysis
 from planner.guardrails import critical_drag, out_of_sequence
 from planner.compare import compare as compare_projects, narrative as compare_narrative
 from planner.briefing import briefing
+from planner.ask import ask as ask_question
 
 mcp = FastMCP(
     "AI Construction Planner",
@@ -224,6 +225,20 @@ def compare_programmes(project_id: str, other_project_id: str = "", revision: st
     except ScheduleError as e:
         return {"error": str(e)}
     return {"narrative": compare_narrative(result), "result": result}
+
+
+@mcp.tool()
+def ask_programme(project_id: str, question: str, today: str = "") -> dict:
+    """Answer a plain-English question about a programme from the engine itself (no AI): "when do we finish",
+    "what's critical", "why does A1240 start then", "what does A1240 hold up", "what if A1240 takes 2 weeks
+    longer", "what's happening next week", "what are the bricklayers doing", "what's wrong with the programme",
+    "what changed since Rev A", "what should we accelerate". Returns the answer text, the activity ids it is
+    about, a table filter, a logic trace and follow-up questions. `today` (ISO date) defaults to the data date."""
+    try:
+        p = _load(project_id)
+    except ValueError as e:
+        return {"error": str(e)}
+    return ask_question(p, question, today=today or None)
 
 
 @mcp.tool()

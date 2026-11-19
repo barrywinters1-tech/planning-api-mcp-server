@@ -29,6 +29,7 @@ from planner.risk import risk_analysis
 from planner.guardrails import critical_drag, out_of_sequence
 from planner.compare import compare as compare_projects, narrative as compare_narrative
 from planner.briefing import briefing
+from planner.ask import ask as ask_programme
 from planner import agent
 from planner.model import Assignment, Resource
 
@@ -459,6 +460,18 @@ def post_compare(pid: str, body: CompareIn):
     except ScheduleError as e:
         raise HTTPException(422, str(e))
     return {"result": result, "narrative": compare_narrative(result)}
+
+
+class AskIn(BaseModel):
+    question: str
+    today: Optional[str] = None
+
+
+@app.post("/api/projects/{pid}/ask")
+def post_ask(pid: str, body: AskIn):
+    """Answer a plain-English question about the programme from the engine (no AI): the answer text plus the
+    activity ids, filter, trace and follow-up suggestions the UI uses to show it on the chart."""
+    return ask_programme(_load(pid), body.question, today=body.today)
 
 
 class RiskIn(BaseModel):
