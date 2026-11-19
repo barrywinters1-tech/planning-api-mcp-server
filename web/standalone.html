@@ -662,7 +662,7 @@ details.why .linkchip { margin-right: 4px; }
 body.trying #sheet { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--warn) 55%, transparent); }
 .tb.on { background: var(--accent-soft); color: var(--accent); }
 body[data-mode=client] .tgroup[aria-label=Edit], body[data-mode=client] .tgroup[aria-label=Schedule], body[data-mode=client] #btnUndo, body[data-mode=client] #btnRedo, body[data-mode=client] #btnInspector, body[data-mode=client] .trybar, body[data-mode=client] .ai { display: none !important; }
-body[data-mode=site] .tgroup[aria-label=Edit] { display: none; }
+body[data-mode=site] .tgroup[aria-label=Edit], body[data-mode=site] #btnTry, body[data-mode=site] #btnConstraint { display: none; }
 body[data-mode=client] .facts .linkish { pointer-events: none; }
 .modeseg button { padding: 4px 11px; font-size: 12.5px; }
 .ov .page-head { align-items: center; }
@@ -6427,7 +6427,7 @@ function printSheet() {
     </div>
     <h3>Title block</h3>
     <div class="risk-set"><label>Title<input id="pTitle" value="${esc(saved.title || 'Construction programme')}"></label><label>Client<input id="pClient" value="${esc(saved.client || '')}"></label><label>Prepared by<input id="pBy" value="${esc(saved.prepared_by || '')}"></label><label>Revision<input id="pRev" value="${esc(((S.project.revisions || []).slice(-1)[0] || {}).name || '')}"></label></div>
-    <label>Notes in the title block<input id="pNotes" placeholder="e.g. Programme for acceptance; durations in working days"></label>
+    <label>Notes in the title block<input id="pNotes" value="${esc((() => { try { return getBriefing().headline || ''; } catch { return ''; } })())}" placeholder="e.g. Programme for acceptance; durations in working days"></label>
     <p class="hint" id="pPlan"></p>`, async mm => {
       const o = readOpts(mm); try { localStorage.setItem('pdfOpts', JSON.stringify({ size: o.size, orientation: o.orientation, wide: o.wide, rows: o.rows, colour: o.colour, title: o.title, client: o.client, prepared_by: o.prepared_by })); } catch { }
       let bytes; try { bytes = P.render(pdfDoc(o)); } catch (e) { toast('PDF failed: ' + (e.message || e)); return false; }
@@ -7493,8 +7493,8 @@ function paintProjects(el, list) {
   el.innerHTML = `<div class="page">
     <div class="page-head"><div><h1 class="display">Projects</h1><p class="lede">${list.length ? `${list.length} programme${list.length > 1 ? 's' : ''}. Status compares each forecast with its deadline and with the progress expected by its data date.` : 'Plan a building in a minute, then keep it on track week by week.'}</p></div>
       <div class="head-actions"><button type="button" class="btn" id="pAsk" hidden>Describe it to Claude</button><button type="button" class="btn" id="pImport">Import from P6, Asta or MS Project</button><button type="button" class="primary" id="pNew">New programme</button></div></div>
-    ${list.length ? '' : `<div class="hero"><div><h2>Describe the job. Get the programme.</h2><p>Answer six questions and Planner lays out the activities, links them, sizes them from production rates, finds the critical path and runs the 14-point DCMA health check. It opens in Primavera P6, Asta Powerproject and Microsoft Project.</p><div class="head-actions"><button type="button" class="primary" id="pNew3">Start a programme</button><button type="button" class="btn" id="pSample">Open a sample</button></div></div><div class="hero-art">${heroArt()}</div></div>`}
-    <div class="cards">${list.map(card).join('')}<button type="button" class="card new" id="pNew2"><span class="plus"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M4 10h12"/></svg></span><b style="color:var(--ink)">New programme</b><span class="hint" style="max-width:30ch">Six questions to a linked, scheduled and health-checked programme.</span></button></div>
+    ${list.length ? '' : `<div class="hero"><div><h2>Describe the job. Get a programme that explains itself.</h2><p>Six questions, or a brief in plain English, become a linked, scheduled, health-checked programme. It briefs you every week on what moved and why, answers questions from the schedule, lets you try changes before you keep them, and opens in P6, Asta Powerproject and MS Project.</p><div class="head-actions"><button type="button" class="primary" id="pNew3">Start a programme</button><button type="button" class="btn" id="pSample">Open a sample</button></div></div><div class="hero-art">${heroArt()}</div></div>`}
+    <div class="cards">${list.map(card).join('')}<button type="button" class="card new" id="pNew2"><span class="plus"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M4 10h12"/></svg></span><b style="color:var(--ink)">New programme</b><span class="hint" style="max-width:30ch">Six questions, or a brief, to a linked, scheduled and health-checked programme.</span></button></div>
   </div>`;
   el.scrollTop = scroll;
   ['#pNew', '#pNew2', '#pNew3'].forEach(s => { const b = el.querySelector(s); if (b) b.onclick = () => startFlow(); });
@@ -7971,6 +7971,7 @@ function drawRiskChart(el, r) {
 
 // ---------- share and export ----------
 function summaryText() {
+  try { const b = getBriefing(); if (b && b.prose && window.PlannerEngine && window.PlannerEngine.briefing) return `${S.project.name} (${S.project.id})\n${b.headline}\n\n${b.prose}`; } catch { }
   const p = S.project, r = S.report; const [, label] = statusOf(p, r); const pr = progressOf(p); const spare = spareDays(p);
   const crit = p.activities.filter(a => a.critical && a.status !== 'complete' && a.early_start).sort((a, b) => a.early_start.localeCompare(b.early_start)).slice(0, 5);
   const failing = r ? r.checks.filter(c => c.applicable && !c.passed).map(c => c.title) : [];
@@ -8131,7 +8132,7 @@ function wireAnswer(el, r, q, onAsk) {
   el.querySelectorAll('[data-ask]').forEach(b => b.onclick = () => { const k = b.dataset.ask; leave();
     if (k === 'show') highlightIds(r.ids, q); else if (k === 'trace') setTrace(r.trace.ids, r.trace.dir || 'back', q);
     else if (k === 'filter') { S.view.filter = r.filter; S.view.show = 'all'; if (S.screen !== 'plan') go('plan'); else render(); }
-    else if (k === 'goto') goToActivity(r.goto); else if (k === 'try') { tryStart(); openPalette(); $('#cmdIn').value = q.replace(/^what if\s*/i, ''); paintPalette(); } });
+    else if (k === 'goto') goToActivity(r.goto); else if (k === 'try') { tryStart(); openPalette(); $('#cmdIn').value = r.ids && r.ids[0] ? `add 1 week to ${r.ids[0]}` : ''; paintPalette(); } });
   el.querySelectorAll('[data-ask-q]').forEach(b => b.onclick = () => onAsk(b.dataset.askQ));
 }
 let askTimer = null;
