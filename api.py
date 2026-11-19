@@ -28,6 +28,7 @@ from planner.repair import plan_repairs
 from planner.risk import risk_analysis
 from planner.guardrails import critical_drag, out_of_sequence
 from planner.compare import compare as compare_projects, narrative as compare_narrative
+from planner.briefing import briefing
 from planner import agent
 from planner.model import Assignment, Resource
 
@@ -393,6 +394,18 @@ def get_guardrails(pid: str):
     try:
         schedule(project)
         return {"out_of_sequence": out_of_sequence(project), "drag": critical_drag(project)}
+    except ScheduleError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/projects/{pid}/briefing")
+def get_briefing(pid: str, today: Optional[str] = None):
+    """The programme reports its own state in plain English: headline, status, KPIs, what changed since the
+    last period / revision / baseline, a watch list, the next two weeks, actions, milestones and prose.
+    Deterministic: "today" is the data date unless given (YYYY-MM-DD)."""
+    project = _load(pid)
+    try:
+        return briefing(project, today=today)
     except ScheduleError as e:
         raise HTTPException(422, str(e))
 
