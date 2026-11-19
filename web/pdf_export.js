@@ -47,6 +47,18 @@
        shade_weekends: true,          // grey Sat/Sun bands when a day is >= 2 mm wide
        row_height_mm: 5,              // preferred (maximum) row height
        work_hours: [8, 16]            // bar ends: times in this window map linearly onto the day
+     },
+     cover: null | {                  // optional briefing page, emitted before the Gantt pages
+       title,                         // large heading, e.g. "Construction programme"
+       subtitle,                      // line beneath it, e.g. "Two-storey house · Rev B · issued 9 Mar 2026"
+       headline,                      // bold lead sentence (wrapped, at most three lines)
+       paragraphs: [string],          // 2-6 paragraphs; two text columns on landscape when long
+       kpis: [[label, value]],        // up to 6 tiles in a row under the headline ({label, value} also accepted)
+       milestones: [{ name, date, baseline_date|null, variance_days|null, status }],
+                                      // table Milestone | Date | Baseline | Var; the last two columns only
+                                      // when some baseline_date is set; at most 18 rows then "and N more"
+       watch: [{ name, text }],       // "Watch" list: up to 6 bullet lines, the name in bold
+       footer                         // small line at the foot of the page
      }
    }
 
@@ -60,6 +72,9 @@
      page 1 = rows 1..k early dates, page 2 = rows 1..k later dates, page 3 = next rows ...
    - Text uses the standard Helvetica / Helvetica-Bold fonts with WinAnsiEncoding; anything
      WinAnsi cannot represent prints as '?'.
+   - A cover is one extra page (page 1 of N) on the same paper, with the same header band and
+     title block as the Gantt pages. Its text is wrapped to the page; whatever will not fit is
+     cut with an ellipsis rather than spilling off the sheet.
 */
 (function (root) {
   'use strict';
@@ -335,7 +350,29 @@
     }
     let d0 = r0.ms / DAY, d1 = r1.ms / DAY + (r1.dateOnly ? 1 : 0);
     if (!(d1 > d0)) d1 = d0 + 7;
-    return { meta, page, options, rows, columns, links: doc.links || [], annotations: doc.annotations || [], d0, d1 };
+    return { meta, page, options, rows, columns, links: doc.links || [], annotations: doc.annotations || [], d0, d1,
+      cover: normaliseCover(doc.cover) };
+  }
+
+  /** doc.cover -> a cover with every field present and trimmed, or null when there is no cover. */
+  function normaliseCover(c) {
+    if (!c) return null;
+    if (typeof c !== 'object') c = {};
+    const str = v => (v == null ? '' : String(v).trim());
+    const list = v => (Array.isArray(v) ? v : []);
+    const kpis = list(c.kpis).map(k => (Array.isArray(k) ? { label: str(k[0]), value: str(k[1]) }
+      : k && typeof k === 'object' ? { label: str(k.label), value: str(k.value) } : null))
+      .filter(k => k && (k.label || k.value)).slice(0, 6);
+    const milestones = list(c.milestones).filter(m => m && typeof m === 'object').map(m => ({
+      name: str(m.name), date: m.date == null ? '' : m.date,
+      baseline_date: m.baseline_date == null || m.baseline_date === '' ? null : m.baseline_date,
+      variance_days: m.variance_days == null || m.variance_days === '' || !isFinite(+m.variance_days) ? null : Math.round(+m.variance_days),
+      status: str(m.status) })).filter(m => m.name || m.date);
+    const watch = list(c.watch).map(w => (typeof w === 'string' ? { name: '', text: str(w) }
+      : w && typeof w === 'object' ? { name: str(w.name), text: str(w.text) } : null))
+      .filter(w => w && (w.name || w.text)).slice(0, 6);
+    const paragraphs = (typeof c.paragraphs === 'string' ? [c.paragraphs] : list(c.paragraphs)).map(str).filter(Boolean);
+    return { title: str(c.title), subtitle: str(c.subtitle), headline: str(c.headline), paragraphs, kpis, milestones, watch, footer: str(c.footer) };
   }
 
   const LEGEND_ITEMS = ['Critical activity', 'Non-critical activity', 'Progress', 'Summary', 'Milestone',
@@ -400,8 +437,9 @@
       const weeks = Math.max(1, Math.ceil((n.d1 - s0) / 7 / wide));
       for (let i = 0; i < wide; i++) slices.push([s0 + i * weeks * 7, s0 + (i + 1) * weeks * 7]);
     }
+    const coverPages = n.cover ? 1 : 0;
     return { W, H, m, usableW, headerY, tsY, tsH, bodyY, bodyH, tbY, tbH, legendInline, legendStrip, legendPerLine,
-      rowH, rpp, pagesTall, wide, slices, cols, tableW, indentCol, chartX, chartW, pageCount: pagesTall * wide };
+      rowH, rpp, pagesTall, wide, slices, cols, tableW, indentCol, chartX, chartW, coverPages, pageCount: pagesTall * wide + coverPages };
   }
 
   /** Public pagination plan. */
@@ -409,7 +447,8 @@
     const n = normalise(doc), p = plan(n);
     const iso = d => { const ms = Math.round(d * DAY); return new Date(ms).toISOString().slice(0, 19); };
     return { page_w_mm: p.W, page_h_mm: p.H, rows_per_page: p.rpp, row_height_mm: p.rowH, body_height_mm: p.bodyH,
-      pages_tall: p.pagesTall, pages_wide: p.wide, page_count: p.pageCount,
+      pages_tall: p.pagesTall, pages_wide: p.wide, page_count: p.pageCount, pages: p.pageCount,
+      cover: !!n.cover, cover_pages: p.coverPages,
       table_width_mm: p.tableW, chart_width_mm: p.chartW, title_block_mm: p.tbH,
       slices: p.slices.map(([a, b]) => ({ t0: iso(a), t1: iso(b) })) };
   }
@@ -438,22 +477,7 @@
     const tableL = P.m;
 
     // ---------- header band ----------
-    {
-      const y = P.headerY, H = GEOMETRY.header_mm;
-      cv.rect(tableL, y, P.usableW, 1.1, C.accent);
-      const nameEnc = encodeText(n.meta.project_name || 'Untitled project');
-      const right = [];
-      if (n.meta.revision) right.push('Revision ' + n.meta.revision);
-      if (n.meta.data_date) right.push('Data date ' + formatDate(n.meta.data_date));
-      const rightTxt = right.join('    ');
-      const rightW = textWidth(rightTxt, 8, false);
-      cv.textEnc(fitEnc(nameEnc, P.usableW - rightW - 8, 12.5, true), tableL, y + 6.6, 12.5, true, C.text);
-      cv.text(n.meta.title || '', tableL, y + 10.6, 8.5, false, C.muted, 'left', P.usableW - rightW - 8);
-      cv.text(rightTxt, tableL + P.usableW, y + 6.6, 8, false, C.text, 'right');
-      if (P.wide > 1) cv.text(`Sheet ${c + 1} of ${P.wide} across  •  ${formatDate(s0 * DAY)} to ${formatDate((s1 - 1) * DAY)}`,
-        tableL + P.usableW, y + 10.6, 7, false, C.muted, 'right');
-      cv.line(tableL, y + H, tableL + P.usableW, y + H, C.frame, 0.25);
-    }
+    drawHeader(cv, n, P, C, P.wide > 1 ? `Sheet ${c + 1} of ${P.wide} across  •  ${formatDate(s0 * DAY)} to ${formatDate((s1 - 1) * DAY)}` : null);
 
     // ---------- backgrounds: header fills, summary rows, weekends ----------
     cv.rect(tableL, P.tsY, P.usableW, P.tsH, C.headFill);
@@ -681,7 +705,25 @@
     cv.line(P.chartX, P.tsY, P.chartX, bodyBottom, C.frame, 0.3);
 
     // ---------- title block ----------
-    drawTitleBlock(cv, n, P, pageNo, c, C);
+    drawTitleBlock(cv, n, P, pageNo, g, c, C);
+  }
+
+  /** The header band every page carries: accent rule, project name, title, revision and data
+      date; `subline` is an optional small right-aligned second line. */
+  function drawHeader(cv, n, P, C, subline) {
+    const x0 = P.m, y = P.headerY, H = GEOMETRY.header_mm;
+    cv.rect(x0, y, P.usableW, 1.1, C.accent);
+    const nameEnc = encodeText(n.meta.project_name || 'Untitled project');
+    const right = [];
+    if (n.meta.revision) right.push('Revision ' + n.meta.revision);
+    if (n.meta.data_date) right.push('Data date ' + formatDate(n.meta.data_date));
+    const rightTxt = right.join('    ');
+    const rightW = textWidth(rightTxt, 8, false);
+    cv.textEnc(fitEnc(nameEnc, P.usableW - rightW - 8, 12.5, true), x0, y + 6.6, 12.5, true, C.text);
+    cv.text(n.meta.title || '', x0, y + 10.6, 8.5, false, C.muted, 'left', P.usableW - rightW - 8);
+    cv.text(rightTxt, x0 + P.usableW, y + 6.6, 8, false, C.text, 'right');
+    if (subline) cv.text(subline, x0 + P.usableW, y + 10.6, 7, false, C.muted, 'right');
+    cv.line(x0, y + H, x0 + P.usableW, y + H, C.frame, 0.25);
   }
 
   function timescaleTiers(s0, s1, dw, origin) {
@@ -913,7 +955,8 @@
     });
   }
 
-  function drawTitleBlock(cv, n, P, pageNo, sheet, C) {
+  /** `band` is the row band shown (0-based), or null on the cover page. */
+  function drawTitleBlock(cv, n, P, pageNo, band, sheet, C) {
     const x0 = P.m, W = P.usableW, meta = n.meta;
     let y0 = P.tbY;
     cv.rect(x0, y0, W, P.tbH, '#ffffff', C.frame, 0.45);
@@ -1009,8 +1052,249 @@
       const { x: cx, w } = defs.SHEET;
       label('SHEET', cx);
       cv.text(`Page ${pageNo} of ${P.pageCount}`, cx + w / 2, y0 + 10.5, 9, true, C.text, 'center', w - 2);
-      if (P.wide > 1) cv.text(`Rows ${Math.floor((pageNo - 1) / P.wide) + 1}/${P.pagesTall}  •  across ${sheet + 1}/${P.wide}`, cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
-      else if (P.pagesTall > 1) cv.text(`Rows ${Math.floor((pageNo - 1) / P.wide) * P.rpp + 1}–${Math.min(n.rows.length, Math.floor((pageNo - 1) / P.wide) * P.rpp + P.rpp)} of ${n.rows.length}`, cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
+      if (band === null) cv.text('Briefing', cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
+      else if (P.wide > 1) cv.text(`Rows ${band + 1}/${P.pagesTall}  •  across ${sheet + 1}/${P.wide}`, cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
+      else if (P.pagesTall > 1) cv.text(`Rows ${band * P.rpp + 1}–${Math.min(n.rows.length, band * P.rpp + P.rpp)} of ${n.rows.length}`, cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // cover (briefing) page
+  // ---------------------------------------------------------------------------------------
+  /** `enc` with a trailing ellipsis, cut so that it still fits w mm. */
+  const ellipsise = (enc, w, pt, bold) => (enc.endsWith(ELLIPSIS) ? enc : fitEnc(enc + ELLIPSIS, w, pt, bold));
+
+  /** Word-wrap with a per-line width, widthOf(lineIndex) in mm (the first line of a watch item
+      runs on after its bold name). The last line is cut with an ellipsis when text remains. */
+  function wrapFlex(enc, widthOf, pt, bold, maxLines) {
+    const words = enc.split(' ').filter(w => w.length);
+    const lines = [];
+    let cur = '', i = 0;
+    while (i < words.length && lines.length < maxLines) {
+      const w = widthOf(lines.length);
+      const trial = cur ? cur + ' ' + words[i] : words[i];
+      if (widthEnc(trial, pt, bold) <= w) { cur = trial; i++; continue; }
+      if (cur) { lines.push(cur); cur = ''; continue; }
+      lines.push(fitEnc(words[i], w, pt, bold)); i++;      // a single over-long word
+    }
+    if (cur && lines.length < maxLines) { lines.push(cur); cur = ''; }
+    if ((i < words.length || cur) && lines.length) { const k = lines.length - 1; lines[k] = ellipsise(lines[k], widthOf(k), pt, bold); }
+    return lines;
+  }
+
+  /** The briefing page: heading, headline, KPI tiles, paragraphs (two columns on a landscape
+      sheet when the text is long), then the milestone table and the watch list side by side
+      (stacked on portrait), and a footer line. Everything is budgeted against the space between
+      the header band and the title block: paragraphs take what the fixed parts leave and are cut
+      with an ellipsis; the table and watch list lose rows/items before the paragraphs lose their
+      last three lines. The content area is clipped as a last defence. */
+  function drawCover(cv, n, P, pageNo) {
+    const C = n.options.colour === false ? PALETTE_MONO : PALETTE_COLOUR;
+    const K = n.cover, G = GEOMETRY;
+    const x0 = P.m, W = P.usableW, land = P.W > P.H, wideSheet = W >= 330;
+    const top = P.tsY, bottom = P.tbY - G.gap_mm;
+    const titlePt = wideSheet ? 24 : 20, subPt = wideSheet ? 10 : 9, headPt = wideSheet ? 12.5 : 11, bodyPt = wideSheet ? 9 : 8.5;
+    const bodyLh = bodyPt / MM * 1.4;
+    const base = (ty, pt, lh) => ty + (lh + 0.72 * pt / MM) / 2;     // baseline that centres the caps in a line box
+    const date = v => formatDate(v) || (v == null ? '' : String(v));
+    drawHeader(cv, n, P, C, null);
+    cv.save();
+    cv.clip(x0, top, W, bottom - top);
+    const footerH = K.footer ? 5.5 : 0;
+    const limit = bottom - footerH;                  // nothing but the footer goes below this
+    let y = top + 1.5;
+
+    // ---------- heading ----------
+    let headed = false;
+    if (K.title) {
+      const lh = titlePt / MM * 1.15;
+      cv.textEnc(fitEnc(encodeText(K.title), W, titlePt, true), x0, base(y, titlePt, lh), titlePt, true, C.text);
+      y += lh; headed = true;
+    }
+    if (K.subtitle) {
+      const lh = subPt / MM * 1.4;
+      cv.text(K.subtitle, x0, base(y, subPt, lh), subPt, false, C.muted, 'left', W);
+      y += lh; headed = true;
+    }
+    if (headed) { y += 1.6; cv.line(x0, y, x0 + W, y, C.frame, 0.3); y += 3.2; }
+
+    // ---------- headline ----------
+    if (K.headline && y < limit) {
+      const lh = headPt / MM * 1.3;
+      const maxL = Math.max(1, Math.min(3, Math.floor((limit - y) / lh)));
+      for (const l of wrapEnc(encodeText(K.headline), W, headPt, true, maxL)) { cv.textEnc(l, x0, base(y, headPt, lh), headPt, true, C.text); y += lh; }
+      y += 2.5;
+    }
+
+    // ---------- KPI tiles ----------
+    const tileH = wideSheet ? 14 : 12.5;
+    if (K.kpis.length && y + tileH <= limit) {
+      const k = K.kpis.length, gap = 3;
+      const tw = Math.min(wideSheet ? 72 : 62, (W - gap * (k - 1)) / k);
+      K.kpis.forEach((kpi, i) => {
+        const x = x0 + i * (tw + gap);
+        cv.rect(x, y, tw, tileH, C.sumRow, C.gridMaj, 0.2);
+        cv.rect(x, y, 0.9, tileH, C.accent);
+        cv.text(kpi.label, x + 3, y + 4.3, 5.5, true, C.muted, 'left', tw - 5);
+        const enc = encodeText(kpi.value);
+        let pt = wideSheet ? 12 : 10.5;
+        while (pt > 7 && widthEnc(enc, pt, true) > tw - 5) pt -= 0.5;
+        cv.textEnc(fitEnc(enc, tw - 5, pt, true), x + 3, y + tileH - 3.6, pt, true, C.text);
+      });
+      y += tileH + 4.5;
+    }
+
+    // ---------- measure what sits below the paragraphs: milestone table and watch list ----------
+    const sectionGap = 4, gutter = 8, lblH = 4.6;
+    const minPara = K.paragraphs.length ? 3 * bodyLh + sectionGap : 0;
+    const budget = limit - y - minPara;
+    const sideBySide = land && K.milestones.length > 0 && K.watch.length > 0;
+    const tblW = sideBySide ? Math.round(W * 0.56) : land ? Math.min(W, Math.max(120, W * 0.6)) : W;
+    const wchW = sideBySide ? W - tblW - gutter : W;
+    const withBase = K.milestones.some(m => m.baseline_date);
+    const tblPt = 7, tblRowH = wideSheet ? 5 : 4.7, tblHeadH = 5.4;
+    const tableH = (rows, more) => (rows ? lblH + tblHeadH + rows * tblRowH + (more ? 4.2 : 0) : 0);
+    const wPt = bodyPt * 0.95, wLh = wPt / MM * 1.32, wIndent = 4.5;
+    const watchLines = items => items.map(it => {
+      const nameEnc = fitEnc(encodeText(it.name), (wchW - wIndent) * 0.6, wPt, true);
+      const nameW = nameEnc ? widthEnc(nameEnc, wPt, true) + 1.6 : 0;
+      const firstW = wchW - wIndent - nameW, restW = wchW - wIndent;
+      const textEnc = encodeText(it.text);
+      let lines;
+      if (!textEnc) lines = [];
+      else if (firstW < 20) lines = [''].concat(wrapFlex(textEnc, () => restW, wPt, false, 1));   // long name: text starts on the next line
+      else lines = wrapFlex(textEnc, i => (i ? restW : firstW), wPt, false, 2);
+      return { nameEnc, nameW, lines };
+    });
+    const watchH = wl => (wl.length ? lblH + wl.reduce((s, it) => s + Math.max(1, it.lines.length) * wLh + 1.0, 0) : 0);
+    let msRows = Math.min(18, K.milestones.length), wItems = K.watch.slice();
+    let wl = watchLines(wItems), tH = 0, wH = 0, blockH = 0;
+    const measure = () => {
+      tH = tableH(msRows, K.milestones.length - msRows); wH = watchH(wl);
+      blockH = sideBySide ? Math.max(tH, wH) : tH + wH + (tH && wH ? sectionGap : 0);
+      return blockH;
+    };
+    while (measure() > budget && (msRows > 0 || wItems.length)) {
+      if (msRows > 0 && (tH >= wH || !wItems.length)) msRows--;
+      else { wItems.pop(); wl = watchLines(wItems); }
+    }
+    if (blockH > budget) { msRows = 0; wl = []; blockH = 0; }
+
+    // ---------- paragraphs ----------
+    const paraBottom = limit - (blockH ? blockH + sectionGap : 0);
+    const maxLines = Math.floor((paraBottom - y) / bodyLh + 1e-9);
+    let paraEnd = y;
+    if (K.paragraphs.length && maxLines > 0) {
+      const encs = K.paragraphs.map(encodeText);
+      const fullLines = encs.reduce((s, e) => s + wrapEnc(e, W, bodyPt, false, 1e6).length, 0);
+      const colN = land && fullLines >= 4 ? 2 : 1;
+      const colW = (W - gutter * (colN - 1)) / colN;
+      // one flat flow of lines and half-line paragraph gaps, then dealt into balanced columns
+      const flow = [];
+      encs.forEach((e, pi) => {
+        if (pi) flow.push({ gap: true });
+        for (const l of wrapEnc(e, colW, bodyPt, false, 1e6)) flow.push({ enc: l });
+      });
+      const total = flow.reduce((s, it) => s + (it.gap ? 0.5 : 1), 0);
+      const cut = total > maxLines * colN + 1e-9;
+      const target = cut ? maxLines : Math.ceil(total / colN);
+      const cols = Array.from({ length: colN }, () => []);          // items: { enc } | { gap: true }
+      let ci = 0, used = 0, placed = 0;
+      for (const it of flow) {
+        const cost = it.gap ? 0.5 : 1;
+        if (it.gap && used === 0) { placed++; continue; }           // no gap at the top of a column
+        if (used + cost > target + 1e-9 || (it.gap && used + 1.5 > target + 1e-9)) {
+          ci++; used = 0;
+          if (ci >= colN) break;
+          if (it.gap) { placed++; continue; }
+        }
+        cols[ci].push(it); used += cost; placed++;
+      }
+      if (placed < flow.length) {                                    // text remains: mark the last line
+        for (let c = colN - 1; c >= 0; c--) {
+          const last = cols[c].filter(it => it.enc).pop();
+          if (last) { last.enc = ellipsise(last.enc, colW, bodyPt, false); break; }
+        }
+      }
+      cols.forEach((items, c) => {
+        const x = x0 + c * (colW + gutter);
+        let ty = y;
+        for (const it of items) {
+          if (it.gap) { ty += bodyLh * 0.5; continue; }
+          cv.textEnc(it.enc, x, base(ty, bodyPt, bodyLh), bodyPt, false, C.text);
+          ty += bodyLh;
+        }
+        paraEnd = Math.max(paraEnd, ty);
+      });
+    }
+
+    // ---------- milestone table and watch list ----------
+    if (blockH) {
+      let bx = x0, by = paraEnd > y ? paraEnd + sectionGap : y;
+      if (msRows) {
+        drawMilestones(cv, K.milestones, bx, by, tblW, msRows, withBase, C, { pt: tblPt, rowH: tblRowH, headH: tblHeadH, lblH, date });
+        if (sideBySide) bx += tblW + gutter; else by += tH + (wl.length ? sectionGap : 0);
+      }
+      if (wl.length) drawWatch(cv, wl, bx, by, C, { pt: wPt, lh: wLh, indent: wIndent, lblH });
+    }
+
+    // ---------- footer ----------
+    if (K.footer) {
+      cv.line(x0, limit + 0.8, x0 + W, limit + 0.8, C.rowLine, 0.15);
+      cv.text(K.footer, x0, bottom - 1.4, 6.5, false, C.muted, 'left', W);
+    }
+    cv.restore();
+    drawTitleBlock(cv, n, P, pageNo, null, 0, C);
+  }
+
+  function drawMilestones(cv, ms, x, y, w, rows, withBase, C, o) {
+    cv.text('MILESTONES', x, y + 3.0, 5, true, C.muted);
+    y += o.lblH;
+    const dateW = Math.min(24, Math.max(16, w * 0.17)), varW = Math.min(14, Math.max(10, w * 0.1));
+    const cols = [{ t: 'Milestone', w: w - dateW - (withBase ? dateW + varW : 0), al: 'left' }, { t: 'Date', w: dateW, al: 'right' }];
+    if (withBase) cols.push({ t: 'Baseline', w: dateW, al: 'right' }, { t: 'Var', w: varW, al: 'right' });
+    let cx = x;
+    cols.forEach(c => { c.x = cx; cx += c.w; });
+    const tableTop = y;
+    const cell = (c, enc, by, pt, bold, col) =>
+      cv.textEnc(fitEnc(enc, c.w - 3, pt, bold), c.al === 'right' ? c.x + c.w - 1.5 : c.x + 1.5, by, pt, bold, col, c.al);
+    cv.rect(x, y, w, o.headH, C.headFill);
+    cols.forEach(c => cell(c, encodeText(c.t), y + o.headH / 2 + 0.72 * 6.5 / MM / 2, 6.5, true, C.text));
+    y += o.headH;
+    for (let i = 0; i < rows; i++) {
+      const m = ms[i], c0 = cols[0];
+      const by = y + o.rowH / 2 + 0.72 * o.pt / MM / 2;
+      if (i) cv.line(x, y, x + w, y, C.rowLine, 0.1);
+      const nameEnc = encodeText(m.name), stEnc = encodeText(m.status);
+      if (stEnc) {                                       // status in grey after the name, when there is room
+        const nw = widthEnc(nameEnc, o.pt, false), sw = widthEnc(stEnc, 6, false);
+        if (nw + 2.5 + sw <= c0.w - 3) cv.textEnc(stEnc, c0.x + 1.5 + nw + 2.5, by, 6, false, C.muted);
+      }
+      cv.textEnc(fitEnc(nameEnc, c0.w - 3, o.pt, false), c0.x + 1.5, by, o.pt, false, C.text);
+      cell(cols[1], encodeText(o.date(m.date)), by, o.pt, false, C.text);
+      if (withBase) {
+        cell(cols[2], encodeText(m.baseline_date ? o.date(m.baseline_date) : '—'), by, o.pt, false, C.text);
+        const v = m.variance_days;
+        cell(cols[3], encodeText(v === null ? '—' : (v > 0 ? '+' : '') + v + 'd'), by, o.pt, v !== null && v !== 0, v > 0 ? C.deadline : C.text);
+      }
+      y += o.rowH;
+    }
+    cv.rect(x, tableTop, w, y - tableTop, null, C.frame, 0.25);
+    cols.forEach((c, i) => { if (i) cv.line(c.x, tableTop, c.x, y, C.gridMaj, 0.12); });
+    const more = ms.length - rows;
+    if (more > 0) cv.text(`and ${more} more`, x + 1.5, y + 3.2, 6.5, false, C.muted, 'left', w - 3);
+  }
+
+  function drawWatch(cv, wl, x, y, C, o) {
+    cv.text('WATCH', x, y + 3.0, 5, true, C.muted);
+    y += o.lblH;
+    const bullet = encodeText('•');
+    const off = (o.lh + 0.72 * o.pt / MM) / 2;
+    for (const it of wl) {
+      cv.textEnc(bullet, x + 1.2, y + off, o.pt, true, C.accent);
+      if (it.nameEnc) cv.textEnc(it.nameEnc, x + o.indent, y + off, o.pt, true, C.text);
+      it.lines.forEach((l, i) => { if (l) cv.textEnc(l, x + o.indent + (i ? 0 : it.nameW), y + i * o.lh + off, o.pt, false, C.text); });
+      y += Math.max(1, it.lines.length) * o.lh + 1.0;
     }
   }
 
@@ -1056,6 +1340,12 @@
     const P = plan(n);
     const pages = [];
     let pageNo = 0;
+    if (n.cover) {
+      pageNo++;
+      const cv = new Canvas(P.H);
+      drawCover(cv, n, P, pageNo);
+      pages.push(cv.toString());
+    }
     for (let g = 0; g < P.pagesTall; g++) {
       for (let c = 0; c < P.wide; c++) {
         pageNo++;
