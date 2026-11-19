@@ -680,6 +680,9 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 .ov-head { margin: 0 0 10px; font: 650 18px/1.3 var(--font-display); letter-spacing: -.012em; text-wrap: pretty; }
 .ov-since { margin: 0 0 10px; font-size: 13.5px; color: var(--ink-2); }
 .ov-items { display: grid; gap: 6px; font-size: 12.5px; color: var(--ink-2); margin-bottom: 10px; }
+.ov-item { display: flex; gap: 8px; align-items: baseline; }
+.ov-item .linkchip { flex: none; }
+.ov-item b { color: var(--ink); font-weight: 600; }
 .ov-prose p { margin: 0 0 10px; font-size: 14px; line-height: 1.55; color: var(--ink); text-wrap: pretty; }
 .ov-prose p:last-child { margin-bottom: 0; }
 .ov-h3 { margin: 10px 0 4px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); }
