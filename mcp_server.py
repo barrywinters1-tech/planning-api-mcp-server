@@ -27,6 +27,7 @@ from planner.repair import plan_repairs
 from planner.risk import risk_analysis
 from planner.guardrails import critical_drag, out_of_sequence
 from planner.compare import compare as compare_projects, narrative as compare_narrative
+from planner.briefing import briefing
 
 mcp = FastMCP(
     "AI Construction Planner",
@@ -236,6 +237,21 @@ def schedule_guardrails(project_id: str) -> dict:
     except ScheduleError as e:
         return {"error": str(e)}
     return {"out_of_sequence": out_of_sequence(p), "drag": critical_drag(p)}
+
+
+@mcp.tool()
+def programme_briefing(project_id: str, today: str = "") -> dict:
+    """The programme reports its own state in plain English, deterministically from the schedule: a
+    one-sentence headline and status (on_track / at_risk / late / no_deadline / not_started / complete),
+    headline figures, what changed since the last closed period, issued revision or baseline, a watch list
+    with reasons, what starts and finishes in the next two weeks, the actions to take next, every milestone
+    and the whole briefing as prose for an email or cover note. "today" is the data date unless given
+    (YYYY-MM-DD)."""
+    p = _load(project_id)
+    try:
+        return briefing(p, today=today or None)
+    except ScheduleError as e:
+        return {"error": str(e)}
 
 
 @mcp.tool()
