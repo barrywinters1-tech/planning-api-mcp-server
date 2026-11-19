@@ -22,6 +22,7 @@ const S = {
   cols: ['id', 'name', 'dur', 'start', 'finish', 'tf', 'preds', 'pct'],
   panel: null, histRes: '', hist: null, costs: null, editing: null, drag: null, rowsCache: [],
   inspector: false, sideTab: 'activity', list: [], details: {}, staged: {}, ringShown: {},
+  mode: 'build', sandbox: null, aiReady: false,
 };
 const ALL_COLS = {
   id: { t: 'ID', w: 68, get: a => a.id },
@@ -129,7 +130,7 @@ async function loadList() {
   try { S.list = await api('/api/projects'); } catch (e) { S.list = []; toast(e.message); }
   if (S.screen === 'projects') renderProjects();
 }
-async function openProject(pid, screen = 'plan') {
+async function openProject(pid, screen = 'overview') {
   if (!pid) return;
   try { const v = await api('/api/projects/' + encodeURIComponent(pid)); if (pid !== S.pid) S.staged = {}; S.sel = new Set(); S.active = null; show(v); go(screen); } catch (e) { toast(e.message, { ms: 5000 }); }
 }
@@ -143,17 +144,21 @@ function show(v) {
   paintChrome();
   if (S.screen === 'plan') { render(); if (S.panel === 'histogram' || S.panel === 'cost') refreshPanel(); }
   else if (S.screen === 'monitor') renderMonitor();
+  else if (S.screen === 'overview') renderOverview();
   if (S.inspector) renderInspector();
+  paintTry();
 }
 async function save(label) {
+  if (readOnly()) { roBlocked(); await openProject(S.pid, S.screen); return; }
   setStatus('saving', 'Saving');
   try {
     const v = await api(pidPath(), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: S.project }) });
     show(v); setStatus('ok', 'Saved'); if (label) toast(label, { ms: 3200, undo: true });
   } catch (e) { setStatus('error', 'Not saved'); toast('Not saved: ' + e.message, { ms: 6000 }); await openProject(S.pid, S.screen); }
 }
-function mutate(fn, label) { if (!S.project) return; const r = fn(S.project); if (r === false) return; save(label); }
+function mutate(fn, label) { if (!S.project) return; if (readOnly()) return roBlocked(); const r = fn(S.project); if (r === false) return; save(label); }
 async function act(path, body, method = 'POST') {
+  if (readOnly()) return roBlocked();
   setStatus('saving', 'Working');
   try { show(await api(pidPath(path), { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })); setStatus('ok', 'Saved'); }
   catch (e) { setStatus('ok', 'Saved'); toast(e.message, { ms: 4000 }); }
@@ -163,16 +168,17 @@ async function act(path, body, method = 'POST') {
 function go(screen) {
   if (screen !== 'projects' && !S.project) screen = 'projects';
   const prev = S.screen; S.screen = screen;
-  $('#scrProjects').hidden = screen !== 'projects'; $('#scrPlan').hidden = screen !== 'plan'; $('#scrMonitor').hidden = screen !== 'monitor';
+  $('#scrProjects').hidden = screen !== 'projects'; $('#scrOverview').hidden = screen !== 'overview'; $('#scrPlan').hidden = screen !== 'plan'; $('#scrMonitor').hidden = screen !== 'monitor';
   closePops();
   paintChrome();
-  const el = { projects: $('#scrProjects'), plan: $('#scrPlan'), monitor: $('#scrMonitor') }[screen];
+  const el = { projects: $('#scrProjects'), overview: $('#scrOverview'), plan: $('#scrPlan'), monitor: $('#scrMonitor') }[screen];
   if (screen === 'projects') { renderProjects(); loadList(); }
+  else if (screen === 'overview') renderOverview();
   else if (screen === 'plan') { render(); requestAnimationFrame(() => placeSplitbar()); if (S.panel === 'histogram' || S.panel === 'cost') refreshPanel(); $('#sheet').focus({ preventScroll: true }); }
   else renderMonitor();
   // moving between the two project views slides in the direction of the tab; everything else cross-fades
   if (prev !== screen) {
-    const order = { projects: 0, plan: 1, monitor: 2 };
+    const order = { projects: 0, overview: 1, plan: 2, monitor: 3 };
     const dx = prev === 'projects' || screen === 'projects' ? 0 : (order[screen] > order[prev] ? 24 : -24);
     animate(el, { x: 0, opacity: 1 }, { from: { x: dx, opacity: 0 }, response: .34, done: () => { el.style.transform = ''; springs.delete(el); } });
   }
@@ -1424,7 +1430,6 @@ function addLink(p, s, type, lagDays) {
   mutate(pr => { if (reaches(pr, s, p)) { toast('That link would create a loop'); return false; } pr.relationships = pr.relationships.filter(r => !(r.predecessor_id === p && r.successor_id === s)); pr.relationships.push({ predecessor_id: p, successor_id: s, type, lag_hours: (lagDays || 0) * hpd(byId(p)) }); }, `Linked ${p} → ${s}`);
 }
 function reaches(p, from, to) { const seen = new Set(), st = [from]; while (st.length) { const n = st.pop(); if (n === to) return true; if (seen.has(n)) continue; seen.add(n); p.relationships.filter(r => r.predecessor_id === n).forEach(r => st.push(r.successor_id)); } return false; }
-function tipFor(e, a) { if (!a || S.drag) return; tipText(e, `<b>${esc(a.id)} ${esc(a.name)}</b><br>${fmtD(a.actual_start || a.early_start)} → ${fmtD(a.actual_finish || a.early_finish)} · ${fmt1(daysOf(a, a.duration_hours))}d<br>TF ${fmt1(daysOf(a, a.total_float_hours || 0))}d · FF ${fmt1(daysOf(a, a.free_float_hours || 0))}d${a.constraint !== 'none' ? '<br>' + a.constraint.replaceAll('_', ' ') + ' ' + fmtD(a.constraint_date) : ''}${a.baseline_finish ? '<br>baseline finish ' + fmtD(a.baseline_finish) : ''}${Object.entries(a.codes || {}).map(([k, v]) => `<br>${esc(k)}: ${esc(v)}`).join('')}${a.notes ? '<br><i>' + esc(a.notes) + '</i>' : ''}`); }
 function tipText(e, html) { const t = $('#tip'); t.innerHTML = html; t.style.display = 'block'; t.style.left = (e.clientX + 14) + 'px'; t.style.top = (e.clientY + 14) + 'px'; }
 function hideTip() { $('#tip').style.display = 'none'; }
 
@@ -1834,6 +1839,11 @@ How to work:
 - Then reply briefly in British English: what you changed, the new finish date and health score from the tool results, and any assumption you made. Ask a question only if you genuinely cannot proceed. Durations and lags are in working days. Activity ids look like A1010.`;
 let _sample;
 async function getSample() {
+  if (S._sampleP) return S._sampleP;
+  S._sampleP = getSample0(); S._sampleP.then(sm => { S.aiReady = !!sm; }, () => { });
+  return S._sampleP;
+}
+async function getSample0() {
   if (_sample !== undefined) return _sample;
   try { _sample = window.claude && typeof window.claude.use === 'function' ? await window.claude.use('sample') : null; } catch { _sample = null; }
   if (_sample) { try { const lim = await _sample.limits(); if (!lim || !lim.tools) _sample = null; } catch { _sample = null; } }
@@ -2049,8 +2059,8 @@ function paintProjects(el, list) {
   const ask = el.querySelector('#pAsk'); if (ask) { ask.onclick = () => openAssistant('Plan a '); (LOCAL ? getSample() : Promise.resolve(true)).then(sm => { ask.hidden = !sm; }); }
   const sample = el.querySelector('#pSample'); if (sample) sample.onclick = () => buildFromBrief({ name: 'Sample: two-storey house', building_type: 'house', storeys: 2, units: 0, gross_internal_area_m2: 0, frame: null, foundations: null, envelope: null, roof: null, fit_out: 'full', basement: false, demolition: false, service_diversion: false, contaminated_ground: false, external_works: true, six_day_week: false, start_date: null, deadline: null, planning_condition_date: null });
   el.querySelectorAll('[data-open]').forEach(c => {
-    c.onclick = e => { if (e.target.closest('[data-del]')) return; openProject(c.dataset.open, 'plan'); };
-    c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openProject(c.dataset.open, 'plan'); } };
+    c.onclick = e => { if (e.target.closest('[data-del]')) return; openProject(c.dataset.open, 'overview'); };
+    c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openProject(c.dataset.open, 'overview'); } };
   });
   el.querySelectorAll('[data-del]').forEach(b => b.onclick = async e => {
     e.stopPropagation();
@@ -2252,7 +2262,7 @@ const BRIEF_KEYS = ['name', 'building_type', 'storeys', 'units', 'frame', 'found
 async function buildFromBrief(brief, text) {
   setStatus('saving', 'Building');
   try {
-    const v = await post('/api/generate', { brief, text: text || null }); show(v); await loadList(); go('plan'); setStatus('ok', 'Saved');
+    const v = await post('/api/generate', { brief, text: text || null }); show(v); await loadList(); go('overview'); setStatus('ok', 'Saved');
     toast(`Built ${v.project.activities.length} activities. Forecast finish ${fmtD(v.project.finish)}.`, { ms: 6000, action: { label: 'See health', fn: () => go('monitor') } });
     return true;
   } catch (e) { setStatus('error', 'Not built'); toast(e.message, { ms: 6000 }); return false; }
@@ -2333,8 +2343,15 @@ function palActions() {
   return [
     ['New programme', 'Start', () => startFlow()],
     ['All projects', 'Go to', () => go('projects')],
+    S.project && ['Overview', 'Go to', () => go('overview')],
     S.project && ['Plan', 'Go to', () => go('plan')],
-    S.project && ['Monitor', 'Go to', () => go('monitor')],
+    S.project && !S.sandbox && ['Try changes safely (sandbox)', 'Plan', tryStart],
+    S.project && S.sandbox && ['Keep the tried changes', 'Plan', tryKeep],
+    S.project && S.sandbox && ['Discard the tried changes', 'Plan', tryDiscard],
+    ['View as Build (all tools)', 'View', () => setMode('build')],
+    ['View as Site (progress first)', 'View', () => setMode('site')],
+    ['View as Client (read-only)', 'View', () => setMode('client')],
+    S.project && ['Progress (health, charts, periods)', 'Go to', () => go('monitor')],
     ['Ask the AI assistant', 'Assist', () => openAssistant()],
     S.project && ['Critical path drag: what to accelerate', 'Analyse', () => computeDrag()],
     S.project && ['Out-of-sequence progress', 'Check', oosDialog],
@@ -2379,11 +2396,14 @@ function closePalette() { const back = $('#palBack'), f = $('#cmdForm'); if (bac
 function palItems() {
   const t = $('#cmdIn').value.trim(), tl = t.toLowerCase(); const items = [];
   // matching actions first, so a word like "longest" runs the action; anything else runs as a command
+  if (t && S.project && looksLikeQuestion(t)) items.push({ sec: 'Answer', label: `Ask: “${t}”`, k: 'Enter', run: () => askInPalette(t) });
   palActions().filter(([l]) => !tl || l.toLowerCase().includes(tl)).forEach(([l, k, fn]) => items.push({ sec: 'Actions', label: l, k, run: () => { closePalette(); fn(); } }));
+  if (t && S.project && S.aiReady) items.push({ sec: 'Claude', label: `Ask Claude: “${t}”`, k: '', run: () => { closePalette(); openAssistant(); sendAi(t); } });
   if (t && S.project) items.push({ sec: 'Command', label: `Run “${t}”`, k: items.length ? '' : 'Enter', run: () => runCommand(t) });
   if (S.project && tl.length >= 2) S.project.activities.filter(a => a.id.toLowerCase().includes(tl) || a.name.toLowerCase().includes(tl)).slice(0, 7)
     .forEach(a => items.push({ sec: 'Go to activity', label: `${a.id}  ${a.name}`, k: fmtD(a.actual_start || a.early_start), run: () => { closePalette(); goToActivity(a.id); } }));
-  if (S.project) PAL_EXAMPLES.filter(e => !tl || e.includes(tl)).slice(0, t ? 4 : 9).forEach(e => items.push({ sec: 'Try a command', label: e, k: '', fill: e }));
+  if (S.project && !t) askExamples(4).forEach(e => items.push({ sec: 'Ask a question', label: e, k: '', fill: e }));
+  if (S.project) PAL_EXAMPLES.filter(e => !tl || e.includes(tl)).slice(0, t ? 4 : 5).forEach(e => items.push({ sec: 'Try a command', label: e, k: '', fill: e }));
   return items;
 }
 function paintPalette() {
@@ -2392,7 +2412,7 @@ function paintPalette() {
   $$('#palList .pal-item').forEach(el => { el.onpointerdown = e => e.preventDefault(); el.onclick = () => choosePal(items[+el.dataset.i]); el.onpointermove = () => { if (palSel !== +el.dataset.i) { palSel = +el.dataset.i; $$('#palList .pal-item').forEach(x => x.classList.toggle('on', x === el)); } }; });
   const on = $('#palList .pal-item.on'); if (on) on.scrollIntoView({ block: 'nearest' });
 }
-function choosePal(it) { if (!it) return; if (it.fill) { $('#cmdIn').value = it.fill; palSel = 0; paintPalette(); $('#cmdIn').focus(); return; } it.run(); }
+function choosePal(it) { if (!it) return; if (it.fill) { $('#cmdIn').value = it.fill; palSel = 0; paintPalette(); $('#cmdIn').focus(); if (looksLikeQuestion(it.fill)) askInPalette(it.fill); return; } it.run(); }
 async function runCommand(t) {
   try {
     const v = await post(pidPath('/command'), { text: t });
@@ -2550,6 +2570,7 @@ function projectsPop(trigger) {
   pop.querySelectorAll('[data-pid]').forEach(b => b.onclick = () => { closePop(pop); openProject(b.dataset.pid, S.screen === 'projects' ? 'plan' : S.screen); });
   pop.querySelector('#ppAll').onclick = () => { closePop(pop); go('projects'); };
   pop.querySelector('#ppNew').onclick = () => { closePop(pop); startFlow(); };
+  pop.insertAdjacentHTML('beforeend', `<div class="pop-sec">View as</div><div style="padding:4px 8px 6px">${modeSeg('ppMode')}</div>`); wireModeSeg(pop);
   openPop(pop, trigger);
 }
 
@@ -2566,6 +2587,223 @@ async function refreshPanel() {
   } catch (e) { toast(e.message); }
 }
 function renderPanelBody() { /* health checks and notes live on the Monitor screen */ }
+// ============================================================================
+// The reimagined shell: Overview, Build/Site/Client modes, Try mode, Ask, hover cards.
+// The engine and every earlier feature are unchanged underneath; this layer decides what the
+// person sees first, what the programme says about itself, and how safely changes can be tried.
+// ============================================================================
+
+// ---------- modes: Build (planner), Site (phone, progress first), Client (read-only) ----------
+const MODES = [['build', 'Build', 'All the planning tools'], ['site', 'Site', 'Progress first; made for a phone'], ['client', 'Client', 'Read-only: the briefing, milestones and the chart']];
+function setMode(m, quiet) {
+  if (!MODES.some(x => x[0] === m)) m = 'build';
+  const was = S.mode; S.mode = m; document.body.dataset.mode = m; try { localStorage.setItem('mode', m); } catch { }
+  if (m === 'client') { if (S.editing) cancelEdit(); if (S.inspector) toggleInspector(false); }
+  paintChrome();
+  if (S.project) { if (S.screen === 'overview') renderOverview(); else if (S.screen === 'plan') render(); else if (S.screen === 'monitor') renderMonitor(); }
+  if (!quiet && was !== m) toast(m === 'client' ? 'Client view: read-only. Switch back to Build to change anything.' : m === 'site' ? 'Site view: progress first, sized for a phone.' : 'Build view: every tool.', { ms: 3200 });
+}
+const readOnly = () => S.mode === 'client';
+function roBlocked() { toast('Client view is read-only. Switch to Build to change the programme.', { ms: 4000, action: { label: 'Build view', fn: () => setMode('build') } }); return true; }
+function modeSeg(id) { return `<div class="miniseg modeseg" id="${id}" role="group" aria-label="View as">${MODES.map(([k, l, d]) => `<button type="button" data-mode="${k}" class="${S.mode === k ? 'on' : ''}" title="${esc(d)}" aria-pressed="${S.mode === k}">${l}</button>`).join('')}</div>`; }
+function wireModeSeg(root) { root.querySelectorAll('.modeseg [data-mode]').forEach(b => b.onclick = () => setMode(b.dataset.mode)); }
+
+// ---------- Try mode: a sandbox you can keep or throw away ----------
+// Changes save as normal (so undo, the assistant and every tool work), but the programme as it
+// was when Try started is kept aside. The bar shows the finish delta live; Discard puts it back.
+function tryStart() {
+  if (!S.project || S.sandbox) return; if (readOnly()) return roBlocked();
+  S.sandbox = { pid: S.pid, base: cloneProject(), baseFinish: S.project.finish, started: Date.now() };
+  paintTry(); if (S.screen !== 'plan') go('plan');
+  toast('Try mode. Change anything: the finish delta shows live. Keep or Discard when you are done.', { ms: 5200 });
+}
+function tryDelta() {
+  const sb = S.sandbox, p = S.project; if (!sb) return null;
+  const cal = p.calendars[p.default_calendar_id] || { working_days: [0, 1, 2, 3, 4], exceptions: {} };
+  const shift = sb.baseFinish && p.finish ? workingDaysBetween(cal, new Date(sb.baseFinish), new Date(p.finish)) : null;
+  const old = new Map(sb.base.activities.map(a => [a.id, a])); let changed = 0, added = 0;
+  p.activities.forEach(a => { const o = old.get(a.id); if (!o) { added++; return; } if (o.duration_hours !== a.duration_hours || (o.early_start || '') !== (a.early_start || '') || (o.early_finish || '') !== (a.early_finish || '') || o.status !== a.status || (o.constraint || 'none') !== (a.constraint || 'none') || o.name !== a.name) changed++; });
+  const removed = sb.base.activities.filter(a => !byId(a.id)).length;
+  const links = p.relationships.length - sb.base.relationships.length;
+  return { shift, changed, added, removed, links, any: !!(changed || added || removed || links) };
+}
+function paintTry() {
+  const bar = $('#tryBar'); if (!bar) return;
+  const sb = S.sandbox; if (!sb || !S.project || sb.pid !== S.pid) { bar.hidden = true; document.body.classList.remove('trying'); const tb = $('#btnTry'); if (tb) tb.classList.remove('on'); return; }
+  const d = tryDelta(), p = S.project; const late = p.must_finish_by && p.finish && p.finish > p.must_finish_by;
+  const shiftTxt = d.shift == null ? '' : d.shift === 0 ? 'finish unchanged' : `finish ${fmtD(p.finish)} <b class="${d.shift > 0 ? 'crit' : 'okc'}">${d.shift > 0 ? '+' : ''}${fmt1(d.shift)}d</b>`;
+  const parts = [d.changed && `${d.changed} moved`, d.added && `${d.added} added`, d.removed && `${d.removed} removed`, d.links && `${d.links > 0 ? '+' : ''}${d.links} link${Math.abs(d.links) === 1 ? '' : 's'}`].filter(Boolean);
+  bar.innerHTML = `<span class="try-dot" aria-hidden="true"></span><b>Trying changes</b><span class="try-d">${shiftTxt}${parts.length ? ' · ' + parts.join(', ') : ' · nothing changed yet'}${late ? ' · <span class="crit">past the deadline</span>' : ''}</span><span class="spacer"></span><button type="button" class="btn" id="tryCmp" ${d.any ? '' : 'disabled'}>What changed</button><button type="button" class="btn" id="tryDrop">Discard</button><button type="button" class="primary" id="tryKeep">Keep</button>`;
+  bar.hidden = false; document.body.classList.add('trying'); const tb = $('#btnTry'); if (tb) tb.classList.add('on');
+  bar.querySelector('#tryCmp').onclick = () => { const E = window.PlannerEngine; if (E && E.compareProjects) compareSheet(E.compareProjects(sb.base, S.project)); };
+  bar.querySelector('#tryDrop').onclick = tryDiscard; bar.querySelector('#tryKeep').onclick = tryKeep;
+}
+async function tryDiscard() {
+  const sb = S.sandbox; if (!sb) return; const d = tryDelta(); S.sandbox = null; paintTry();
+  if (d.any) { S.project = sb.base; await save('Discarded. The programme is as it was before Try mode.'); } else toast('Nothing was changed. Try mode closed.');
+}
+async function tryKeep() {
+  const sb = S.sandbox; if (!sb) return; const d = tryDelta(); S.sandbox = null; paintTry();
+  if (!d.any) return toast('Nothing was changed. Try mode closed.');
+  toast(`Kept. ${d.shift == null ? '' : d.shift === 0 ? 'The finish is unchanged.' : `The finish moved ${Math.abs(fmt1(d.shift))} day${Math.abs(d.shift) === 1 ? '' : 's'} ${d.shift > 0 ? 'later' : 'earlier'}.`}`, { ms: 5200, action: { label: 'Issue as revision', fn: revisionDialog } });
+}
+
+// ---------- hover card: what a bar is, why it is there, what it holds up ----------
+function tipFor(e, a) {
+  if (!a || S.drag) return; const p = S.project;
+  const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish;
+  const tf = a.total_float_hours == null ? null : daysOf(a, a.total_float_hours);
+  const why = whyChain(a)[0]; const succ = p.relationships.filter(r => r.predecessor_id === a.id).length;
+  const status = a.status === 'complete' ? 'complete' : a.status === 'in_progress' ? `${Math.round(a.percent_complete)}% done` : 'not started';
+  const bl = a.baseline_finish && fi ? workingDaysBetween(calOf(a), new Date(a.baseline_finish), new Date(fi)) : null;
+  tipText(e, `<div class="hc"><b>${esc(a.id)} ${esc(a.name)}</b><div class="hc-row">${fmtD(st)} → ${fmtD(fi)} · ${a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) + 'd' : 'milestone'} · ${status}</div>
+    <div class="hc-row">${a.critical ? '<span class="chip bad">Critical</span>' : tf != null ? `<span class="chip ${tf < 0 ? 'bad' : tf <= 5 ? 'warn' : 'plain'}">${fmt1(tf)}d float</span>` : ''}${bl != null && bl !== 0 ? ` <span class="chip ${bl > 0 ? 'bad' : 'ok'}">${bl > 0 ? '+' : ''}${bl}d vs baseline</span>` : ''}${a.constraint && a.constraint !== 'none' ? ` <span class="chip warn">${esc(a.constraint.replaceAll('_', ' '))}</span>` : ''}</div>
+    ${why ? `<div class="hc-why">${esc(a.id)} ${esc(why.text)}.</div>` : ''}${succ ? `<div class="hc-why">Holds up ${succ} activit${succ === 1 ? 'y' : 'ies'}${a.critical && a.status !== 'complete' ? ', and the finish' : ''}.</div>` : ''}
+    <div class="hc-k">Double-click to open · right-click for more</div></div>`);
+}
+
+// ---------- Ask: plain-English questions answered from the engine, with the chart as the answer ----------
+const QWORDS = /^(when|what|why|how|who|which|where|is|are|will|does|do|can|should|has|have|did|list|show me|tell me|any|anything)\b|\?\s*$/i;
+const looksLikeQuestion = t => QWORDS.test(String(t || '').trim());
+function askEngine(q) {
+  const E = window.PlannerEngine; if (!E || !E.ask || !S.project) return null;
+  try { return E.ask(S.project, q); } catch (e) { return { kind: 'error', answer: 'Could not answer that: ' + (e && e.message ? e.message : e), ids: [], filter: '', trace: null, goto: null, confidence: 'low', suggestions: [] }; }
+}
+function highlightIds(ids, label) {
+  if (!ids || !ids.length) return; S.trace = { ids, dir: 'ask', set: new Set(ids), label: label || 'Answer' }; S.view.show = 'trace';
+  if (S.screen !== 'plan') go('plan'); else render();
+}
+function answerHtml(r, q) {
+  const acts = (r.ids || []).map(byId).filter(Boolean), btns = [];
+  if (acts.length) btns.push(`<button type="button" class="btn" data-ask="show">Show ${acts.length === 1 ? 'it' : 'these ' + acts.length} on the chart</button>`);
+  if (r.trace && r.trace.ids && r.trace.ids.length) btns.push('<button type="button" class="btn" data-ask="trace">Trace the logic</button>');
+  if (r.filter) btns.push(`<button type="button" class="btn" data-ask="filter">Filter: ${esc(r.filter)}</button>`);
+  if (r.goto && byId(r.goto)) btns.push(`<button type="button" class="btn" data-ask="goto">Open ${esc(r.goto)}</button>`);
+  if (r.kind === 'what_if' && !readOnly()) btns.push('<button type="button" class="btn" data-ask="try">Try it</button>');
+  return `<div class="ans ${esc(r.confidence || '')}"><div class="ans-t">${esc(r.answer)}</div>${acts.length ? `<div class="ans-ids">${acts.slice(0, 8).map(a => `<button type="button" class="linkchip" data-goto="${esc(a.id)}" title="${esc(a.name)}">${esc(a.id)}</button>`).join('')}${acts.length > 8 ? `<span class="hint">+${acts.length - 8} more</span>` : ''}</div>` : ''}${btns.length ? `<div class="ans-b">${btns.join('')}</div>` : ''}${(r.suggestions || []).length ? `<div class="ans-s">${r.suggestions.slice(0, 3).map(s => `<button type="button" class="chipbtn" data-ask-q="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}</div>`;
+}
+function wireAnswer(el, r, q, onAsk) {
+  const leave = () => { closePalette(); modalClose(); };
+  el.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { leave(); goToActivity(b.dataset.goto); });
+  el.querySelectorAll('[data-ask]').forEach(b => b.onclick = () => { const k = b.dataset.ask; leave();
+    if (k === 'show') highlightIds(r.ids, q); else if (k === 'trace') setTrace(r.trace.ids, r.trace.dir || 'back', q);
+    else if (k === 'filter') { S.view.filter = r.filter; S.view.show = 'all'; if (S.screen !== 'plan') go('plan'); else render(); }
+    else if (k === 'goto') goToActivity(r.goto); else if (k === 'try') { tryStart(); openPalette(); $('#cmdIn').value = q.replace(/^what if\s*/i, ''); paintPalette(); } });
+  el.querySelectorAll('[data-ask-q]').forEach(b => b.onclick = () => onAsk(b.dataset.askQ));
+}
+let askTimer = null;
+function askInPalette(t) {
+  const out = $('#cmdOut'); if (!S.project) return;
+  const r = askEngine(t); if (!r) { out.innerHTML = '<span class="hint">Questions need the scheduling engine on this page.</span>'; return; }
+  out.innerHTML = answerHtml(r, t); wireAnswer(out, r, t, q => { $('#cmdIn').value = q; palSel = 0; paintPalette(); askInPalette(q); });
+}
+function askExamples(n = 6) {
+  const E = window.PlannerEngine; const ex = (E && E.ASK_EXAMPLES) || ['When do we finish?', 'What is driving the finish?', 'What is happening next week?', 'Why does the roof start when it does?', 'What should we accelerate?', 'What changed since the baseline?'];
+  return ex.slice(0, n);
+}
+
+// ---------- Overview: the programme reports its own state ----------
+const STAGE_HELP = { brief: 'The job described and laid out.', build: 'Logic complete and the health checks passing.', baseline: 'Dates frozen so slippage shows.', update: 'Progress recorded and periods closed.', issue: 'A revision issued as a PDF or file.' };
+function stageState(p, r) {
+  const linked = new Set(); p.relationships.forEach(x => { linked.add(x.predecessor_id); linked.add(x.successor_id); });
+  const openEnds = p.activities.filter(a => a.type !== 'level_of_effort' && !linked.has(a.id)).length;
+  const started = p.activities.some(a => a.status !== 'not_started');
+  const lastRev = (p.revisions || []).slice(-1)[0], lastPer = periodsOf(p).slice(-1)[0], lastBl = p.baselines.slice(-1)[0];
+  return [
+    { k: 'brief', t: 'Brief', done: true, s: `${p.activities.length} activities, ${p.relationships.length} links`, action: ['Open the plan', () => go('plan')] },
+    { k: 'build', t: 'Build', done: openEnds <= 2 && !!r && r.score >= 70, s: r ? `health ${r.score}/100${openEnds > 2 ? `, ${openEnds} unlinked` : ''}` : 'not checked yet', action: r && r.score < 70 ? ['Fix the checks', () => act('/repair')] : ['Health checks', () => go('monitor')] },
+    { k: 'baseline', t: 'Baseline', done: !!lastBl, s: lastBl ? `${lastBl.name}, ${fmtD(lastBl.saved_at)}` : 'none yet', action: lastBl ? ['Compare', () => compareSheet()] : ['Set baseline', () => $('#btnBaseline').click()] },
+    { k: 'update', t: 'Update', done: started, s: lastPer ? `${lastPer.name}, ${fmtD(lastPer.data_date)}` : started ? 'progress recorded, no period closed' : 'nothing started', action: ['Site update', siteUpdateSheet] },
+    { k: 'issue', t: 'Issue', done: !!lastRev, s: lastRev ? `${lastRev.name}, ${fmtD(lastRev.issued_at)}` : 'not issued yet', action: ['PDF for issue', printSheet] },
+  ];
+}
+// A plain briefing from what the page already knows, used when the briefing engine is not loaded.
+function fallbackBriefing(p, r) {
+  const [, label] = statusOf(p, r); const spare = spareDays(p); const pr = progressOf(p); const today = (p.data_date || p.start || '').slice(0, 10);
+  const open = p.activities.filter(a => a.status !== 'complete' && a.type !== 'level_of_effort');
+  const headline = `${label}: forecast finish ${fmtD(p.finish)}` + (spare == null ? '.' : spare >= 0 ? `, ${spare} working days inside the ${fmtD(p.must_finish_by)} deadline.` : `, ${-spare} working days past the ${fmtD(p.must_finish_by)} deadline.`);
+  const dd = new Date(p.data_date || p.start), to = new Date(+dd + 14 * DAY);
+  const inWin = a => { const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; return st && fi && new Date(st) <= to && new Date(fi) >= dd; };
+  const watch = [];
+  open.filter(a => a.total_float_hours != null && a.total_float_hours < -1e-6).slice(0, 4).forEach(a => watch.push({ id: a.id, name: a.name, reason: 'negative_float', severity: 3, text: `${fmt1(-daysOf(a, a.total_float_hours))} days of negative float: it is already past where it needs to be.` }));
+  open.filter(a => a.critical && a.status === 'not_started' && a.early_start && new Date(a.early_start) <= to).slice(0, 4).forEach(a => watch.push({ id: a.id, name: a.name, reason: 'critical_soon', severity: 3, text: `Critical and due to start ${fmtD(a.early_start)}: any delay moves the finish.` }));
+  oosList().slice(0, 3).forEach(o => { if (!watch.some(w => w.id === o.successor)) watch.push({ id: o.successor, name: o.successor_name, reason: 'out_of_sequence', severity: 2, text: `Started before ${o.predecessor} finished: the logic no longer matches site.` }); });
+  const ms = p.activities.filter(a => a.type !== 'task').map(a => ({ id: a.id, name: a.name, date: (a.actual_finish || a.early_finish || a.early_start || '').slice(0, 10), baseline_date: a.baseline_finish ? a.baseline_finish.slice(0, 10) : null, variance_days: null, status: a.status }));
+  const actions = [];
+  if (!p.baselines.length && pr.pct < 1) actions.push({ kind: 'set_baseline', text: 'Set a baseline before work starts, so slippage shows bar by bar.' });
+  if (pr.pct > 0 && !periodsOf(p).length) actions.push({ kind: 'close_period', text: 'Close the first progress period to keep a record of where things stand.' });
+  if (r && r.score < 70) actions.push({ kind: 'repair', text: `Health is ${r.score}/100: run Auto-repair and review what it leaves open.` });
+  if (!p.must_finish_by) actions.push({ kind: 'add_deadline', text: 'Add the contract completion date so the spare time shows.' });
+  return { as_of: today, headline, status: label.toLowerCase().replace(' ', '_'), kpis: { finish: p.finish, deadline: p.must_finish_by || null, spare_days: spare, pct_complete: pr.pct, pct_expected: pr.planned, critical_open: open.filter(a => a.critical).length, health_score: r ? r.score : null, activities_open: open.length, weeks_remaining: p.finish ? Math.max(0, Math.round((new Date(p.finish) - dd) / (7 * DAY) * 10) / 10) : 0 },
+    since: { kind: 'none', name: null, date: null, finish_shift_days: null, summary: 'No baseline, revision or closed period to compare with yet.', items: [] },
+    watch: watch.sort((a, b) => b.severity - a.severity).slice(0, 8),
+    next: { from: today, to: iso(to).slice(0, 10), starting: open.filter(a => a.type === 'task' && a.status === 'not_started' && inWin(a)).slice(0, 10).map(a => ({ id: a.id, name: a.name, date: a.early_start.slice(0, 10) })), finishing: open.filter(a => a.type === 'task' && inWin(a) && new Date(a.early_finish) <= to).slice(0, 10).map(a => ({ id: a.id, name: a.name, date: a.early_finish.slice(0, 10) })), milestones: ms.filter(m => m.status !== 'complete' && m.date >= today && m.date <= iso(to).slice(0, 10)).slice(0, 10) },
+    actions, milestones: ms, prose: headline + ` ${Math.round(pr.pct)}% complete against ${Math.round(pr.planned)}% expected by ${fmtD(today)}.` };
+}
+function getBriefing() {
+  const E = window.PlannerEngine;
+  if (E && E.briefing) { try { return E.briefing(S.project); } catch (e) { console.warn('briefing', e); } }
+  return fallbackBriefing(S.project, S.report);
+}
+const ACTION_FN = { update_progress: () => siteUpdateSheet(), set_baseline: () => $('#btnBaseline').click(), close_period: () => closePeriodDialog(), issue: () => printSheet(), repair: () => act('/repair'), review_logic: () => oosDialog(), accelerate: () => computeDrag(), run_risk: () => riskSheet(), add_deadline: () => { openPalette(); $('#cmdIn').value = 'finish by '; paintPalette(); } };
+const ACTION_LABEL = { update_progress: 'Site update', set_baseline: 'Set baseline', close_period: 'Close period', issue: 'PDF for issue', repair: 'Auto-repair', review_logic: 'Review logic', accelerate: 'Where to accelerate', run_risk: 'Run risk analysis', add_deadline: 'Add deadline' };
+const SEV_DOT = { 3: 'var(--crit)', 2: 'var(--warn)', 1: 'var(--ink-3)' };
+function renderOverview() {
+  const p = S.project, r = S.report, el = $('#scrOverview'); if (!p) return;
+  const scroll = el.scrollTop; const mode = S.mode || 'build';
+  const b = getBriefing(); const [cls, label] = statusOf(p, r); const k = b.kpis || {};
+  const stages = stageState(p, r); const cur = stages.find(s => !s.done) || stages[stages.length - 1];
+  const li = (x, extra) => `<div class="li click" data-goto="${esc(x.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t">${esc(x.name)}</div><div class="s"><span class="mono">${esc(x.id)}</span>${extra ? ' · ' + extra : ''}</div></div>${x.date ? `<span class="chip plain">${fmtD(x.date)}</span>` : ''}</div>`;
+  const primary = mode === 'site' ? '<button type="button" class="primary" id="ovSite">Site update</button>' : mode === 'client' ? '<button type="button" class="primary" id="ovPdf">PDF for issue</button>' : '<button type="button" class="primary" id="ovPlan">Open the plan</button>';
+  const spine = mode === 'build' ? `<ol class="spine" aria-label="Where the programme is">${stages.map(s => `<li class="${s.done ? 'done' : ''} ${s === cur ? 'cur' : ''}"><span class="sp-dot" aria-hidden="true">${s.done ? '✓' : ''}</span><div class="sp-b"><b>${s.t}</b><span class="sp-s">${esc(s.s)}</span>${s === cur || !s.done ? `<button type="button" class="chipbtn" data-stage="${s.k}">${esc(s.action[0])}</button>` : ''}</div><span class="sp-h hint">${STAGE_HELP[s.k]}</span></li>`).join('')}</ol>` : '';
+  const kpis = `<div class="ov-kpis">
+      <div class="kpi"><div class="k">Forecast finish</div><div class="big" ${k.spare_days != null && k.spare_days < 0 ? 'style="color:var(--crit)"' : ''}>${fmtD(k.finish || p.finish)}</div><div class="note">${k.deadline ? (k.spare_days >= 0 ? `${fmt1(k.spare_days)} working days inside the ${fmtD(k.deadline)} deadline` : `${fmt1(-k.spare_days)} working days past the ${fmtD(k.deadline)} deadline`) : 'No deadline set'}</div></div>
+      <div class="kpi"><div class="k">Progress</div><div class="big">${Math.round(k.pct_complete || 0)}%</div><div class="meter"><b style="width:${Math.min(100, k.pct_complete || 0)}%"></b><i style="left:${Math.min(99.5, k.pct_expected || 0)}%"></i></div><div class="note">${Math.round(k.pct_expected || 0)}% expected by ${fmtD(b.as_of)}</div></div>
+      <div class="kpi"><div class="k">Critical path</div><div class="big">${k.critical_open ?? 0}</div><div class="note">open activities with no spare time</div></div>
+      <div class="kpi"><div class="k">Health</div><div class="big" style="color:${k.health_score != null ? healthColour(k.health_score) : 'inherit'}">${k.health_score ?? '–'}</div><div class="note">${r ? (r.checks.filter(c => c.applicable && !c.passed).length ? r.checks.filter(c => c.applicable && !c.passed).length + ' checks failing' : 'all checks pass') : 'not checked'}</div></div>
+    </div>`;
+  const briefing = `<section class="panel ov-brief" aria-labelledby="hBrief"><div class="panel-head"><h2 id="hBrief">Briefing</h2><span style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn" id="ovCopy">Copy</button><button type="button" class="btn" id="ovPolish" hidden>Polish with Claude</button></span></div>
+      <p class="ov-head">${esc(b.headline)}</p>${b.since && b.since.kind !== 'none' ? `<p class="ov-since"><b>Since ${esc(b.since.name || b.since.kind)}${b.since.date ? ' (' + fmtD(b.since.date) + ')' : ''}:</b> ${esc(b.since.summary)}</p>${(b.since.items || []).length ? `<div class="ov-items">${b.since.items.slice(0, 6).map(it => `<button type="button" class="linkchip" data-goto="${esc(it.id)}" title="${esc(it.text || '')}">${esc(it.id)}</button> <span>${esc(it.text || it.name)}</span>`).join('<br>')}</div>` : ''}` : `<p class="ov-since hint">${esc((b.since && b.since.summary) || '')}</p>`}
+      <div id="ovProse" class="ov-prose">${esc(b.prose || '').split(/\n\n+/).map(x => `<p>${esc(x)}</p>`).join('')}</div></section>`;
+  const watch = `<section class="panel" aria-labelledby="hWatch"><div class="panel-head"><h2 id="hWatch">Watch</h2><span class="hint">${(b.watch || []).length ? 'What could move the finish' : ''}</span></div>
+      ${(b.watch || []).length ? `<div class="list">${b.watch.map(w => `<div class="li click" data-goto="${esc(w.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t"><span class="swatch" style="background:${SEV_DOT[w.severity] || SEV_DOT[1]}"></span>${esc(w.name)}</div><div class="s">${esc(w.text)}</div></div><span class="mono hint">${esc(w.id)}</span></div>`).join('')}</div>` : '<div class="empty"><b>Nothing to watch</b>No negative float, nothing critical starting soon, no progress out of sequence.</div>'}</section>`;
+  const next = `<section class="panel" aria-labelledby="hNext"><div class="panel-head"><h2 id="hNext">Next two weeks</h2><span class="hint">${fmtD(b.next.from)} to ${fmtD(b.next.to)}</span></div>
+      ${b.next.milestones.length ? `<h3 class="ov-h3">Milestones</h3><div class="list">${b.next.milestones.map(x => li(x)).join('')}</div>` : ''}
+      ${b.next.starting.length ? `<h3 class="ov-h3">Starting</h3><div class="list">${b.next.starting.map(x => li(x)).join('')}</div>` : ''}
+      ${b.next.finishing.length ? `<h3 class="ov-h3">Finishing</h3><div class="list">${b.next.finishing.map(x => li(x)).join('')}</div>` : ''}
+      ${!b.next.milestones.length && !b.next.starting.length && !b.next.finishing.length ? '<div class="empty"><b>Quiet fortnight</b>Nothing starts or finishes in the next two weeks.</div>' : ''}</section>`;
+  const ask = `<section class="panel ov-ask" aria-labelledby="hAsk"><div class="panel-head"><h2 id="hAsk">Ask the programme</h2><span class="hint">Answered from the schedule, not guessed</span></div>
+      <form id="ovAskForm" class="ov-askrow"><input id="ovAskIn" placeholder="e.g. ${esc(askExamples(1)[0])}" aria-label="Question" autocomplete="off"><button type="submit" class="primary">Ask</button></form>
+      <div class="ans-s" id="ovAskEx">${askExamples(5).map(q => `<button type="button" class="chipbtn" data-ask-q="${esc(q)}">${esc(q)}</button>`).join('')}</div><div id="ovAskOut"></div></section>`;
+  const actions = (b.actions || []).length && mode !== 'client' ? `<section class="panel" aria-labelledby="hDo"><div class="panel-head"><h2 id="hDo">Do next</h2></div><div class="list">${b.actions.map(a => `<div class="li"><div class="s" style="font-size:13px;color:var(--ink)">${esc(a.text)}</div>${ACTION_FN[a.kind] ? `<button type="button" class="btn" data-act="${esc(a.kind)}">${ACTION_LABEL[a.kind] || a.kind}</button>` : ''}</div>`).join('')}</div></section>` : '';
+  const msRows = (b.milestones || []).filter(m => m.date).sort((a, c) => a.date.localeCompare(c.date));
+  const milestones = msRows.length ? `<section class="panel" aria-labelledby="hMs"><div class="panel-head"><h2 id="hMs">Milestones</h2></div><table class="ov-table"><thead><tr><th>Milestone</th><th>Date</th>${msRows.some(m => m.baseline_date) ? '<th>Baseline</th><th>Var</th>' : ''}</tr></thead><tbody>${msRows.map(m => `<tr class="${m.status === 'complete' ? 'done' : ''}" data-goto="${esc(m.id)}"><td>${esc(m.name)}${m.status === 'complete' ? ' <span class="chip ok">done</span>' : ''}</td><td>${fmtD(m.date)}</td>${msRows.some(x => x.baseline_date) ? `<td>${m.baseline_date ? fmtD(m.baseline_date) : ''}</td><td class="${m.variance_days > 0 ? 'crit' : m.variance_days < 0 ? 'okc' : ''}">${m.variance_days == null ? '' : (m.variance_days > 0 ? '+' : '') + fmt1(m.variance_days) + 'd'}</td>` : ''}</tr>`).join('')}</tbody></table></section>` : '';
+  const main = mode === 'site' ? [next, watch, ask] : mode === 'client' ? [briefing, milestones, next, ask] : [briefing, watch, ask, next];
+  const side = mode === 'site' ? [actions, milestones] : mode === 'client' ? [watch] : [actions, milestones];
+  el.innerHTML = `<div class="page ov ov-${mode}">
+    <div class="page-head"><div style="min-width:0"><h1 class="display">${esc(p.name)}</h1><p class="lede">Data date ${fmtLong(p.data_date || p.start)} · <span class="chip ${cls}">${label}</span></p></div>
+      <div class="head-actions">${modeSeg('ovMode')}<button type="button" class="btn" id="ovAsk">Ask</button>${mode === 'build' ? '<button type="button" class="btn" id="ovTry" title="Try changes safely">Try changes</button>' : ''}${primary}</div></div>
+    ${spine}${kpis}
+    <div class="mon-grid"><div class="mon-main">${main.join('')}</div><aside class="mon-side">${side.join('')}</aside></div></div>`;
+  el.scrollTop = scroll;
+  wireModeSeg(el);
+  const on = (sel, fn) => { const n = el.querySelector(sel); if (n) n.onclick = fn; };
+  on('#ovPlan', () => go('plan')); on('#ovSite', siteUpdateSheet); on('#ovPdf', printSheet); on('#ovAsk', () => { openPalette(); $('#cmdIn').placeholder = 'Ask anything about the programme'; }); on('#ovTry', tryStart);
+  el.querySelectorAll('[data-stage]').forEach(btn => btn.onclick = () => { const s = stages.find(x => x.k === btn.dataset.stage); if (s) s.action[1](); });
+  el.querySelectorAll('[data-act]').forEach(btn => btn.onclick = () => ACTION_FN[btn.dataset.act]());
+  el.querySelectorAll('[data-goto]').forEach(n => { const goTo = () => { if (byId(n.dataset.goto)) goToActivity(n.dataset.goto); }; n.onclick = goTo; n.onkeydown = e => { if (e.key === 'Enter') goTo(); }; });
+  on('#ovCopy', async () => { const t = [b.headline, '', b.prose].join('\n'); try { await navigator.clipboard.writeText(t); toast('Briefing copied'); } catch { toast('Select the text and copy it'); } });
+  const polish = el.querySelector('#ovPolish');
+  if (polish) (LOCAL ? getSample() : Promise.resolve(null)).then(sample => { if (!sample) return; polish.hidden = false; polish.onclick = async () => {
+    polish.disabled = true; const box = el.querySelector('#ovProse'), orig = box.innerHTML; box.innerHTML = '<p class="hint">Thinking…</p>';
+    try { const { text } = await sample(`You are a UK construction planner writing the weekly programme briefing for the project team and client. Rewrite the draft below as clear, professional prose (UK English, 2-4 short paragraphs, no bullet points, no headings, no preamble). Keep every date, number and activity name exactly as given; do not add facts.\n\nDRAFT:\n${b.headline}\n\n${b.prose}`); box.innerHTML = esc(text).split(/\n\n+/).map(x => `<p>${x}</p>`).join(''); }
+    catch (e) { box.innerHTML = orig; toast(AI_ERRORS[e && e.code] || 'Claude could not rewrite it'); } finally { polish.disabled = false; } }; });
+  const askOut = el.querySelector('#ovAskOut'), askIn = el.querySelector('#ovAskIn');
+  const run = q => { if (!q) return; askIn.value = q; const res = askEngine(q); if (!res) { askOut.innerHTML = '<p class="hint">Questions need the scheduling engine on this page.</p>'; return; } askOut.innerHTML = answerHtml(res, q); wireAnswer(askOut, res, q, run); };
+  el.querySelector('#ovAskForm').onsubmit = e => { e.preventDefault(); run(askIn.value.trim()); };
+  el.querySelectorAll('#ovAskEx [data-ask-q]').forEach(btn => btn.onclick = () => run(btn.dataset.askQ));
+}
+
 // ---------- toolbar wiring ----------
 function wireToolbar() {
   $('#btnHome').onclick = () => go('projects');
@@ -2574,7 +2812,7 @@ function wireToolbar() {
   $('#btnCmd').onclick = openPalette; $('#btnShare').onclick = shareSheet; $('#btnTheme').onclick = toggleTheme;
   const handleImport = async f => {
     toast('Importing ' + f.name);
-    try { const v = await importFile(f); show(v); await loadList(); go('plan'); toast(`Imported ${f.name}: ${S.project.activities.length} activities, ${S.project.relationships.length} links`, { ms: 7000, action: { label: 'Details', fn: () => importSummary(S.project, S.report) } }); }
+    try { const v = await importFile(f); show(v); await loadList(); go('overview'); toast(`Imported ${f.name}: ${S.project.activities.length} activities, ${S.project.relationships.length} links`, { ms: 7000, action: { label: 'Details', fn: () => importSummary(S.project, S.report) } }); }
     catch (err) { toast((err && err.detail) || err.message, { ms: 9000 }); }
   };
   $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (f) await handleImport(f); e.target.value = ''; };
@@ -2608,6 +2846,7 @@ function wireToolbar() {
   $('#vTl').onchange = e => { S.view.tlSource = e.target.value; render(); };
   $('#dataDate').onchange = e => { if (e.target.value) mutate(p => { p.data_date = e.target.value + 'T08:00:00'; }, `Data date moved to ${fmtD(e.target.value)}`); };
   $('#btnProgress').onclick = progressDialog; $('#btnConstraint').onclick = constraintDialog;
+  $('#btnTry').onclick = () => { if (S.sandbox) paintTry(); else tryStart(); };
   $('#btnBaseline').onclick = () => modal('Set a baseline', `<p class="hint" style="margin-top:0">A baseline freezes today's dates so you can see slippage later, bar by bar.</p><label>Name<input name="n" id="blName" value="Baseline ${S.project ? S.project.baselines.length + 1 : 1}"></label>`, m => act('/baseline', { name: m.querySelector('[name=n]').value || 'Baseline' }), 'Save baseline');
   $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
   $('#btnRisk').onclick = riskSheet; $('#btnDrag').onclick = () => computeDrag();
@@ -2626,7 +2865,7 @@ function wireToolbar() {
   $('#aiForm').onsubmit = async e => { e.preventDefault(); const t = $('#aiIn').value.trim(); if (!t) return; $('#aiIn').value = ''; sendAi(t); };
   // command palette
   $('#cmdForm').onsubmit = e => { e.preventDefault(); const items = palItems(); choosePal(items[palSel]); };
-  $('#cmdIn').oninput = () => { palSel = 0; $('#cmdOut').textContent = ''; paintPalette(); };
+  $('#cmdIn').oninput = () => { palSel = 0; $('#cmdOut').textContent = ''; paintPalette(); clearTimeout(askTimer); const t = $('#cmdIn').value.trim(); if (S.project && looksLikeQuestion(t) && t.length > 6 && S.project.activities.length <= 800) askTimer = setTimeout(() => { if ($('#cmdIn').value.trim() === t) askInPalette(t); }, 350); };
   $('#cmdIn').onkeydown = e => {
     if (e.key === 'ArrowDown') { e.preventDefault(); palSel++; paintPalette(); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); palSel = Math.max(0, palSel - 1); paintPalette(); }
@@ -2659,6 +2898,7 @@ function zoom(f) { S.view.pxDay = Math.max(1, Math.min(40, S.view.pxDay * f)); r
   try { const c = JSON.parse(localStorage.getItem('cols') || 'null'); if (Array.isArray(c) && c.length) S.cols = c.filter(k => ALL_COLS[k]); const w = JSON.parse(localStorage.getItem('colw') || 'null'); if (w) Object.entries(w).forEach(([k, v]) => { if (ALL_COLS[k] && v > 20) ALL_COLS[k].w = v; }); } catch { }
   if (LOCAL && window.__DEMO) { try { const l = await api('/api/projects'); if (!l.length) LOCAL.store(JSON.parse(JSON.stringify(window.__DEMO))); } catch { } }
   wireToolbar();
+  try { setMode(localStorage.getItem('mode') || 'build', true); } catch { setMode('build', true); }
   await loadList();
   go('projects');
 })();

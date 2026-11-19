@@ -19,11 +19,12 @@
     </div>
     <nav class="seg" id="seg" role="tablist" aria-label="Project view" hidden>
       <span class="seg-thumb" id="segThumb"></span>
+      <button role="tab" id="tabOverview" data-screen="overview">Overview</button>
       <button role="tab" id="tabPlan" data-screen="plan">Plan</button>
-      <button role="tab" id="tabMonitor" data-screen="monitor">Monitor</button>
+      <button role="tab" id="tabMonitor" data-screen="monitor">Progress</button>
     </nav>
     <div class="tb-right">
-      <button class="cmdk" id="btnCmd" title="Commands and actions (Ctrl+K)"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><span class="cmdk-label">Type a command</span><kbd>⌘K</kbd></button>
+      <button class="cmdk" id="btnCmd" title="Commands and actions (Ctrl+K)"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><span class="cmdk-label">Ask or type a command</span><kbd>⌘K</kbd></button>
       <span class="status" id="saveStatus" role="status" aria-live="polite" hidden></span>
       <button class="icon" id="btnUndo" title="Undo (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 20 20" class="ic"><path d="M7 5L3.5 8.5 7 12"/><path d="M4 8.5h7.5a4.5 4.5 0 010 9H9"/></svg></button>
       <button class="icon" id="btnRedo" title="Redo (Ctrl+Y)" aria-label="Redo"><svg viewBox="0 0 20 20" class="ic"><path d="M13 5l3.5 3.5L13 12"/><path d="M16 8.5H8.5a4.5 4.5 0 000 9H11"/></svg></button>
@@ -31,10 +32,13 @@
       <button class="primary" id="btnShare"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><path d="M10 12.5V3M6.5 6.5L10 3l3.5 3.5"/><path d="M5 9.5H4v7.5h12V9.5h-1"/></svg><span>Share &amp; export</span></button>
     </div>
   </header>
+  <div class="trybar" id="tryBar" role="status" hidden></div>
 
   <main class="screens" id="screens">
     <!-- Projects: the portfolio. Rendered by app.js -->
     <section class="screen" id="scrProjects" aria-label="Projects"></section>
+    <!-- Overview: the programme reports its own state. Rendered by app.js -->
+    <section class="screen" id="scrOverview" aria-label="Overview" hidden></section>
 
     <!-- Plan: spreadsheet + Gantt -->
     <section class="screen screen-plan" id="scrPlan" aria-label="Plan" hidden>
@@ -55,6 +59,7 @@
         </div>
         <div class="tgroup" aria-label="Schedule">
           <button class="tb" id="btnProgress" title="Record progress for the selected activities"><svg viewBox="0 0 20 20" class="ic"><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5V10l4.5 4.5" /></svg><span>Progress</span></button>
+          <button class="tb" id="btnTry" title="Try changes safely: keep or discard them afterwards"><svg viewBox="0 0 20 20" class="ic"><path d="M4 10a6 6 0 0110.5-4M16 10a6 6 0 01-10.5 4"/><path d="M14.5 3v3h-3M5.5 17v-3h3"/></svg><span>Try</span></button>
           <button class="tb" id="btnConstraint" title="Constrain the selected activity"><svg viewBox="0 0 20 20" class="ic"><path d="M5 17V3.5M5 4h9l-2 3 2 3H5"/></svg><span>Constraint</span></button>
           <label class="tb datefield" title="Data date: progress is measured to this date"><span class="dd-dot"></span><span class="dd-l">Data date</span><input type="date" id="dataDate" aria-label="Data date"></label>
           <button class="tb" id="btnMore" aria-haspopup="menu" title="Baselines, levelling, calendars, resources, codes"><svg viewBox="0 0 20 20" class="ic"><circle cx="5" cy="10" r="1.2" class="fillc"/><circle cx="10" cy="10" r="1.2" class="fillc"/><circle cx="15" cy="10" r="1.2" class="fillc"/></svg><span>More</span></button>
@@ -141,7 +146,7 @@
 <!-- command palette -->
 <div class="scrim" id="palBack" hidden>
   <form class="palette" id="cmdForm" autocomplete="off">
-    <div class="pal-in"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="cmdIn" placeholder="add 2 weeks to piling · finish by 1 Nov 2026 · fix" aria-label="Command"><kbd>esc</kbd></div>
+    <div class="pal-in"><svg viewBox="0 0 20 20" class="ic" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg><input id="cmdIn" placeholder="Ask anything, or type a command: when do we finish? · add 2 weeks to piling" aria-label="Ask or command"><kbd>esc</kbd></div>
     <div class="pal-list" id="palList" role="listbox"></div>
     <div class="pal-out" id="cmdOut" role="status" aria-live="polite"></div>
   </form>
