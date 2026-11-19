@@ -1,5 +1,6 @@
 <meta charset="utf-8">
 <title>Planner — construction scheduling</title>
+<link rel="icon" href="data:,">
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
@@ -8185,7 +8186,7 @@ function coverFor(o) {
   const sub = [p.id, o.revision || (lastRev ? lastRev.name : ''), 'data date ' + fmtD(p.data_date || p.start)].filter(Boolean).join(' · ');
   return { title: o.title || 'Construction programme', subtitle: `${p.name} · ${sub}`, headline: b.headline, paragraphs: String(b.prose || '').split(/\n\n+/).filter(Boolean),
     kpis: [['Forecast finish', fmtD(k.finish || p.finish)], k.deadline ? ['Deadline', fmtD(k.deadline)] : null, ['Progress', `${Math.round(k.pct_complete || 0)}% (${Math.round(k.pct_expected || 0)}% expected)`], ['Critical activities', String(k.critical_open ?? 0)], k.spare_days != null ? [k.spare_days >= 0 ? 'Spare' : 'Overrun', `${fmt1(Math.abs(k.spare_days))} working days`] : null].filter(Boolean),
-    milestones: (b.milestones || []).filter(m => m.date).sort((x, y) => x.date.localeCompare(y.date)), watch: (b.watch || []).map(w => ({ name: w.name, text: w.text })),
+    milestones: (b.milestones || []).filter(m => m.date).sort((x, y) => x.date.localeCompare(y.date)).map(m => Object.assign({}, m, { status: m.status === 'not_started' ? '' : String(m.status || '').replace('_', ' ') })), watch: (b.watch || []).map(w => ({ name: w.name, text: w.text })),
     footer: [o.prepared_by ? 'Prepared by ' + o.prepared_by : '', 'Printed ' + new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })].filter(Boolean).join(' · ') };
 }
 function pdfDoc(o) {

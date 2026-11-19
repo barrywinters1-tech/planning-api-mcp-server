@@ -32,6 +32,7 @@ def main():
     html = (
         '<meta charset="utf-8">\n'
         "<title>Planner — construction scheduling</title>\n"
+        '<link rel="icon" href="data:,">\n'
         '<meta name="claude:viewport-fit-sides" content="cover">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
         "<style>\n" + styles + "\n</style>\n"
