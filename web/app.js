@@ -33,6 +33,7 @@ const ALL_COLS = {
   finish: { t: 'Finish', w: 78, get: a => fmtD(a.actual_finish || a.early_finish), set: (a, v) => { const d = parseDateInput(v); if (!d) return; if (a.status === 'complete') { a.actual_finish = iso(d); return; } const s = new Date(a.actual_start || a.early_start); const wd = workingDaysBetween(calOf(a), s, d); if (a.type === 'task' && wd > 0) a.duration_hours = wd * hpd(a); } },
   tf: { t: 'TF', w: 48, num: 1, get: a => a.total_float_hours == null ? '' : fmt1(daysOf(a, a.total_float_hours)) + 'd', cls: a => a.total_float_hours < 0 ? 'crit' : '' },
   ff: { t: 'FF', w: 48, num: 1, get: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)) + 'd' },
+  fpath: { t: 'Path', w: 46, num: 1, get: a => a.float_path == null ? '' : String(a.float_path), cls: a => a.float_path === 1 ? 'crit' : '' },
   preds: { t: 'Predecessors', w: 150, get: a => predsText(a), set: (a, v) => setPreds(a, v) },
   succs: { t: 'Successors', w: 150, get: a => succsText(a) },
   pct: { t: '%', w: 42, num: 1, get: a => a.status === 'not_started' ? '' : Math.round(a.percent_complete) + '%', set: (a, v) => setProgress(a, parseFloat(v) || 0) },
@@ -410,13 +411,14 @@ function rows() {
 const rowKey = r => r.act ? r.act.id : r.wbs ? r.wbs.id : 'G:' + r.group;
 
 // ---------- quick filters, outline levels, logic tracing (Asta-style view tools) ----------
-const QUICK = [['all', 'Everything'], ['critical', 'Critical path'], ['near', 'Near-critical (10 days float or less)'], ['lookahead', 'Next 3 weeks'], ['progress', 'In progress'], ['open', 'Not finished'], ['late', 'Behind baseline'], ['milestones', 'Milestones'], ['trace', 'Traced logic']];
+const nearDays = () => (S.project && S.project.near_critical_days) || 10;
+const QUICK = [['all', 'Everything'], ['critical', 'Critical path'], ['near', 'Near-critical'], ['lookahead', 'Next 3 weeks'], ['progress', 'In progress'], ['open', 'Not finished'], ['late', 'Behind baseline'], ['milestones', 'Milestones'], ['trace', 'Traced logic']];
 const isOpen = a => a.status !== 'complete';
 function passQuick(a) {
   const v = S.view.show, p = S.project;
   if (S.view.critical && !a.critical) return false;
   if (v === 'critical') return a.critical;
-  if (v === 'near') return isOpen(a) && a.total_float_hours != null && a.total_float_hours <= 10 * hpd(a);
+  if (v === 'near') return a.near_critical != null ? a.near_critical : (isOpen(a) && a.total_float_hours != null && a.total_float_hours <= nearDays() * hpd(a));
   if (v === 'progress') return a.status === 'in_progress';
   if (v === 'open') return isOpen(a);
   if (v === 'milestones') return a.type === 'start_milestone' || a.type === 'finish_milestone';
@@ -461,7 +463,7 @@ function paintTraceChip() {
 function syncViewControls() {
   ['links', 'float', 'baseline', 'progress'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); if (el) el.checked = !!S.view[k]; });
   if (S.view.critical) { S.view.show = 'critical'; S.view.critical = false; }   // views saved before quick filters
-  const vs = $('#vShow'); if (vs) { vs.innerHTML = QUICK.filter(([k]) => k !== 'trace' || S.trace).map(([k, l]) => `<option value="${k}">${l}</option>`).join(''); vs.value = S.view.show; if (vs.value !== S.view.show) { S.view.show = 'all'; vs.value = 'all'; } }
+  const vs = $('#vShow'); if (vs) { vs.innerHTML = QUICK.filter(([k]) => k !== 'trace' || S.trace).map(([k, l]) => `<option value="${k}">${k === 'near' ? `Near-critical (${fmt1(nearDays())} days float or less)` : l}</option>`).join(''); vs.value = S.view.show; if (vs.value !== S.view.show) { S.view.show = 'all'; vs.value = 'all'; } }
   const depth = w => { let d = 0, x = w; while (x && x.parent_id && wbsById(x.parent_id) && d < 20) { d++; x = wbsById(x.parent_id); } return d; };
   const maxD = Math.max(0, ...S.project.wbs.map(depth)) + 1;
   const vl = $('#vLevel'); if (vl) { vl.innerHTML = '<option value="0">All levels</option>' + Array.from({ length: Math.min(maxD, 6) }, (_, i) => `<option value="${i + 1}">Summaries to level ${i + 1}</option>`).join(''); vl.value = String(S.view.level || 0); }
@@ -710,8 +712,11 @@ function colourOf(a) {
   const c = S.view.colour;
   if (c.startsWith('code:')) { const t = c.slice(5); const v = (a.codes || {})[t]; return v ? ((S.project.code_types[t] || {})[v] || '#888') : null; }
   if (c === 'resource') { const x = S.project.assignments.find(x => x.activity_id === a.id); const r = x && S.project.resources.find(r => r.id === x.resource_id); return r ? (r.colour || hashColour(r.id)) : null; }
+  if (c === 'fpath') return a.float_path ? PATH_COLOURS[(a.float_path - 1) % PATH_COLOURS.length] : null;
   return null;
 }
+// P6-style multiple float paths: path 1 is the longest path, then the next most critical chains
+const PATH_COLOURS = ['#c0392b', '#e67e22', '#d4a017', '#2e8b57', '#2980b9', '#8e44ad', '#16a085', '#7f8c8d', '#a0522d', '#4b6584'];
 function hashColour(s) { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) & 0xffff; return `hsl(${h % 360},55%,55%)`; }
 function timescale(t0, t1, W) {
   // three-tier date zone, as in Asta Powerproject: month and year / week commencing / programme week (or day when zoomed in)
@@ -895,7 +900,7 @@ function chartKey() {
 function renderToolbarState() {
   paintChrome();
   const types = Object.keys(S.project.code_types || {});
-  const vc = $('#vColour'); vc.innerHTML = '<option value="critical">Critical path</option><option value="none">Plain</option><option value="resource">Resource</option>' + types.map(t => `<option value="code:${esc(t)}">${esc(t)}</option>`).join('');
+  const vc = $('#vColour'); vc.innerHTML = '<option value="critical">Critical path</option><option value="none">Plain</option><option value="resource">Resource</option>' + (S.project.float_paths ? '<option value="fpath">Float path (1 = longest)</option>' : '') + types.map(t => `<option value="code:${esc(t)}">${esc(t)}</option>`).join('');
   vc.value = [...vc.options].some(o => o.value === S.view.colour) ? S.view.colour : 'critical'; S.view.colour = vc.value;
   const vg = $('#vGroup'); vg.innerHTML = '<option value="">WBS</option><option value="@week">Week of start (look-ahead)</option><option value="@month">Month of start</option>' + types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
   vg.value = [...vg.options].some(o => o.value === S.view.group) ? S.view.group : ''; S.view.group = vg.value;
@@ -972,7 +977,7 @@ function renderActivityPanel() {
   const p = S.project; const pct = a.status === 'complete' ? 100 : Math.round(a.percent_complete);
   const tf = a.total_float_hours == null ? null : fmt1(daysOf(a, a.total_float_hours));
   const status = a.status === 'complete' ? '<span class="chip ok">Complete</span>' : a.status === 'in_progress' ? '<span class="chip warn">In progress</span>' : '<span class="chip plain">Not started</span>';
-  const crit = a.critical ? '<span class="chip bad">Critical</span>' : (tf != null ? `<span class="chip plain">${tf}d float</span>` : '');
+  const crit = (a.critical ? '<span class="chip bad">Critical</span>' : (tf != null ? `<span class="chip plain">${tf}d float</span>` : '')) + (a.float_path ? `<span class="chip plain" title="Multiple float paths: 1 is the longest path to the finish">Path ${a.float_path}</span>` : '') + (a.near_critical ? '<span class="chip warn">Near-critical</span>' : '');
   const preds = p.relationships.filter(r => r.successor_id === a.id), succs = p.relationships.filter(r => r.predecessor_id === a.id);
   const lag = r => r.lag_hours ? ` ${r.lag_hours > 0 ? '+' : ''}${fmt1(daysOf(byId(r.predecessor_id) || a, r.lag_hours))}d` : '';
   const chipFor = (id, extra, drv) => `<button type="button" class="linkchip ${drv ? 'drv' : ''}" data-goto="${esc(id)}" title="${esc((byId(id) || {}).name || '')}${drv ? ' (driving: sets this start)' : ''}">${esc(id)}${esc(extra)}</button>`;
@@ -1070,6 +1075,7 @@ function coverFor(o) {
 function legendItems() {
   const c = S.view.colour, p = S.project; if (c.startsWith('code:')) { const t = c.slice(5); return Object.entries(p.code_types[t] || {}).map(([label, colour]) => ({ label, colour })); }
   if (c === 'resource') return p.resources.map(r => ({ label: r.name, colour: r.colour || hashColour(r.id) }));
+  if (c === 'fpath') return Array.from({ length: Math.min(p.float_paths || 0, PATH_COLOURS.length) }, (_, i) => ({ label: i === 0 ? 'Path 1 (longest)' : 'Path ' + (i + 1), colour: PATH_COLOURS[i] }));
   return [];
 }
 function pdfDoc(o) {
@@ -1866,6 +1872,32 @@ function constraintDialog() {
   }, 'Apply');
 }
 function notesDialog(a) { modal(`Notes: ${a.id}`, `<textarea name="n" rows="8" style="width:100%">${esc(a.notes || '')}</textarea>`, m => mutate(p => { a.notes = m.querySelector('[name=n]').value; }, 'Notes saved'), 'Save'); }
+// Scheduling options (P6 Schedule Options, Asta progress settings): how progressed work is placed, float paths, start on new day, near-critical threshold.
+const PROGRESS_LOGIC = [['', 'Remaining work from the data date (planner default)', 'Started work carries on from the data date whatever its unfinished predecessors do; the links still count for float.'], ['retained', 'Retained logic (P6 default)', 'Remaining work waits for unfinished predecessors, as the links say.'], ['override', 'Progress override', 'Started work ignores its unfinished predecessors in both passes: the network is reset around what has happened.']];
+function schedOptionsDialog() {
+  const p = S.project; if (!p) return;
+  modal('Scheduling options', `<p class="hint" style="margin-top:-4px">Stored with the programme and written to XER schedule options where P6 has a field for them. Every option recalculates straight away.</p>
+    <label>Out-of-sequence progress<select name="pl">${PROGRESS_LOGIC.map(([v, l]) => `<option value="${v}" ${(p.progress_logic || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><p class="hint" id="plHint" style="font-size:12px;margin-top:2px"></p>
+    <div class="grid">
+      <label>Float paths to show<select name="fp"><option value="">Off (longest path only)</option>${[2, 3, 4, 5, 6, 8, 10].map(n => `<option value="${n}" ${p.float_paths === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label>Near-critical, days of float<input name="nc" type="number" min="0" step="1" value="${p.near_critical_days != null ? p.near_critical_days : 10}"></label>
+    </div>
+    <label class="sw" style="margin-top:8px"><span>Start on new day: an activity that would start part-way through a day waits for the next morning</span><input type="checkbox" name="snd" ${p.start_on_new_day ? 'checked' : ''}><i></i></label>
+    <p class="hint" style="font-size:12px">Float paths colour the chart (View → Colour → Float path) and add a Path column; path 1 is the longest path, 2 the next chain most likely to become critical. Link lag calendars are under Calendars.</p>`,
+    m => {
+      const pl = m.querySelector('[name=pl]').value, fp = +m.querySelector('[name=fp]').value || 0, nc = m.querySelector('[name=nc]').value, snd = m.querySelector('[name=snd]').checked;
+      mutate(pr => {
+        if (pl) pr.progress_logic = pl; else delete pr.progress_logic;
+        if (fp) pr.float_paths = fp; else delete pr.float_paths;
+        if (nc !== '' && +nc !== 10) pr.near_critical_days = Math.max(0, +nc); else delete pr.near_critical_days;
+        if (snd) pr.start_on_new_day = true; else delete pr.start_on_new_day;
+        if (!fp && S.view.colour === 'fpath') S.view.colour = 'critical';
+        if (fp && !S.cols.includes('fpath')) S.cols.splice(Math.max(1, S.cols.indexOf('tf') + 1 || S.cols.length), 0, 'fpath');
+      }, 'Scheduling options changed');
+    }, 'Apply');
+  const sel = $('#modal').querySelector('[name=pl]'), hint = $('#modal').querySelector('#plHint');
+  const upd = () => { hint.textContent = (PROGRESS_LOGIC.find(x => x[0] === sel.value) || [])[2] || ''; }; sel.onchange = upd; upd();
+}
 function calendarsDialog() {
   const p = S.project; let cur = p.default_calendar_id;
   const draw = () => {
@@ -2738,6 +2770,8 @@ function palActions() {
     S.project && [S.linkTasks ? 'Link Tasks mode: turn off' : 'Link Tasks mode: new activities link from the previous one', 'Plan', () => toggleLinkTasks()],
     S.project && ['Collapse all summaries', 'View', () => collapseAll(true)],
     S.project && ['Renumber activity IDs', 'Set-up', renumberDialog],
+    S.project && ['Scheduling options: progress logic, float paths, near-critical', 'Set-up', schedOptionsDialog],
+    S.project && ['Show multiple float paths', 'View', () => { if (!S.project.float_paths) return schedOptionsDialog(); S.view.colour = 'fpath'; go('plan'); }],
     S.project && ['Export the selected summary as its own file', 'File', () => exportCheck('xer')],
     S.project && ['Expand all summaries', 'View', () => collapseAll(false)],
     S.project && ['Collapse completed summaries only', 'View', collapseComplete],
@@ -3303,7 +3337,7 @@ function wireToolbar() {
   $('#btnRevision').onclick = revisionDialog; $('#btnCompare').onclick = () => compareSheet();
   $('#btnSite').onclick = siteUpdateSheet; $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
-  $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
+  $('#btnSchedOpts').onclick = schedOptionsDialog; $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog; $('#btnRenumber').onclick = renumberDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
   $('#btnRepair').onclick = () => act('/repair');
