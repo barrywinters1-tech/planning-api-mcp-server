@@ -259,6 +259,7 @@ class Project(BaseModel):
     float_paths: Optional[int] = None          # number of P6-style float paths (1-10) to compute after scheduling; None = none
     start_on_new_day: Optional[bool] = None    # Asta "start on new day": a not-started activity never starts part-way through a working day
     near_critical_days: Optional[float] = None  # working days of total float at or below which an open activity is near-critical (10 when None)
+    currency: Optional[str] = None  # ISO code or symbol for money shown in the app and on reports (GBP when None)
     calendars: dict[str, Calendar] = Field(default_factory=dict)
     wbs: list[WBSNode] = Field(default_factory=list)
     activities: list[Activity] = Field(default_factory=list)
