@@ -10,7 +10,7 @@ What customers of Asta Powerproject (Elecosoft/Eleco) and Oracle Primavera P6 ha
 - Quotation marks are used only for text copied exactly from a source; everything else is paraphrased.
 - Vendor status: unaddressed / partly / addressed (version). Judged against P6 Professional 24.x-25.x and Asta Powerproject 17 / 2026.1-2026.3 release notes.
 
-Row count: 100 (tables below).
+Row count: 120 (themed tables below; A12, B7, C10, D5, E11, F15, G14, H10, I11, J8, K9, L8).
 
 ## A. Ease of use and learning curve
 

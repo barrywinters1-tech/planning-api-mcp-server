@@ -189,7 +189,7 @@ Row IDs (A1, B2 …) are referenced by the top-25 list in §3.
 | L15 | Asta: stays manageable "when building large sequences and linking them logically"; "some parts… unwieldy"; "doesn't handle simple logic linking as well… as Asta or P6" is the *reverse* complaint MSP users make | UK planners | Asta | 3 (G2 ×2; Project Controls 2011) | 2011 | — | [G2 Asta](https://www.g2.com/products/asta-powerproject/reviews) | Partly |
 | L16 | Simple tools' mobile apps missing desktop functions (TeamGantt; Fieldwire plan creation "not easy") | Field | TeamGantt/Fieldwire | 2 (DPM ×2) | 2023 | Desktop | [DPM TeamGantt](https://thedigitalprojectmanager.com/tools/teamgantt-review/) | Partly |
 
-**Row count: 97** (A 11, B 8, C 6, D 5, E 11, F 8, G 10, H 8, I 6, J 6, K 6, L 16; not counting the K5/L15 Asta duplicates as separate asks).
+**Row count: 101** (A 11, B 8, C 6, D 5, E 11, F 8, G 10, H 8, I 6, J 6, K 6, L 16).
 
 ---
 
