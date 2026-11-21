@@ -343,11 +343,14 @@ function readXer(text, projectIndex = 0) {
     }
   }
 
-  // schedule options: the calendar relationship lag is measured on (rows without a proj_id apply to every project)
+  // schedule options: the calendar relationship lag is measured on, and how progressed activities are scheduled
+  // (rows without a proj_id apply to every project). P6 stores the three-way progress option as two Y/N flags; only
+  // progress override (sched_progress_override Y) is taken over, retained logic and actual dates leave it unset (xer.progress_logic_in)
   const LAG_CAL_IN = { rcal_Predecessor: 'predecessor', rcal_Successor: 'successor', rcal_Project: 'project', rcal_24Hour: '24h' };
-  let lagCalendar = null;
+  const progressLogicIn = r => getd(r, 'sched_progress_override', '') === 'Y' ? 'override' : null;
+  let lagCalendar = null, progressLogic = null;
   for (const r of tbl('SCHEDOPTIONS')) {
-    if (getd(r, 'proj_id', pid) === pid) { lagCalendar = lookup(LAG_CAL_IN, getd(r, 'sched_calendar_on_relationship_lag', ''), null); break; }
+    if (getd(r, 'proj_id', pid) === pid) { lagCalendar = lookup(LAG_CAL_IN, getd(r, 'sched_calendar_on_relationship_lag', ''), null); progressLogic = progressLogicIn(r); break; }
   }
 
   const res = new Map();
@@ -426,6 +429,7 @@ function readXer(text, projectIndex = 0) {
   };
   if (userFields.length) proj.user_fields = userFields;
   if (lagCalendar) proj.lag_calendar = lagCalendar;
+  if (progressLogic) proj.progress_logic = progressLogic;
   if (!own(calendars, defaultCal)) put(calendars, defaultCal, newCalendar(defaultCal));   // Project.ensure_default_calendar()
   return proj;
 }

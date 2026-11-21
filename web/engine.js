@@ -142,23 +142,36 @@ function lagCal(p, r, pr, s) {
 }
 // dt plus a lag: working hours on cal, or wall-clock hours when cal is null, landing on whole seconds as add_hours does (cpm._add_lag)
 function addLag(cal, dt, hours) { if (cal !== null) return cal.add_hours(dt, hours); if (hours === 0) return dt; return new Date(dt.getTime() + pyRound(hours * 3600) * 1000); }
+// Scheduling options (the exact semantics are the docstring of planner/cpm.py; this port applies the same rules):
+// progress_logic 'data_date' (default) | 'retained' | 'override', float_paths 1-10, start_on_new_day, near_critical_days (10 when unset)
+const PROGRESS_LOGIC = ['data_date', 'retained', 'override'];
+const DEFAULT_NEAR_CRITICAL_DAYS = 10, MAX_FLOAT_PATHS = 10;
+const progressLogic = p => PROGRESS_LOGIC.includes(p.progress_logic) ? p.progress_logic : 'data_date';
+const inProgress = a => a.status === 'in_progress' && a.actual_start != null;
+// Asta "start on new day": a start part-way through a working day moves to the next working day's start (cpm._new_day_start)
+function newDayStart(cal, es) { const [s] = cal._shift(es); if (es <= s) return es; return cal.next_working_start(dateOnly(addDays(es, 1))); }
 function schedule(p) {
   ensureDefaultCal(p);
   const order = topo(p), m = amap(p);
   const dataDate = D(p.data_date) || D(p.start), start = D(p.start);
+  const mode = progressLogic(p), newDay = !!p.start_on_new_day;
   const preds = {}, succs = {};
   p.activities.forEach(a => { preds[a.id] = []; succs[a.id] = []; });
   for (const r of p.relationships) { r.driving = false; preds[r.successor_id].push(r); succs[r.predecessor_id].push(r); }
   const maxD = (a, b) => (a && b) ? (a > b ? a : b) : (a || b);
+  const remEs = {}, remLs = {};   // retained logic: where an in-progress activity's remaining work starts (early / late)
 
   for (const a of order) {
     const cal = calFor(p, a), rem = remHours(a);
     if (a.status === 'complete' && a.actual_start && a.actual_finish) { a.early_start = a.actual_start; a.early_finish = a.actual_finish; continue; }
     let es_floor = cal.next_working_start(maxD(start, dataDate)), ef_floor = null;
-    if (a.status === 'in_progress' && a.actual_start) { es_floor = D(a.actual_start); ef_floor = cal.add_hours(cal.next_working_start(resumeFrom(a, dataDate)), rem); }
+    const inProg = inProgress(a), resume = inProg ? cal.next_working_start(resumeFrom(a, dataDate)) : null;
+    if (inProg) { es_floor = D(a.actual_start); if (mode !== 'retained') ef_floor = cal.add_hours(resume, rem); }
     const startLinks = [], finishLinks = [];   // [relationship, date it imposes]
     for (const r of preds[a.id]) {
-      const pr = m[r.predecessor_id], lcal = lagCal(p, r, pr, a);
+      const pr = m[r.predecessor_id];
+      if (inProg && mode === 'override' && pr.status !== 'complete') continue;   // progress override: an unfinished predecessor no longer holds the started activity
+      const lcal = lagCal(p, r, pr, a);
       if (r.type === 'FS') { const t = addLag(lcal, D(pr.early_finish), r.lag_hours); if (t > es_floor) es_floor = t; startLinks.push([r, t]); }
       else if (r.type === 'SS') { const t = addLag(lcal, D(pr.early_start), r.lag_hours); if (t > es_floor) es_floor = t; startLinks.push([r, t]); }
       else if (r.type === 'FF') { const t = addLag(lcal, D(pr.early_finish), r.lag_hours); ef_floor = ef_floor === null ? t : maxD(ef_floor, t); finishLinks.push([r, t]); }
@@ -170,10 +183,22 @@ function schedule(p) {
       else if (a.constraint === 'finish_on_or_after' || a.constraint === 'must_finish_on') ef_floor = (ef_floor === null || a.constraint === 'must_finish_on') ? cd : maxD(ef_floor, cd);
     }
     let es, ef;
-    if (a.status === 'in_progress' && a.actual_start) { es = D(a.actual_start); ef = ef_floor !== null ? ef_floor : cal.add_hours(cal.next_working_start(resumeFrom(a, dataDate)), rem); }
+    if (inProg && mode === 'retained') {
+      // remaining work by the logic: after every FS/SS predecessor date, never before the resume point
+      es = D(a.actual_start);
+      let rs_floor = resume; for (const [, t] of startLinks) if (t > rs_floor) rs_floor = t;
+      const rs = cal.next_working_start(rs_floor); remEs[a.id] = rs;
+      ef = rem > 0 ? cal.add_hours(rs, rem) : rs;
+      const finishRules = ef_floor !== null && ef_floor >= ef, startRules = !(ef_floor !== null && ef_floor > ef);
+      if (ef_floor !== null && ef_floor > ef) ef = ef_floor;
+      for (const [r, t] of startLinks) r.driving = startRules && t.getTime() === rs_floor.getTime();
+      for (const [r, t] of finishLinks) r.driving = finishRules && t.getTime() === ef_floor.getTime();
+    }
+    else if (inProg) { es = D(a.actual_start); ef = ef_floor !== null ? ef_floor : cal.add_hours(resume, rem); }
     else if (a.type === 'finish_milestone') { const target = ef_floor === null ? es_floor : maxD(es_floor, ef_floor); es = ef = cal.in_shift(target) ? target : cal.prev_working_end(target); for (const [r, t] of startLinks.concat(finishLinks)) r.driving = t.getTime() === target.getTime(); }
     else {
-      es = cal.next_working_start(es_floor); ef = rem > 0 ? cal.add_hours(es, rem) : es;
+      es = cal.next_working_start(es_floor); if (newDay && a.status === 'not_started') es = newDayStart(cal, es);
+      ef = rem > 0 ? cal.add_hours(es, rem) : es;
       const finishRules = ef_floor !== null && ef_floor >= ef, startRules = !(ef_floor !== null && ef_floor > ef);
       if (ef_floor !== null && ef_floor > ef) { ef = rem > 0 ? ef_floor : cal.prev_working_end(ef_floor); es = rem > 0 ? cal.add_hours(ef, -rem) : ef; }
       for (const [r, t] of startLinks) r.driving = startRules && t.getTime() === es_floor.getTime();
@@ -192,10 +217,11 @@ function schedule(p) {
     if (a.status === 'complete' && a.actual_finish) { a.late_start = a.early_start; a.late_finish = a.early_finish; a.total_float_hours = 0; a.free_float_hours = 0; a.critical = false; continue; }
     let lf_ceil = cal.prev_working_end(lateAnchor), ls_ceil = null;
     for (const r of succs[a.id]) {
-      const s = m[r.successor_id]; if (s.status === 'complete') continue;
+      const s = m[r.successor_id]; if (s.status === 'complete' || (mode === 'override' && inProgress(s))) continue;
       const lcal = lagCal(p, r, a, s);
-      if (r.type === 'FS') { const t = addLag(lcal, D(s.late_start), -r.lag_hours); if (t < lf_ceil) lf_ceil = t; }
-      else if (r.type === 'SS') { const t = addLag(lcal, D(s.late_start), -r.lag_hours); ls_ceil = ls_ceil === null ? t : (t < ls_ceil ? t : ls_ceil); }
+      const sLs = mode === 'retained' && remLs[s.id] ? remLs[s.id] : D(s.late_start);
+      if (r.type === 'FS') { const t = addLag(lcal, sLs, -r.lag_hours); if (t < lf_ceil) lf_ceil = t; }
+      else if (r.type === 'SS') { const t = addLag(lcal, sLs, -r.lag_hours); ls_ceil = ls_ceil === null ? t : (t < ls_ceil ? t : ls_ceil); }
       else if (r.type === 'FF') { const t = addLag(lcal, D(s.late_finish), -r.lag_hours); if (t < lf_ceil) lf_ceil = t; }
       else if (r.type === 'SF') { const t = addLag(lcal, D(s.late_finish), -r.lag_hours); ls_ceil = ls_ceil === null ? t : (t < ls_ceil ? t : ls_ceil); }
     }
@@ -206,14 +232,16 @@ function schedule(p) {
     }
     let lf = cal.prev_working_end(lf_ceil), ls = rem > 0 ? cal.add_hours(lf, -rem) : lf;
     if (ls_ceil !== null && ls_ceil < ls) { ls = rem === 0 ? cal.prev_working_end(ls_ceil) : ls_ceil; lf = rem > 0 ? cal.add_hours(ls, rem) : ls; }
-    if (a.status === 'in_progress' && a.actual_start) ls = D(a.actual_start);
+    if (a.status === 'in_progress' && a.actual_start) { remLs[a.id] = ls; ls = D(a.actual_start); }
     a.late_start = ISO(ls); a.late_finish = ISO(lf);
     a.total_float_hours = pyRound(cal.hours_between(D(a.early_finish), D(a.late_finish)), 4);
     let ff = null;
     for (const r of succs[a.id]) {
-      const s = m[r.successor_id], lcal = lagCal(p, r, a, s); let slack;
-      if (r.type === 'FS') slack = cal.hours_between(addLag(lcal, D(a.early_finish), r.lag_hours), D(s.early_start));
-      else if (r.type === 'SS') slack = cal.hours_between(addLag(lcal, D(a.early_start), r.lag_hours), D(s.early_start));
+      const s = m[r.successor_id]; if (mode === 'override' && inProgress(s)) continue;
+      const lcal = lagCal(p, r, a, s); let slack;
+      const sEs = mode === 'retained' && remEs[s.id] ? remEs[s.id] : D(s.early_start);
+      if (r.type === 'FS') slack = cal.hours_between(addLag(lcal, D(a.early_finish), r.lag_hours), sEs);
+      else if (r.type === 'SS') slack = cal.hours_between(addLag(lcal, D(a.early_start), r.lag_hours), sEs);
       else if (r.type === 'FF') slack = cal.hours_between(addLag(lcal, D(a.early_finish), r.lag_hours), D(s.early_finish));
       else slack = cal.hours_between(addLag(lcal, D(a.early_start), r.lag_hours), D(s.early_finish));
       ff = ff === null ? slack : Math.min(ff, slack);
@@ -221,14 +249,16 @@ function schedule(p) {
     a.free_float_hours = pyRound(ff === null ? a.total_float_hours : Math.max(0, ff), 4);
   }
   // critical = the longest path traced back from the finish through driving links (negative float is reported separately)
-  const openActs = p.activities.filter(a => a.status !== 'complete' && a.early_finish && a.type !== 'level_of_effort');
-  const onPath = new Set();
+  const openActs = openActivities(p);
+  let onPath = new Set();
   if (openActs.length) {
     let end = null; for (const a of openActs) { const f = D(a.early_finish); if (!end || f > end) end = f; }
-    const stack = openActs.filter(a => D(a.early_finish) >= end);
-    while (stack.length) { const a = stack.pop(); if (onPath.has(a.id)) continue; onPath.add(a.id); for (const r of preds[a.id]) { const q = m[r.predecessor_id]; if (r.driving && q.status !== 'complete' && q.type !== 'level_of_effort') stack.push(q); } }
+    onPath = traceDriving(openActs.filter(a => D(a.early_finish) >= end), preds, m, new Set());
   }
   for (const a of p.activities) a.critical = (a.status === 'complete' || a.total_float_hours == null) ? false : onPath.has(a.id);
+  // multiple float paths (P6): path 1 is the longest path above, then the next most critical chains
+  const paths = p.float_paths ? floatPaths(p, p.float_paths) : {};
+  for (const a of p.activities) a.float_path = paths[a.id] != null ? paths[a.id] : null;
 
   for (const a of p.activities) {
     if (a.type !== 'level_of_effort' || a.status === 'complete') continue;
@@ -241,12 +271,48 @@ function schedule(p) {
     if (a.early_start && a.early_finish) { a.duration_hours = pyRound(cal.hours_between(D(a.early_start), D(a.early_finish)), 2); a.total_float_hours = a.free_float_hours = 0; a.critical = false; }
   }
   for (const a of p.activities) if (a.constraint === 'as_late_as_possible' && a.status === 'not_started') { a.early_start = a.late_start; a.early_finish = a.late_finish; a.total_float_hours = 0; a.free_float_hours = 0; }
+  // near-critical: open, off the longest path, total float within the threshold (working days of the activity's own calendar)
+  const nearDays = p.near_critical_days == null ? DEFAULT_NEAR_CRITICAL_DAYS : p.near_critical_days;
+  for (const a of p.activities) a.near_critical = a.status !== 'complete' && a.type !== 'level_of_effort' && !a.critical && a.total_float_hours != null && a.total_float_hours <= nearDays * calFor(p, a).hours_per_day;
   p.scheduled_at = nowISO();
   return p;
 }
+// the activities the longest path and float paths are traced over: unfinished, scheduled, not hammocks (cpm._open_activities)
+const openActivities = p => p.activities.filter(a => a.status !== 'complete' && a.early_finish && a.type !== 'level_of_effort');
+// trace back from seeds through driving links over open, non-hammock predecessors, never entering `taken` (cpm._trace_driving)
+function traceDriving(seeds, preds, m, taken) {
+  const found = new Set(), stack = seeds.slice();
+  while (stack.length) { const a = stack.pop(); if (found.has(a.id) || taken.has(a.id)) continue; found.add(a.id); for (const r of preds[a.id]) { const q = m[r.predecessor_id]; if (r.driving && q.status !== 'complete' && q.type !== 'level_of_effort') stack.push(q); } }
+  return found;
+}
+// P6-style multiple float paths over a scheduled project, {id: path number}; a pure function (the algorithm is cpm.float_paths's docstring)
+function floatPaths(p, n) {
+  if (!n || n < 1) return {};
+  n = Math.min(Math.trunc(n), MAX_FLOAT_PATHS);
+  const m = amap(p), preds = {}; p.activities.forEach(a => preds[a.id] = []); for (const r of p.relationships) preds[r.successor_id].push(r);
+  const openActs = openActivities(p), out = {};
+  if (!openActs.length) return out;
+  const taken = new Set();
+  let end = null; for (const a of openActs) { const f = D(a.early_finish); if (!end || f > end) end = f; }
+  let seeds = openActs.filter(a => D(a.early_finish) >= end);
+  for (let k = 1; k <= n; k++) {
+    if (k > 1) {
+      const rest = openActs.filter(a => !taken.has(a.id));
+      if (!rest.length) break;
+      let best = null;   // least total float, then the latest early finish, then project order
+      for (const a of rest) {
+        const tf = a.total_float_hours == null ? Infinity : a.total_float_hours, ef = D(a.early_finish).getTime();
+        if (best === null || tf < best.tf || (tf === best.tf && ef > best.ef)) best = { tf, ef, a };
+      }
+      seeds = [best.a];
+    }
+    for (const id of traceDriving(seeds, preds, m, taken)) { out[id] = k; taken.add(id); }
+  }
+  return out;
+}
 
 global.PlannerEngine = { EPS, HARD, Cal, D, ISO, YMD, dow, addDays, dateOnly, mk, nowISO, today, calFor, amap, predsOf, succsOf, isMs, ensureDefaultCal, remHours, schedule,
-  LAG_CALENDARS, lagCal, addLag, pyRound, pyFixed, pyGroup, pyG, pyStr, pyFloorDiv };
+  LAG_CALENDARS, lagCal, addLag, PROGRESS_LOGIC, DEFAULT_NEAR_CRITICAL_DAYS, MAX_FLOAT_PATHS, floatPaths, pyRound, pyFixed, pyGroup, pyG, pyStr, pyFloorDiv };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 2: DCMA, generator, patches, commands, repair, levelling, analysis, files ---- */
@@ -994,7 +1060,7 @@ function writeXer(p, opts) {
   const projFields = ['proj_id', 'fy_start_month_num', 'rsrc_self_add_flag', 'allow_complete_flag', 'allow_neg_act_flag', 'def_complete_pct_type', 'proj_short_name', 'clndr_id', 'task_code_base', 'task_code_step', 'priority_num', 'wbs_max_sum_level', 'strgy_priority_num', 'critical_drtn_hr_cnt', 'def_cost_per_qty', 'last_recalc_date', 'plan_start_date', 'plan_end_date', 'scd_end_date', 'add_date', 'def_duration_type', 'task_code_prefix', 'guid', 'def_qty_type', 'add_by_name', 'def_rate_type', 'add_act_remain_flag', 'act_this_per_link_flag', 'def_task_type', 'act_pct_link_flag', 'critical_path_type', 'task_code_prefix_flag', 'def_rollup_dates_flag', 'use_project_baseline_flag', 'rem_target_link_flag', 'reset_planned_flag', 'sum_assign_level', 'export_flag', 'loaded_scope_level', 'close_period_flag', 'trsrcsum_loaded'];
   const LAG_CAL_XER = { predecessor: 'rcal_Predecessor', successor: 'rcal_Successor', project: 'rcal_Project', '24h': 'rcal_24Hour' };
   const schedoptions = table('SCHEDOPTIONS', ['schedoptions_id', 'proj_id', 'sched_outer_depend_type', 'sched_open_critical_flag', 'sched_lag_early_start_flag', 'sched_retained_logic', 'sched_setplantoforecast', 'sched_float_type', 'sched_calendar_on_relationship_lag', 'sched_use_expect_end_flag', 'sched_progress_override', 'level_float_thrs_cnt', 'level_outer_assign_flag', 'level_outer_assign_priority', 'level_over_alloc_pct', 'level_within_float_flag', 'level_keep_sched_date_flag', 'level_all_rsrc_flag', 'sched_use_project_end_date_for_float', 'enable_multiple_longest_path_calc', 'limit_multiple_longest_path_calc', 'max_multiple_longest_path', 'use_total_float_multiple_longest_paths', 'key_activity_for_multiple_longest_paths', 'LevelPriorityList'],
-    [{ schedoptions_id: 1, proj_id: pid, sched_outer_depend_type: 'SD_Both', sched_open_critical_flag: 'N', sched_lag_early_start_flag: 'Y', sched_retained_logic: 'Y', sched_setplantoforecast: 'N', sched_float_type: 'FT_FF', sched_calendar_on_relationship_lag: LAG_CAL_XER[p.lag_calendar] || 'rcal_Predecessor', sched_use_expect_end_flag: 'Y', sched_progress_override: 'N', level_float_thrs_cnt: 0, level_outer_assign_flag: 'N', level_outer_assign_priority: 5, level_over_alloc_pct: 25, level_within_float_flag: 'N', level_keep_sched_date_flag: 'Y', level_all_rsrc_flag: 'Y', sched_use_project_end_date_for_float: 'Y', enable_multiple_longest_path_calc: 'N', limit_multiple_longest_path_calc: 'Y', max_multiple_longest_path: 10, use_total_float_multiple_longest_paths: 'Y', key_activity_for_multiple_longest_paths: '', LevelPriorityList: 'priority_type,ASC' }]);
+    [{ schedoptions_id: 1, proj_id: pid, sched_outer_depend_type: 'SD_Both', sched_open_critical_flag: 'N', sched_lag_early_start_flag: 'Y', sched_retained_logic: p.progress_logic === 'override' ? 'N' : 'Y', sched_setplantoforecast: 'N', sched_float_type: 'FT_FF', sched_calendar_on_relationship_lag: LAG_CAL_XER[p.lag_calendar] || 'rcal_Predecessor', sched_use_expect_end_flag: 'Y', sched_progress_override: p.progress_logic === 'override' ? 'Y' : 'N', level_float_thrs_cnt: 0, level_outer_assign_flag: 'N', level_outer_assign_priority: 5, level_over_alloc_pct: 25, level_within_float_flag: 'N', level_keep_sched_date_flag: 'Y', level_all_rsrc_flag: 'Y', sched_use_project_end_date_for_float: 'Y', enable_multiple_longest_path_calc: 'N', limit_multiple_longest_path_calc: 'Y', max_multiple_longest_path: 10, use_total_float_multiple_longest_paths: 'Y', key_activity_for_multiple_longest_paths: '', LevelPriorityList: 'priority_type,ASC' }]);
   const projT = table('PROJECT', projFields, [{ proj_id: pid, fy_start_month_num: 1, rsrc_self_add_flag: 'N', allow_complete_flag: 'N', allow_neg_act_flag: 'N', def_complete_pct_type: 'CP_Drtn', proj_short_name: p.id.slice(0, 20), clndr_id: calIds[p.default_calendar_id], task_code_base: 1000, task_code_step: 10, priority_num: 10, wbs_max_sum_level: 0, strgy_priority_num: 500, critical_drtn_hr_cnt: 0, def_cost_per_qty: 0, last_recalc_date: fmtDt(p.data_date || p.start), plan_start_date: fmtDt(p.start), plan_end_date: fmtDt(p.must_finish_by), scd_end_date: fmtDt(finish), add_date: nowS, def_duration_type: 'DT_FixedDrtn', task_code_prefix: 'A', guid: '', def_qty_type: 'QT_Hour', add_by_name: 'admin', def_rate_type: 'COST_PER_QTY', add_act_remain_flag: 'N', act_this_per_link_flag: 'Y', def_task_type: 'TT_Task', act_pct_link_flag: 'Y', critical_path_type: 'CT_TotFloat', task_code_prefix_flag: 'Y', def_rollup_dates_flag: 'Y', use_project_baseline_flag: 'Y', rem_target_link_flag: 'Y', reset_planned_flag: 'N', sum_assign_level: 'SL_Taskrsrc', export_flag: 'Y', loaded_scope_level: 7, close_period_flag: 'N', trsrcsum_loaded: 'N' }]);
   const wbsBase = { wbs_id: 1, proj_id: pid, obs_id: '', seq_num: 0, proj_node_flag: 'Y', sum_data_flag: 'Y', status_code: 'WS_Open', wbs_short_name: p.id.slice(0, 20), wbs_name: p.name, parent_wbs_id: '', ev_user_pct: 6, ev_etc_user_value: 0.88, orig_cost: 0, indep_remain_total_cost: 0, ann_dscnt_rate_pct: 0, dscnt_period_type: '', indep_remain_work_qty: 0, anticip_start_date: '', anticip_end_date: '', ev_compute_type: 'EC_Cmp_pct', ev_etc_compute_type: 'EE_Rem_hrs' };
   const wbsRows = [wbsBase];

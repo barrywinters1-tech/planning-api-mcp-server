@@ -145,6 +145,24 @@ def logic_loop():
 
 
 LAG_CALENDARS = (None, "predecessor", "successor", "project", "24h")
+PROGRESS_LOGIC = ("data_date", "retained", "override")
+
+
+def oos_chains():
+    """Out-of-sequence progress of every kind for the progress-logic options: an FS successor started before its
+    predecessor (not started / in progress), an SS successor started first, FF and SF links into started work, lags,
+    a mid-day actual start and mixed calendars, with a not-started tail that the choice of logic moves."""
+    acts = [_act("A", 40), _act("B", 32, "six_day", status="in_progress", actual_start="2026-03-24T13:00:00", remaining_hours=20, percent_complete=35),
+            _act("C", 24, status="in_progress", actual_start="2026-03-26T08:00:00", percent_complete=50),
+            _act("D", 48, "ten_hour", status="in_progress", actual_start="2026-03-25T07:00:00", remaining_hours=30, percent_complete=40),
+            _act("E", 16, status="in_progress", actual_start="2026-03-27T08:00:00", remaining_hours=12, percent_complete=25),
+            _act("F", 24, "six_day"), _act("G", 16), _act("H", 8, "ten_hour"),
+            _act("K", 40, status="complete", actual_start="2026-03-23T08:00:00", actual_finish="2026-03-27T16:00:00", percent_complete=100),
+            _act("Z", typ="finish_milestone")]
+    links = [_ln("A", "B", "FS", 8), _ln("B", "C", "SS", 4), _ln("A", "D", "FF", 16), _ln("C", "E", "SF", 24), _ln("K", "E", "FS", 0),
+             _ln("A", "F"), _ln("B", "F", "FS", -4), _ln("C", "G"), _ln("D", "G", "SS", 8), _ln("E", "H"), _ln("D", "H", "FF", 4),
+             _ln("F", "Z"), _ln("G", "Z"), _ln("H", "Z")]
+    return _project("OOS", "2026-03-23T08:00:00", [STD, SIX, TEN], acts, links, data_date="2026-03-30T08:00:00")
 
 
 def lag_calendars(mode, link_modes=()):
@@ -239,6 +257,33 @@ def build_cases() -> list[tuple[str, dict]]:
         cases.append((f"schedule-dst_year-lag-{mode}", {"kind": "schedule", "project": {**dst_year(), "lag_calendar": mode}}))
     cases.append(("level-lag_calendar-24h", {"kind": "level", "project": lag_calendars("24h")}))
     cases.append(("repair-lag_calendar-successor", {"kind": "repair", "project": {**lag_calendars("successor"), "must_finish_by": "2026-04-10T16:00:00"}}))
+    # scheduling options: progress logic (out-of-sequence work, with suspend/resume and the lag calendar), float paths,
+    # start on new day, the near-critical threshold, and all of them together
+    oos_opts = progress()
+    for a in oos_opts["activities"]:
+        if a["id"] == "E":
+            a.update({"suspend_date": "2026-03-27T12:00:00", "resume_date": "2026-04-08T08:00:00"})
+    for mode in PROGRESS_LOGIC:
+        cases.append((f"schedule-progress_logic-{mode}", {"kind": "schedule", "project": {**progress(), "progress_logic": mode}}))
+        cases.append((f"schedule-progress_logic-{mode}-resume", {"kind": "schedule", "project": {**oos_opts, "progress_logic": mode}}))
+        cases.append((f"schedule-progress_logic-{mode}-lag24h", {"kind": "schedule", "project": {**oos_chains(), "progress_logic": mode, "lag_calendar": "24h"}}))
+        cases.append((f"guard-progress_logic-{mode}", {"kind": "guard", "project": {**oos_chains(), "progress_logic": mode}}))
+    for name, fn, n in (("links", links_and_lags, 3), ("constraints", constraints, 4), ("progress", progress, 4), ("hammocks", hammocks, 2), ("dst", dst_year, 10)):
+        cases.append((f"schedule-float_paths-{name}-{n}", {"kind": "schedule", "project": {**fn(), "float_paths": n}}))
+    cases.append(("schedule-float_paths-demo_house-5", {"kind": "schedule", "project": {**Project.model_validate(demo).model_dump(mode="json"), "float_paths": 5}}))
+    cases.append(("schedule-float_paths-capped-99", {"kind": "schedule", "project": {**oos_chains(), "float_paths": 99}}))
+    for name, fn in (("links", links_and_lags), ("constraints", constraints), ("progress", progress), ("dst", dst_year)):
+        cases.append((f"schedule-start_on_new_day-{name}", {"kind": "schedule", "project": {**fn(), "start_on_new_day": True}}))
+    cases.append(("schedule-start_on_new_day-lag24h", {"kind": "schedule", "project": {**lag_calendars("24h"), "start_on_new_day": True}}))
+    cases.append(("schedule-start_on_new_day-lag-successor", {"kind": "schedule", "project": {**lag_calendars("successor"), "start_on_new_day": True}}))
+    for name, fn, days in (("links-0", links_and_lags, 0), ("links-2.5", links_and_lags, 2.5), ("dst-1", dst_year, 1), ("hammocks-100", hammocks, 100)):
+        cases.append((f"schedule-near_critical-{name}", {"kind": "schedule", "project": {**fn(), "near_critical_days": days}}))
+    for mode in PROGRESS_LOGIC:
+        everything = {**oos_opts, "progress_logic": mode, "lag_calendar": "successor", "float_paths": 6, "start_on_new_day": True, "near_critical_days": 3}
+        cases.append((f"schedule-all_options-{mode}", {"kind": "schedule", "project": everything}))
+        cases.append((f"guard-all_options-{mode}", {"kind": "guard", "project": everything}))
+    cases.append(("level-all_options", {"kind": "level", "project": {**lag_calendars("project"), "float_paths": 4, "start_on_new_day": True, "near_critical_days": 1}}))
+    cases.append(("repair-all_options", {"kind": "repair", "project": {**lag_calendars("24h"), "must_finish_by": "2026-04-10T16:00:00", "float_paths": 3, "start_on_new_day": True, "progress_logic": "override"}}))
     for i, b in enumerate(BRIEFS):
         cases.append((f"generate-{i}", {"kind": "generate", "brief": b}))
         proj = _generated(b)
