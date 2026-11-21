@@ -733,3 +733,12 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 #hdr .c[draggable] { cursor: grab; }
 
 .spine .sp-h .linkish { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
+
+/* T6: Asta hands. Blank draw row, draw ghost, Link Tasks toggle */
+.row.blank .cells { color: var(--ink-3); font-size: var(--fs-xs); font-style: italic; }
+.row.blank .cells .c { border-color: transparent; }
+svg.chart .ghost { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 4 3; rx: 4; pointer-events: none; }
+svg.chart .rowbg.draw { cursor: crosshair; }
+.tb[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.multi-ids { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
+.multi-ids .linkchip { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -464,7 +464,24 @@ def _table(name: str, fields: list[str], rows: Iterable[dict]) -> str:
     return "\n".join(out)
 
 
-def write_xer(project: Project, currency: str = "GBP") -> str:
+# Target P6 version for the ERMHDR line. P6 warns on, and may refuse, a file whose header claims a newer release than
+# itself, so a planner sending to an older P6 picks that version. A major alone ("24") becomes the release P6 stamps
+# (its last yearly release); a full string ("19.12", "8.4") is written as given. Only the header differs: every table
+# and column this writer emits (PROJECT, CALENDAR, PROJWBS, TASK, TASKPRED, RSRC, TASKRSRC, ACTVTYPE/ACTVCODE/TASKACTV,
+# UDFTYPE/UDFVALUE, MEMOTYPE/TASKMEMO, SCHEDOPTIONS, CURRTYPE) has existed unchanged since P6 8, and the columns later
+# releases added (location_id, risk and web-path fields ...) are optional on import; the fixtures (8.2.0, 8.4) read
+# with the same reader as 19.12 files do.
+XER_VERSIONS = {"8": "8.4", "15": "15.2", "16": "16.2", "17": "17.12", "18": "18.8", "19": "19.12", "20": "20.12",
+                "21": "21.12", "22": "22.12", "23": "23.12", "24": "24.12"}
+DEFAULT_XER_VERSION = "19.12"
+
+
+def xer_version(version) -> str:
+    v = str(version or DEFAULT_XER_VERSION).strip()
+    return XER_VERSIONS.get(v, v)
+
+
+def write_xer(project: Project, currency: str = "GBP", version: str | None = None) -> str:
     project.ensure_default_calendar()
     now = datetime.now()
     pid = 1
@@ -473,7 +490,7 @@ def write_xer(project: Project, currency: str = "GBP") -> str:
     wbs_ids = {w.id: i + 2 for i, w in enumerate(project.wbs)}  # 1 is the project root node
     rsrc_ids = {r.id: i + 1 for i, r in enumerate(project.resources)}
 
-    header = "\t".join(["ERMHDR", "19.12", now.strftime("%Y-%m-%d"), "Project", "admin", "admin",
+    header = "\t".join(["ERMHDR", xer_version(version), now.strftime("%Y-%m-%d"), "Project", "admin", "admin",
                         "dbxDatabaseNoName", "Project Management", currency])
 
     currtype = _table("CURRTYPE", ["curr_id", "decimal_digit_cnt", "curr_symbol", "decimal_symbol", "digit_group_symbol",

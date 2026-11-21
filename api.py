@@ -270,10 +270,10 @@ async def import_file(file: UploadFile = File(...)):
 
 
 @app.get("/api/projects/{pid}/export.{fmt}")
-def export(pid: str, fmt: str):
+def export(pid: str, fmt: str, version: str | None = None):
     project = _load(pid)
     try:
-        content, media, filename = write_any(project, fmt)
+        content, media, filename = write_any(project, fmt, version=version)
     except ValueError as e:
         raise HTTPException(422, str(e))
     body = content.encode("cp1252", errors="replace") if fmt == "xer" else content.encode("utf-8")

@@ -95,6 +95,45 @@ def test_browser_import_matches_python(results):
     assert not bad, json.dumps(bad, indent=1, default=str)[:6000]
 
 
+def test_fidelity_report_covers_custom_fields_and_codes():
+    """fidelityReport: custom fields are carried in MS Project XML, and activity codes are reported as carried as text
+    fields (or lost once MS Project's 30 text fields run out)."""
+    p = Project.model_validate(_generated(BRIEFS[0]))
+    for a in p.activities:                                     # the generator codes every activity; start from none
+        a.codes, a.fields = {}, None
+    p.user_fields = [{"name": "Package", "type": "text"}, {"name": "Cost", "type": "number"}, {"name": "Due", "type": "date"}]
+    p.activities[0].fields = {"Package": "Steel", "Cost": 1200.0, "Due": "2026-04-01"}
+    p.activities[1].fields = {"Cost": "not a number", "Extra": "x"}
+    p.code_types = {"Trade": {"Brick": "#ff0000"}}
+    p.activities[2].codes = {"Trade": "Brick"}
+    p.activities[3].codes = {"Trade": "Steel", "Zone": "North"}
+    schedule(p)
+    script = r"""
+const path = require('path');
+for (const f of ['engine.js', 'import_xer.js', 'import_xml.js', 'import_any.js']) require(path.join(process.argv[1], 'web', f));
+const E = globalThis.PlannerEngine; const p = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const out = { xml: E.fidelityReport(p, 'xml').items, xer: E.fidelityReport(p, 'xer').items };
+for (let i = 0; i < 31; i++) { p.code_types['Code ' + i] = {}; p.activities[0].codes['Code ' + i] = 'v' + i; }
+out.many = E.fidelityReport(p, 'xml').items;
+process.stdout.write(JSON.stringify(out));
+"""
+    r = subprocess.run([NODE, "-e", script, str(ROOT)], input=p.model_dump_json(), capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-2000:]
+    out = json.loads(r.stdout)
+    by_text = lambda items, needle: next(i for i in items if needle in i["text"])  # noqa: E731
+    fields = by_text(out["xml"], "custom field values")
+    assert fields["text"] == "4 of 5 custom field values" and not fields["ok"] and "Text1-30" in fields["detail"]
+    codes = by_text(out["xml"], "activity code values")
+    assert codes["text"] == "3 of 3 activity code values carried as text fields" and codes["ok"] and "text custom field" in codes["detail"]
+    assert by_text(out["xer"], "activity code values")["text"] == "3 of 3 activity code values"
+    assert by_text(out["xer"], "custom field values")["text"] == "4 of 5 custom field values"
+    many = by_text(out["many"], "activity code values")
+    assert many["text"].endswith("of 34 activity code values carried as text fields") and not many["ok"] and "30 text fields" in many["detail"]
+    # 30 text slots: Package and Extra, then the code types in order (Trade, Code 0-30, Zone) until they run out, so Trade
+    # and Code 0-26 go (28 types); Trade carries 2 values, the 27 Code types one each
+    assert int(many["text"].split()[0]) == 29
+
+
 def test_binary_formats_explain_how_to_export(results):
     script = r"""
 const path = require('path');

@@ -45,7 +45,7 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node is not installed")
 # ----------------------------------------------------------------------------------------
 # corpus
 # ----------------------------------------------------------------------------------------
-def _xer(project: dict, *, scheduled=True, baseline=False, commands=(), encoding="utf-8") -> bytes:
+def _xer(project: dict, *, scheduled=True, baseline=False, commands=(), encoding="utf-8", version=None) -> bytes:
     p = Project.model_validate(copy.deepcopy(project))
     if scheduled:
         schedule(p)
@@ -55,7 +55,7 @@ def _xer(project: dict, *, scheduled=True, baseline=False, commands=(), encoding
         apply_patch(p, parse_command(p, cmd))
     if commands:
         schedule(p)
-    return write_xer(p).encode(encoding, errors="replace")
+    return write_xer(p, version=version).encode(encoding, errors="replace")
 
 
 def _non_ascii() -> dict:
@@ -251,6 +251,8 @@ def build_cases() -> list[tuple[str, dict]]:
     for fn in (progress, constraints, hammocks, links_and_lags, dst_year):
         raw.append((f"written-{fn.__name__}", _xer(fn()), None))
     raw.append(("written-progress-baselined", _xer(progress(), baseline=True), None))
+    for v in ("15.2", "19", "21", "24", "8.4", "99.9"):              # target P6 version: only the ERMHDR line changes
+        raw.append((f"written-version-{v}", _xer(progress(), version=v), None))
     uf = copy.deepcopy(progress())
     uf["user_fields"] = [{"name": "Package", "type": "text"}, {"name": "Cost", "type": "number"}, {"name": "Permit due", "type": "date"}]
     for i, a in enumerate(uf["activities"]):
@@ -377,6 +379,15 @@ def test_xer_import_agrees(idx, py_results, js_results):
         assert not diff(read_only(py_results[idx]), read_only(js[idx])), d
         pytest.xfail(ENGINE_GAPS[name])
     assert not d, f"{CASES[idx][0]} under TZ={tz}: {len(d)}+ differences\n  " + "\n  ".join(d)
+
+
+def test_xer_version_cases_differ_in_the_header_only():
+    base = _xer(progress()).decode().splitlines()
+    assert base[0].split("\t")[1] == "19.12"
+    for v, stamp in (("15.2", "15.2"), ("19", "19.12"), ("21", "21.12"), ("24", "24.12"), ("8.4", "8.4"), ("99.9", "99.9")):
+        lines = _xer(progress(), version=v).decode().splitlines()
+        assert lines[0].split("\t")[1] == stamp, v
+        assert lines[1:] == base[1:], v
 
 
 def test_corpus_reaches_the_reader():

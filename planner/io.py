@@ -55,11 +55,11 @@ def read_any(filename: str, data: bytes) -> Project:
     raise ValueError("Unrecognised file. Accepts Primavera XER, P6 XML, MS Project XML, and (with the MPXJ bridge) Asta .pp, .mpp and others.")
 
 
-def write_any(project: Project, fmt: str) -> tuple[str, str, str]:
-    """returns (content, media type, filename)"""
+def write_any(project: Project, fmt: str, version: str | None = None) -> tuple[str, str, str]:
+    """returns (content, media type, filename); `version` is the P6 release stamp for XER (see write_xer)"""
     fmt = fmt.lower().lstrip(".")
     if fmt == "xer":
-        return write_xer(project), "text/plain; charset=cp1252", f"{project.id}.xer"
+        return write_xer(project, version=version), "text/plain; charset=cp1252", f"{project.id}.xer"
     if fmt in ("xml", "mspdi", "msproject"):
         return write_mspdi(project), "application/xml", f"{project.id}.xml"
     if fmt == "json":
