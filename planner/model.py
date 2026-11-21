@@ -201,6 +201,7 @@ class Activity(BaseModel):
     duration_hours: float = 0.0
     constraint: Constraint = Constraint.NONE
     constraint_date: Optional[datetime] = None
+    deadline: Optional[datetime] = None                   # target finish (MS Project deadline): shown, filtered, never drives dates
     # progress
     status: Status = Status.NOT_STARTED
     actual_start: Optional[datetime] = None
@@ -265,6 +266,8 @@ class Project(BaseModel):
     progress_periods: Optional[list[dict]] = None         # closed periods: {id, name, data_date, closed_at, pct, planned_pct, finish, acts{id: [start, finish, pct, n|p|c]}}
     user_fields: Optional[list[dict]] = None              # user-defined field definitions: {name, type: text|number|date}
     views: Optional[list[dict]] = None                    # saved views stored with the programme: {name, cols, widths, view, panel}
+    filters: Optional[list[dict]] = None                  # saved filters: {name, text} in the table-filter grammar
+    shading: Optional[list[dict]] = None                  # chart date-range bands: {id, from, to, label, colour}
     levelled: bool = False
     # computed
     finish: Optional[datetime] = None

@@ -1030,6 +1030,7 @@ function writeMspdi(p) {
     const rem = a.remaining_hours != null ? a.remaining_hours : (a.status === 'complete' ? 0 : a.duration_hours);
     el('RemainingDuration', fmtDur(rem)); el('ManualStart', fmtDtSec(aStart(a))); el('ManualFinish', fmtDtSec(aFinish(a))); el('ManualDuration', fmtDur(a.duration_hours));
     el('ConstraintType', CSTR_MSP[a.constraint] || '0'); if (a.constraint_date && a.constraint !== 'none') el('ConstraintDate', fmtDtSec(a.constraint_date));
+    if (a.deadline) el('Deadline', fmtDtSec(a.deadline));
     el('CalendarUID', a.calendar_id ? (calUid[a.calendar_id] != null ? calUid[a.calendar_id] : -1) : -1);
     el('Milestone', E.isMs(a) ? 1 : 0); el('Summary', 0); el('Critical', a.critical ? 1 : 0); el('IsSubproject', 0);
     el('EarlyStart', fmtDtSec(a.early_start)); el('EarlyFinish', fmtDtSec(a.early_finish)); el('LateStart', fmtDtSec(a.late_start)); el('LateFinish', fmtDtSec(a.late_finish));

@@ -1348,6 +1348,7 @@ function readMsp(root, NS) {
       duration_hours: dur,
       constraint: get(MSP_CSTR, text(t, 'ConstraintType', '0'), 'none'),
       constraint_date: mdt(text(t, 'ConstraintDate')),
+      deadline: mdt(text(t, 'Deadline')),
       status, actual_start: actualStart, actual_finish: actualFinish,
       remaining_hours: status !== 'not_started' ? rem : null, percent_complete: pct,
       early_start: mdt(text(t, 'Start')), early_finish: mdt(text(t, 'Finish')),

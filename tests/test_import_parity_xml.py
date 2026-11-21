@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from datetime import datetime
 import json
 import os
 import re
@@ -61,6 +62,10 @@ def _corpus() -> list[tuple[str, dict]]:
     """Projects written out as MSPDI by both writers."""
     out = [(f"gen{i}", _generated(BRIEFS[i])) for i in (0, 1, 2, 4, 6)]
     out += [("progress", progress()), ("constraints", constraints()), ("hammocks", hammocks()), ("links", links_and_lags())]
+    dl = Project.model_validate(constraints())               # per-activity deadlines (MS Project <Deadline>), never scheduling
+    dl.activities[1].deadline = datetime(2026, 4, 30, 16, 0)
+    dl.activities[3].deadline = datetime(2026, 5, 1, 8, 30)
+    out.append(("deadlines", dl.model_dump(mode="json")))
     for name, fn in (("progress+baseline", progress), ("constraints+baseline", constraints)):
         p = Project.model_validate(fn())
         set_baseline(p, "Tender")                           # baseline dates, then move on: progress and a slip

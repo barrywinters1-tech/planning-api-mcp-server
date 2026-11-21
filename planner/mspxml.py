@@ -185,6 +185,7 @@ def _read(root: ET.Element) -> Project:
             duration_hours=dur,
             constraint=CSTR_IN.get(_text(t, "ConstraintType", "0"), Constraint.NONE),
             constraint_date=_dt(_text(t, "ConstraintDate")),
+            deadline=_dt(_text(t, "Deadline")),
             status=status, actual_start=actual_start, actual_finish=actual_finish,
             remaining_hours=rem if status != Status.NOT_STARTED else None, percent_complete=pct,
             early_start=_dt(_text(t, "Start")), early_finish=_dt(_text(t, "Finish")),
@@ -359,6 +360,8 @@ def write_mspdi(project: Project) -> str:
         _sub(el, "ConstraintType", CSTR_OUT.get(a.constraint, "0"))
         if a.constraint_date and a.constraint != Constraint.NONE:
             _sub(el, "ConstraintDate", _fmt(a.constraint_date))
+        if a.deadline:
+            _sub(el, "Deadline", _fmt(a.deadline))
         _sub(el, "CalendarUID", cal_uid.get(a.calendar_id, -1) if a.calendar_id else -1)
         _sub(el, "Milestone", 1 if a.is_milestone else 0)
         _sub(el, "Summary", 0)

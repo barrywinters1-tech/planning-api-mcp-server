@@ -727,3 +727,7 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 .hc-k { font-size: 10.5px; color: var(--ink-3); }
 @media (max-width: 980px) { .ov-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .spine .sp-h { display: none; } }
 @media (max-width: 640px) { .ov-kpis .kpi .big { font-size: 22px; } .spine { grid-template-columns: 1fr; gap: 10px; } .spine li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; padding: 0; } .spine li::before { left: 11px; top: 26px; bottom: -14px; width: 2px; height: auto; right: auto; } .spine .sp-b { margin-top: 0; } .spine .sp-h { display: none; } .trybar { padding: 6px 12px; } .ov .head-actions { width: 100%; } }
+
+.flt-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr) 32px; gap: 6px; margin-bottom: 6px; align-items: center; }
+#hdr .c.dropleft { box-shadow: inset 3px 0 0 var(--accent); }
+#hdr .c[draggable] { cursor: grab; }

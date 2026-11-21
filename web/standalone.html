@@ -734,6 +734,10 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 @media (max-width: 980px) { .ov-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .spine .sp-h { display: none; } }
 @media (max-width: 640px) { .ov-kpis .kpi .big { font-size: 22px; } .spine { grid-template-columns: 1fr; gap: 10px; } .spine li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; padding: 0; } .spine li::before { left: 11px; top: 26px; bottom: -14px; width: 2px; height: auto; right: auto; } .spine .sp-b { margin-top: 0; } .spine .sp-h { display: none; } .trybar { padding: 6px 12px; } .ov .head-actions { width: 100%; } }
 
+.flt-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr) 32px; gap: 6px; margin-bottom: 6px; align-items: center; }
+#hdr .c.dropleft { box-shadow: inset 3px 0 0 var(--accent); }
+#hdr .c[draggable] { cursor: grab; }
+
 </style>
 
 <div class="app" id="app">
@@ -873,7 +877,7 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
   <label class="fld"><span>Colour</span><select id="vColour"><option value="critical">Critical path</option></select></label>
   <label class="fld"><span>Group</span><select id="vGroup"><option value="">WBS</option></select></label>
   <label class="fld"><span>Sort</span><select id="vSort"><option value="">Sequence</option><option value="start">Start</option><option value="finish">Finish</option><option value="float">Float</option><option value="id">ID</option><option value="name">Name</option></select></label>
-  <div class="pop-row"><button id="btnColumns">Columns…</button><button id="btnViews">Saved views…</button></div>
+  <div class="pop-row"><button id="btnFilter">Filter…</button><button id="btnColumns">Columns…</button><button id="btnViews">Saved views…</button></div>
 </div>
 <div class="pop" id="popProjects" role="menu" hidden></div>
 
@@ -1934,6 +1938,7 @@ function writeMspdi(p) {
     const rem = a.remaining_hours != null ? a.remaining_hours : (a.status === 'complete' ? 0 : a.duration_hours);
     el('RemainingDuration', fmtDur(rem)); el('ManualStart', fmtDtSec(aStart(a))); el('ManualFinish', fmtDtSec(aFinish(a))); el('ManualDuration', fmtDur(a.duration_hours));
     el('ConstraintType', CSTR_MSP[a.constraint] || '0'); if (a.constraint_date && a.constraint !== 'none') el('ConstraintDate', fmtDtSec(a.constraint_date));
+    if (a.deadline) el('Deadline', fmtDtSec(a.deadline));
     el('CalendarUID', a.calendar_id ? (calUid[a.calendar_id] != null ? calUid[a.calendar_id] : -1) : -1);
     el('Milestone', E.isMs(a) ? 1 : 0); el('Summary', 0); el('Critical', a.critical ? 1 : 0); el('IsSubproject', 0);
     el('EarlyStart', fmtDtSec(a.early_start)); el('EarlyFinish', fmtDtSec(a.early_finish)); el('LateStart', fmtDtSec(a.late_start)); el('LateFinish', fmtDtSec(a.late_finish));
@@ -3804,6 +3809,7 @@ function readMsp(root, NS) {
       duration_hours: dur,
       constraint: get(MSP_CSTR, text(t, 'ConstraintType', '0'), 'none'),
       constraint_date: mdt(text(t, 'ConstraintDate')),
+      deadline: mdt(text(t, 'Deadline')),
       status, actual_start: actualStart, actual_finish: actualFinish,
       remaining_hours: status !== 'not_started' ? rem : null, percent_complete: pct,
       early_start: mdt(text(t, 'Start')), early_finish: mdt(text(t, 'Finish')),
@@ -7332,6 +7338,7 @@ const ALL_COLS = {
   succs: { t: 'Successors', w: 150, get: a => succsText(a) },
   pct: { t: '%', w: 42, num: 1, get: a => a.status === 'not_started' ? '' : Math.round(a.percent_complete) + '%', set: (a, v) => setProgress(a, parseFloat(v) || 0) },
   cal: { t: 'Calendar', w: 100, get: a => (S.project.calendars[a.calendar_id || S.project.default_calendar_id] || {}).name || '', options: () => Object.values(S.project.calendars).map(c => [c.id, c.name]), setOpt: (a, v) => { const old = hpd(a); a.calendar_id = v; a.duration_hours = a.duration_hours / old * hpd(a); } },
+  deadline: { t: 'Deadline', w: 78, get: a => fmtD(a.deadline), set: (a, v) => { const d = parseDateInput(v); a.deadline = d ? iso(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 16)) : null; }, cls: a => a.deadline && (a.actual_finish || a.early_finish) > a.deadline ? 'crit' : '' },
   constraint: { t: 'Constraint', w: 150, get: a => a.constraint === 'none' ? '' : a.constraint.replaceAll('_', ' ') + ' ' + fmtD(a.constraint_date) },
   astart: { t: 'Actual start', w: 78, get: a => fmtD(a.actual_start), set: (a, v) => { const d = parseDateInput(v); a.actual_start = d ? iso(d) : null; if (d && a.status === 'not_started') { a.status = 'in_progress'; a.remaining_hours = a.duration_hours; } } },
   afinish: { t: 'Actual finish', w: 78, get: a => fmtD(a.actual_finish), set: (a, v) => { const d = parseDateInput(v); a.actual_finish = d ? iso(d) : null; if (d) { a.status = 'complete'; a.percent_complete = 100; a.remaining_hours = 0; if (!a.actual_start) a.actual_start = a.early_start; } } },
@@ -7915,6 +7922,17 @@ function render() {
   // header
   $('#hdr').innerHTML = `<div class="hdr-grid" style="width:${gw}px"><button type="button" class="colpage prev" aria-label="Earlier columns" hidden>‹</button><button type="button" class="colpage next" aria-label="More columns" hidden>›</button>` + cols.map(k => `<div class="c ${S.view.sort === k ? 'sorted' : ''}" style="width:${ALL_COLS[k].w}px" data-col="${esc(k)}">${esc(ALL_COLS[k].t)}</div>`).join('') + `</div><div class="hdr-time" style="width:${W}px">${timescale(t0, t1, W)}</div>`;
   $$('#hdr .c[data-col]').forEach(el => { const h = document.createElement('span'); h.className = 'colgrip'; el.appendChild(h); h.onmousedown = e => { e.stopPropagation(); e.preventDefault(); const k = el.dataset.col, x0 = e.clientX, w0 = ALL_COLS[k].w; const mv = ev => { ALL_COLS[k].w = Math.max(30, w0 + ev.clientX - x0); el.style.width = ALL_COLS[k].w + 'px'; }; const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); try { localStorage.setItem('colw', JSON.stringify(Object.fromEntries(Object.entries(ALL_COLS).map(([k, c]) => [k, c.w])))); } catch { } render(); }; document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); }; });
+  $$('#hdr .c[data-col]').forEach(el => {
+    el.oncontextmenu = e => { e.preventDefault(); const k = el.dataset.col, sortable = ['start', 'finish', 'tf', 'id', 'name'].includes(k);
+      const items = [sortable ? [`Sort by ${ALL_COLS[k].t}`, () => { S.view.sort = k === 'tf' ? 'float' : k; $('#vSort').value = S.view.sort; render(); }] : null, S.view.sort ? ['Sequence order', () => { S.view.sort = ''; $('#vSort').value = ''; render(); }] : null, null,
+        k !== 'name' ? ['Hide column', () => { S.cols = S.cols.filter(c => c !== k); try { localStorage.setItem('cols', JSON.stringify(S.cols)); } catch { } render(); }] : null, ['Add or remove columns…', columnsDialog], ['Fit column to contents', () => { const rows = $$('#rows .row'); let w = ALL_COLS[k].t.length * 7 + 24; rows.forEach(r => { const c = r.querySelector(`.c[data-col="${CSS.escape(k)}"]`); if (c) w = Math.max(w, c.textContent.length * 6.6 + 28); }); ALL_COLS[k].w = Math.min(480, Math.round(w)); render(); }]];
+      const m = $('#ctx'); const list = items.filter(x => x !== undefined); m.innerHTML = list.map(it => it === null ? '<hr>' : `<div>${esc(it[0])}</div>`).join(''); let i = 0; m.querySelectorAll('div').forEach(d => { const it = list.filter(x => x !== null)[i++]; d.onclick = () => { m.hidden = true; it[1](); }; }); m.hidden = false; m.style.left = Math.min(e.clientX, innerWidth - 240) + 'px'; m.style.top = Math.min(e.clientY, innerHeight - m.offsetHeight - 10) + 'px'; };
+    el.draggable = true;
+    el.ondragstart = e => { e.dataTransfer.setData('text/col', el.dataset.col); e.dataTransfer.effectAllowed = 'move'; };
+    el.ondragover = e => { if ([...e.dataTransfer.types].includes('text/col')) { e.preventDefault(); el.classList.add('dropleft'); } };
+    el.ondragleave = () => el.classList.remove('dropleft');
+    el.ondrop = e => { e.preventDefault(); el.classList.remove('dropleft'); const from = e.dataTransfer.getData('text/col'), to = el.dataset.col; if (!from || from === to) return; const cols = S.cols.filter(c => c !== from); cols.splice(cols.indexOf(to), 0, from); S.cols = cols; try { localStorage.setItem('cols', JSON.stringify(S.cols)); } catch { } render(); };
+  });
   $$('#hdr .c[data-col]').forEach(el => el.onclick = () => { const k = el.dataset.col; S.view.sort = S.view.sort === k ? '' : (['start', 'finish', 'tf', 'id', 'name'].includes(k) ? (k === 'tf' ? 'float' : k) : S.view.sort); $('#vSort').value = S.view.sort; render(); });
   // rows
   const bandH = 0;
@@ -8000,6 +8018,7 @@ function chart(rs, t0, t1, W, H, bandH) {
   if (S.view.grid !== false) { for (let d = new Date(t0); d < t1; d.setDate(d.getDate() + 7)) s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--line-2)"/>`;
   for (let d = new Date(t0.getFullYear(), t0.getMonth(), 1); d < t1; d.setMonth(d.getMonth() + 1)) s += `<line x1="${x(d)}" y1="0" x2="${x(d)}" y2="${H}" stroke="var(--line)"/>`; }
   rs.forEach((r, i) => { const key = rowKey(r); s += `<rect class="hit rowbg" data-key="${esc(key)}" x="0" y="${i * RH}" width="${W}" height="${RH}" fill="${S.sel.has(key) ? 'var(--sel)' : (r.wbs || r.group) ? 'var(--grid)' : 'transparent'}" opacity="${S.sel.has(key) ? .6 : .5}"/><line x1="0" y1="${(i + 1) * RH - .5}" x2="${W}" y2="${(i + 1) * RH - .5}" stroke="var(--line-2)"/>`; });
+  (p.shading || []).forEach(b => { const x0 = x(b.from), x1 = x(b.to) + px; if (x1 <= x0) return; s += `<g class="hit shade" data-shade="${esc(b.id)}" style="cursor:pointer"><rect x="${x0}" y="0" width="${x1 - x0}" height="${H - bandH}" fill="${esc(b.colour)}" opacity=".16"/>${b.label ? `<text x="${x0 + 4}" y="12" font-size="10.5" font-weight="600" fill="var(--ink-2)">${esc(b.label)}</text>` : ''}<title>${esc(b.label || 'Shaded range')}: ${esc(fmtD(b.from))} to ${esc(fmtD(b.to))}</title></g>`; });
   const dd = new Date(p.data_date || p.start);
   s += `<line x1="${x(dd)}" y1="0" x2="${x(dd)}" y2="${H}" stroke="var(--dd)" stroke-dasharray="5 4" stroke-width="1.6"/>`;
   if (p.must_finish_by) s += `<line x1="${x(p.must_finish_by)}" y1="0" x2="${x(p.must_finish_by)}" y2="${H - bandH}" stroke="var(--crit)" stroke-dasharray="2 4" stroke-width="1.4"/>`;
@@ -8055,6 +8074,7 @@ function chart(rs, t0, t1, W, H, bandH) {
         const sx = x(a.suspend_date), rx = x(a.resume_date && a.resume_date > (p.data_date || p.start) ? a.resume_date : (p.data_date || p.start));
         if (rx > sx + 1) s += `<rect x="${sx}" y="${by - 1}" width="${rx - sx}" height="${h + 2}" fill="var(--surface)" stroke="${fill}" stroke-dasharray="3 2" pointer-events="none"/><text x="${(sx + rx) / 2}" y="${by + h - 3}" text-anchor="middle" font-size="9" fill="var(--ink-3)" pointer-events="none">suspended</text>`;
       }
+      if (S.view.flags !== false && a.deadline) { const dx2 = x(a.deadline), lateD = fi > a.deadline; s += `<path d="M${dx2},${by + h + 1} l-5,6 h10 z" fill="${lateD ? 'var(--crit)' : 'var(--ink-2)'}"><title>Deadline ${esc(fmtD(a.deadline))}${lateD ? ' (missed)' : ''}</title></path>`; }
       if (S.view.flags !== false && a.constraint && a.constraint !== 'none' && a.constraint_date) { const cx = x(a.constraint_date); s += a.constraint.includes('start') ? `<polygon points="${cx},${by - 1} ${cx - 4},${by - 6} ${cx + 4},${by - 6}" fill="var(--warn)"/>` : `<polygon points="${cx},${by + h + 1} ${cx - 4},${by + h + 6} ${cx + 4},${by + h + 6}" fill="var(--warn)"/>`; }
       const hw = TOUCH ? Math.min(22, Math.max(10, bw / 3)) : Math.min(8, Math.max(4, bw / 4));     // grab zones at each end: drag to change start or finish (wider for a finger)
       s += `<rect class="hit handle hs" data-id="${a.id}" data-end="S" x="${bx - 2}" y="${by - 2}" width="${hw}" height="${h + 4}" fill="transparent"/>`;
@@ -8222,6 +8242,7 @@ function renderActivityPanel() {
       <div class="links-list">${succs.map(r => chipFor(r.successor_id, r.type === 'FS' ? '' : ' ' + r.type)).join('') || '<span class="hint" style="font-size:12.5px">Nothing waits for it.</span>'}</div>
       <div class="insp-sec">Constraint and resources</div>
       <div class="row2"><label>Constraint<select id="iCon">${cons}</select></label><label>Date<input type="date" id="iConD" value="${a.constraint_date ? a.constraint_date.slice(0, 10) : ''}"></label></div>
+      <label>Deadline <span class="hint">(target finish; shown, never drives dates)</span><input type="date" id="iDead" value="${a.deadline ? a.deadline.slice(0, 10) : ''}"></label>${a.deadline && (a.actual_finish || a.early_finish) > a.deadline ? `<p class="hint crit" style="margin:-4px 0 8px">Finishes ${workingDaysBetween(calOf(a), new Date(a.deadline), new Date(a.actual_finish || a.early_finish))} working days after its deadline.</p>` : ''}
       <label>Resources<input id="iRes" value="${esc(ALL_COLS.res.get(a))}" placeholder="Bricklayers, Scaffolders"></label>
       ${codes}
       ${fieldDefs(S.project).length ? `<div class="insp-sec">Custom fields</div>${fieldDefs(S.project).map(d => { const v = (a.fields || {})[d.name]; return `<label>${esc(d.name)}<input data-field="${esc(d.name)}" ${d.type === 'date' ? 'type="date"' : d.type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(v == null ? '' : d.type === 'date' ? String(v).slice(0, 10) : String(v))}"></label>`; }).join('')}` : ''}
@@ -8245,6 +8266,7 @@ function renderActivityPanel() {
   q('#iPreds').onchange = e => mutate(() => setPreds(a, e.target.value), `${a.id} logic updated`);
   const setCon = () => mutate(() => { const c = q('#iCon').value, d = q('#iConD').value || (a.early_start || '').slice(0, 10); a.constraint = c; a.constraint_date = c === 'none' || c === 'as_late_as_possible' ? null : (d ? d + (c.includes('finish') ? 'T16:00:00' : 'T08:00:00') : null); if (c !== 'none' && c !== 'as_late_as_possible' && !a.constraint_date) a.constraint = 'none'; }, `${a.id} constraint updated`);
   q('#iCon').onchange = setCon; q('#iConD').onchange = setCon;
+  q('#iDead').onchange = e => mutate(() => { a.deadline = e.target.value ? e.target.value + 'T16:00:00' : null; }, e.target.value ? `${a.id} deadline ${fmtD(e.target.value)}` : `${a.id} deadline cleared`);
   q('#iRes').onchange = e => mutate(() => setResources(a, e.target.value), `${a.id} resources updated`);
   el.querySelectorAll('[data-code]').forEach(sel => sel.onchange = () => mutate(() => { a.codes = a.codes || {}; if (sel.value) a.codes[sel.dataset.code] = sel.value; else delete a.codes[sel.dataset.code]; }, null));
   q('#iNotes').onchange = e => mutate(() => { a.notes = e.target.value; }, null);
@@ -8255,6 +8277,12 @@ function renderActivityPanel() {
 
 
 // ---------- chart notes (annotations), stored with the programme ----------
+function shadeDialog(b, date) {
+  const isNew = !b; b = b || { id: 'S' + Date.now().toString(36), from: (date || S.project.data_date || S.project.start).slice(0, 10), to: iso(new Date(+new Date(date || S.project.start) + 13 * DAY)).slice(0, 10), label: '', colour: '#ffd166' };
+  modal(isNew ? 'Shade a date range' : 'Date range', `<div class="row2"><label>From<input type="date" name="f" value="${b.from}"></label><label>To<input type="date" name="t" value="${b.to}"></label></div><div class="row2"><label>Label<input name="l" value="${esc(b.label)}" placeholder="e.g. Christmas shutdown, Client review"></label><label>Colour<input type="color" name="c" value="${b.colour}"></label></div><p class="hint">Shown on the chart behind the bars.</p>${isNew ? '' : '<button type="button" class="btn" id="shDel">Remove</button>'}`,
+    m => { const f = m.querySelector('[name=f]').value, t = m.querySelector('[name=t]').value; if (!f || !t) return false; mutate(p => { p.shading = (p.shading || []).filter(x => x.id !== b.id).concat([{ id: b.id, from: f < t ? f : t, to: f < t ? t : f, label: m.querySelector('[name=l]').value.trim(), colour: m.querySelector('[name=c]').value }]); }, isNew ? 'Date range shaded' : 'Date range updated'); }, isNew ? 'Shade' : 'Save');
+  const d = $('#shDel'); if (d) d.onclick = () => { modalClose(); mutate(p => { p.shading = (p.shading || []).filter(x => x.id !== b.id); }, 'Shading removed'); };
+}
 function noteDialog(n, date, actId) {
   const isNew = !n; n = n || { id: 'N' + Date.now().toString(36), date: date || S.project.data_date || S.project.start, activity_id: actId || null, text: '' };
   const { m } = modal(isNew ? 'Note on the chart' : 'Edit note', `<label>Note<textarea name="t" rows="3" style="width:100%" placeholder="e.g. Road closure booked; crane on site">${esc(n.text)}</textarea></label><div class="row2"><label>Date<input type="date" name="d" value="${String(n.date).slice(0, 10)}"></label><label>Row<select name="a"><option value="">Top of the chart</option>${S.project.activities.map(a => `<option value="${esc(a.id)}" ${a.id === n.activity_id ? 'selected' : ''}>${esc(a.id)} ${esc(a.name.slice(0, 40))}</option>`).join('')}</select></label></div>${isNew ? '' : '<button type="button" class="btn" id="nDel">Delete note</button>'}<p class="hint">Notes print as callouts on the PDF.</p>`,
@@ -8610,6 +8638,7 @@ function scrollToRow(i) { const sheet = $('#sheet'); const y = HDR + i * RH; if 
 function wireChart() {
   const svg = $('svg.chart'); if (!svg) return;
   svg.querySelectorAll('.rowbg').forEach(r => { r.onmousedown = e => { if (e.button === 0) selectRow(r.dataset.key, e); }; r.oncontextmenu = e => { e.preventDefault(); if (!S.sel.has(r.dataset.key)) selectRow(r.dataset.key, e); const pt = svgPoint(svg, e); S.ctxAt = { date: iso(new Date(+S.t0 + (pt.x - GX) / S.view.pxDay * DAY)), key: r.dataset.key }; contextMenu(e.clientX, e.clientY); S.ctxAt = null; }; });
+  svg.querySelectorAll('.shade[data-shade]').forEach(n => { n.ondblclick = e => { e.stopPropagation(); const b = (S.project.shading || []).find(x => x.id === n.dataset.shade); if (b) shadeDialog(b); }; });
   svg.querySelectorAll('.note[data-note]').forEach(n => { n.onmousedown = e => e.stopPropagation(); n.onclick = e => { e.stopPropagation(); const a = (S.project.annotations || []).find(x => x.id === n.dataset.note); if (a) noteDialog(a); }; });
   svg.querySelectorAll('.bar[data-id]').forEach(b => {
     b.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); if (!S.sel.has(b.dataset.id)) selectRow(b.dataset.id, e); startDrag(e, 'move', b.dataset.id, b); };
@@ -8863,6 +8892,12 @@ function unlinkSelected() { const ids = new Set(selectedActs().map(a => a.id)); 
 function toggleMilestone() { const acts = selectedActs(); if (!acts.length) return; mutate(p => acts.forEach(a => { if (a.type === 'task') { a.type = p.relationships.some(r => r.successor_id === a.id) ? 'finish_milestone' : 'start_milestone'; a.duration_hours = 0; } else { a.type = 'task'; a.duration_hours = 8 * hpd(a) / 8 * 5; } }), 'Toggled milestone'); }
 
 function copySelected() { const acts = selectedRowsInOrder().filter(r => r.act).map(r => r.act); if (!acts.length) return; S.clip = JSON.parse(JSON.stringify({ acts, links: S.project.relationships.filter(r => acts.some(a => a.id === r.predecessor_id) && acts.some(a => a.id === r.successor_id)), assigns: S.project.assignments.filter(x => acts.some(a => a.id === x.activity_id)) })); toast(`${acts.length} copied`); }
+function cutSelected() {
+  const acts = selectedRowsInOrder().filter(r => r.act).map(r => r.act); if (!acts.length) return;
+  copySelected(); const ids = new Set(acts.map(a => a.id));
+  S.clip.outside = S.project.relationships.filter(r => ids.has(r.predecessor_id) !== ids.has(r.successor_id)).map(r => ({ ...r }));   // links to the rest of the programme come back on paste
+  S.clip.cut = true; deleteSelected(); toast(`${acts.length} cut. Paste keeps their links to the rest of the programme.`);
+}
 function pasteClip() {
   if (!S.clip) return toast('Nothing copied');
   mutate(p => {
@@ -8871,6 +8906,7 @@ function pasteClip() {
     const nums = p.activities.map(a => parseInt((a.id.match(/\d+/) || ['0'])[0])); let n = Math.max(1000, ...nums);
     S.clip.acts.forEach(src => { n += 10; while (byId('A' + n)) n += 10; const a = { ...src, id: 'A' + n, wbs_id: wbs, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, constraint: 'none', constraint_date: null, level_delay_hours: 0, codes: { ...(src.codes || {}) } }; map[src.id] = a.id; p.activities.splice(idx++, 0, a); });
     S.clip.links.forEach(l => p.relationships.push({ predecessor_id: map[l.predecessor_id], successor_id: map[l.successor_id], type: l.type, lag_hours: l.lag_hours }));
+    if (S.clip.cut) { (S.clip.outside || []).forEach(l => { const pr = map[l.predecessor_id] || l.predecessor_id, su = map[l.successor_id] || l.successor_id; if (byId(pr) || map[l.predecessor_id]) if (!p.relationships.some(r => r.predecessor_id === pr && r.successor_id === su) && (p.activities.some(a => a.id === pr) || Object.values(map).includes(pr)) && (p.activities.some(a => a.id === su) || Object.values(map).includes(su))) p.relationships.push({ predecessor_id: pr, successor_id: su, type: l.type, lag_hours: l.lag_hours }); }); S.clip.cut = false; S.clip.outside = []; }
     S.clip.assigns.forEach(x => p.assignments.push({ ...x, activity_id: map[x.activity_id] }));
     S.sel = new Set(Object.values(map)); S.active = Object.values(map)[0];
   }, `${S.clip.acts.length} pasted`);
@@ -8880,7 +8916,7 @@ function contextMenu(x, y) {
   const acts = selectedActs(); const one = acts.length === 1 ? acts[0] : null; const m = $('#ctx');
   const items = [
     ['Insert activity above', () => insertActivity(true)], ['Insert activity below', () => insertActivity()], ['Insert summary below', insertSummary], ['Delete', deleteSelected], null,
-    ['Copy', copySelected], ['Paste below', pasteClip], null,
+    ['Cut', cutSelected], ['Copy', copySelected], ['Paste below', pasteClip], null,
     ['Indent', () => indent(1)], ['Outdent', () => indent(-1)], ['Move up', () => moveRow(-1)], ['Move down', () => moveRow(1)], null,
     ['Link selected (FS)', linkSelected], ['Unlink selected', unlinkSelected], null,
     one ? ['Inspect…', () => openInspector(one.id)] : null,
@@ -8890,8 +8926,10 @@ function contextMenu(x, y) {
     acts.length ? ['Constraint…', constraintDialog] : null,
     one && one.constraint !== 'none' ? ['Clear constraint', () => mutate(p => { one.constraint = 'none'; one.constraint_date = null; }, 'Constraint cleared')] : null,
     acts.length ? ['Toggle milestone', toggleMilestone] : null,
+    acts.length && S.project.baselines.length ? ['Merge live dates into the baseline', () => baselineMerge(acts)] : null,
     one ? ['Notes…', () => notesDialog(one)] : null,
     S.ctxAt ? ['Add a note on the chart here', (at => () => noteDialog(null, at.date, byId(at.key) ? at.key : null))(S.ctxAt)] : null,
+    S.ctxAt ? ['Shade a date range here…', (at => () => shadeDialog(null, at.date))(S.ctxAt)] : null,
   ].filter(x => x !== undefined);
   m.innerHTML = items.map(it => it === null ? '<hr>' : `<div>${esc(it[0])}</div>`).join('');
   let k = 0; m.querySelectorAll('div').forEach(el => { const it = items.filter(x => x !== null)[k++]; el.onclick = () => { m.hidden = true; it[1](); }; });
@@ -9021,6 +9059,7 @@ function fieldAccessor(name) {
     '%|pct|progress|complete|% complete': { type: 'number', get: a => a.status === 'complete' ? 100 : a.percent_complete || 0 },
     'start': { type: 'date', get: a => (a.actual_start || a.early_start || '').slice(0, 10) }, 'finish': { type: 'date', get: a => (a.actual_finish || a.early_finish || '').slice(0, 10) },
     'name|activity': { type: 'text', get: a => a.name }, 'id': { type: 'text', get: a => a.id },
+    'deadline': { type: 'date', get: a => (a.deadline || '').slice(0, 10) }, 'late to deadline|missed deadline': { type: 'bool', get: a => !!(a.deadline && (a.actual_finish || a.early_finish) > a.deadline) },
     'wbs': { type: 'text', get: a => (wbsById(a.wbs_id) || {}).name || '' }, 'status': { type: 'text', get: a => a.status.replace('_', ' ') },
     'critical': { type: 'bool', get: a => !!a.critical }, 'calendar': { type: 'text', get: a => ALL_COLS.cal.get(a) }, 'resource|resources': { type: 'text', get: a => ALL_COLS.res.get(a) },
   };
@@ -9123,6 +9162,36 @@ function libraryDialog() {
       out(msg); if (r.n || r.created.length) toast(`Coding sheet loaded: ${r.n} updated`, { ms: 3600, undo: true }); } catch (err) { out(err.message || String(err)); } };
 }
 // ---------- saved views: with the programme (everyone) or on this device ----------
+// Filter builder: conditions on any column, code or field; saved by name with the programme (or on this device)
+function filterFields() {
+  const p = S.project; const out = [['name', 'Activity', 'text'], ['id', 'ID', 'text'], ['wbs', 'WBS', 'text'], ['status', 'Status', 'text'], ['critical', 'Critical', 'bool'], ['float', 'Total float (days)', 'number'], ['free float', 'Free float (days)', 'number'], ['dur', 'Duration (days)', 'number'], ['%', '% complete', 'number'], ['start', 'Start', 'date'], ['finish', 'Finish', 'date'], ['deadline', 'Deadline', 'date'], ['missed deadline', 'Missed deadline', 'bool'], ['calendar', 'Calendar', 'text'], ['resource', 'Resource', 'text']];
+  const types = new Set(Object.keys(p.code_types || {})); p.activities.forEach(a => Object.keys(a.codes || {}).forEach(t => types.add(t))); [...types].forEach(t => out.push([t, t + ' (code)', 'text']));
+  fieldDefs(p).forEach(d => out.push([d.name, d.name + ' (field)', d.type]));
+  return out;
+}
+function filterDialog() {
+  if (!S.project) return; const p = S.project, fields = filterFields();
+  const parse = text => String(text || '').split(/\s*;\s*|\s+and\s+/i).filter(Boolean).map(part => { const m = part.match(/^(.+?)\s*(>=|<=|!=|=|:|>|<)\s*(.*)$/); return m ? { f: m[1].trim(), op: m[2] === ':' ? '=' : m[2], v: m[3].trim() } : { f: 'name', op: '=', v: part.trim() }; });
+  let conds = parse(S.view.filter); if (!conds.length) conds = [{ f: 'name', op: '=', v: '' }];
+  const OPS = { text: [['=', 'contains'], ['!=', 'does not contain']], number: [['=', '='], ['!=', '≠'], ['>', '>'], ['>=', '≥'], ['<', '<'], ['<=', '≤']], date: [['=', 'on'], ['>', 'after'], ['>=', 'on or after'], ['<', 'before'], ['<=', 'on or before']], bool: [['=', 'is']] };
+  const row = (c, i) => { const fd = fields.find(x => x[0].toLowerCase() === c.f.toLowerCase()) || fields[0], ops = OPS[fd[2]] || OPS.text; return `<div class="flt-row" data-i="${i}"><select data-k="f">${fields.map(x => `<option value="${esc(x[0])}" ${x[0].toLowerCase() === fd[0].toLowerCase() ? 'selected' : ''}>${esc(x[1])}</option>`).join('')}</select><select data-k="op">${ops.map(([k, l]) => `<option value="${k}" ${c.op === k ? 'selected' : ''}>${l}</option>`).join('')}</select>${fd[2] === 'bool' ? `<select data-k="v"><option value="yes" ${c.v !== 'no' ? 'selected' : ''}>yes</option><option value="no" ${c.v === 'no' ? 'selected' : ''}>no</option></select>` : `<input data-k="v" ${fd[2] === 'date' ? 'type="date"' : ''} value="${esc(fd[2] === 'date' && c.v ? (parseDateInput(c.v) ? iso(parseDateInput(c.v)).slice(0, 10) : c.v) : c.v)}" placeholder="${fd[2] === 'number' ? '0' : 'value'}">`}<button type="button" class="icon" data-del="${i}" aria-label="Remove condition"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></div>`; };
+  const text = () => conds.filter(c => c.v !== '' || c.op === '!=').map(c => `${c.f}${c.op === '=' ? '=' : c.op}${c.v}`).join('; ');
+  const saved = () => (p.filters || []);
+  const body = () => `<p class="hint" style="margin-top:-4px">Every condition must be true. Text matches anywhere in the value. The same filter can be typed in the Filter box as <span class="mono">${esc(text() || 'Trade=Brick; Float<5')}</span>.</p><div id="fltRows">${conds.map(row).join('')}</div><button type="button" class="chipbtn" id="fltAdd" style="margin-top:6px">Add condition</button>
+    <div class="insp-sec">Saved filters</div>${saved().length ? `<div class="list">${saved().map(f => `<div class="li"><div style="min-width:0"><div class="t">${esc(f.name)}</div><div class="s mono">${esc(f.text)}</div></div><span style="display:flex;gap:6px"><button type="button" class="btn" data-apply="${esc(f.name)}">Apply</button><button type="button" class="icon" data-fdel="${esc(f.name)}" aria-label="Delete ${esc(f.name)}"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></span></div>`).join('')}</div>` : '<p class="hint" style="margin:0">None yet. Saved filters travel with the programme.</p>'}
+    <div class="row2" style="margin-top:12px"><label>Save this filter as<input name="fn" placeholder="e.g. Brickwork with float under a week"></label><label>&nbsp;<button type="button" class="btn" id="fltSave">Save</button></label></div>`;
+  const { m } = modal('Filter', body(), () => { S.view.filter = text(); S.view.show = 'all'; $('#vFilter').value = S.view.filter; render(); }, 'Apply');
+  const read = () => { conds = [...m.querySelectorAll('.flt-row')].map(r => ({ f: r.querySelector('[data-k=f]').value, op: r.querySelector('[data-k=op]').value, v: r.querySelector('[data-k=v]').value })); };
+  const wire = () => { const b = m.querySelector('.mbody');
+    b.querySelectorAll('[data-k=f]').forEach(sel => sel.onchange = () => { read(); redraw(); });
+    b.querySelectorAll('[data-del]').forEach(x => x.onclick = () => { read(); conds.splice(+x.dataset.del, 1); if (!conds.length) conds = [{ f: 'name', op: '=', v: '' }]; redraw(); });
+    b.querySelector('#fltAdd').onclick = () => { read(); conds.push({ f: 'name', op: '=', v: '' }); redraw(); };
+    b.querySelector('#fltSave').onclick = () => { read(); const n = b.querySelector('[name=fn]').value.trim(); if (!n) return b.querySelector('[name=fn]').focus(); const t = text(); if (!t) return toast('Add a condition first'); mutate(pp => { pp.filters = (pp.filters || []).filter(f => f.name !== n).concat([{ name: n, text: t }]); }, `Filter ${n} saved with the programme`); redraw(); };
+    b.querySelectorAll('[data-apply]').forEach(x => x.onclick = () => { const f = saved().find(q => q.name === x.dataset.apply); if (!f) return; modalClose(); S.view.filter = f.text; S.view.show = 'all'; $('#vFilter').value = f.text; render(); });
+    b.querySelectorAll('[data-fdel]').forEach(x => x.onclick = () => { read(); mutate(pp => { pp.filters = (pp.filters || []).filter(f => f.name !== x.dataset.fdel); }, 'Filter deleted'); redraw(); });
+  };
+  const redraw = () => { m.querySelector('.mbody').innerHTML = body(); wire(); }; wire();
+}
 function viewsDialog() {
   const loadLocal = () => { try { return JSON.parse(localStorage.getItem('views') || '{}'); } catch { return {}; } };
   const cur = name => ({ name, cols: [...S.cols], widths: Object.fromEntries(S.cols.map(k => [k, ALL_COLS[k].w])), view: { ...S.view }, panel: S.panel });
@@ -9189,6 +9258,7 @@ function onKey(e) {
   else if (k === ' ' && wbsById(S.active)) { e.preventDefault(); toggleCollapse(S.active); }
   else if (e.altKey && k === 'ArrowUp') { e.preventDefault(); moveRow(-1); } else if (e.altKey && k === 'ArrowDown') { e.preventDefault(); moveRow(1); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'l') { e.preventDefault(); linkSelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'u') { e.preventDefault(); unlinkSelected(); }
+  else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'x') { e.preventDefault(); cutSelected(); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'c') { e.preventDefault(); copySelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'v') { e.preventDefault(); pasteClip(); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'a') { e.preventDefault(); S.sel = new Set(S.rowsCache.map(rowKey)); paintSelection(); }
   else if (k === 'Escape') { S.sel = new Set(); S.selLink = null; paintSelection(); clearTrace(); }
@@ -9196,6 +9266,11 @@ function onKey(e) {
   else if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && S.active && byId(S.active) && ALL_COLS[S.activeCol].set) { startEdit(S.active, S.activeCol); const inp = S.editing && S.editing.inp; if (inp && inp.type !== 'date' && inp.tagName === 'INPUT') { inp.value = k; e.preventDefault(); } }
 }
 
+// Asta's "merge into baseline": the chosen activities' current dates become their baseline dates (new work added after the baseline was set)
+function baselineMerge(acts) {
+  const p = S.project, bl = p.baselines[p.baselines.length - 1]; if (!bl) return toast('Set a baseline first');
+  mutate(() => { acts.forEach(a => { const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (!st || !fi) return; a.baseline_start = st; a.baseline_finish = fi; bl.dates = bl.dates || {}; bl.dates[a.id] = { start: st, finish: fi, duration_hours: a.duration_hours }; }); }, `${acts.length} activit${acts.length === 1 ? 'y' : 'ies'} merged into ${bl.name}`);
+}
 function shortcutsSheet() {
   const rows = [['Plan', [['Enter / F2', 'Edit the cell'], ['Insert', 'Insert activity below'], ['Shift+Insert', 'Insert activity above'], ['Delete', 'Delete selected'], ['Tab / Shift+Tab', 'Indent / outdent'], ['Alt+↑ / Alt+↓', 'Move row up / down'], ['Space', 'Collapse or expand a summary'], ['Ctrl+L / Ctrl+U', 'Link / unlink selected'], ['Ctrl+C / Ctrl+V', 'Copy / paste activities'], ['Ctrl+A', 'Select all'], ['+ / −', 'Zoom the timescale'], ['I', 'Inspector'], ['Esc', 'Clear selection, stop tracing']]],
     ['Chart', [['Drag a bar', 'Move it (successors follow)'], ['Drag a bar end', 'Change start or finish'], ['Drag a link dot onto a bar', 'Link (left half SS/FS, right half FF/SF)'], ['Drag the progress point', 'Record % complete'], ['Double-click a bar', 'Inspector'], ['Right-click', 'Menu, notes on the chart'], ['Hover', 'Why it starts, what it holds up']]],
@@ -9742,6 +9817,7 @@ function palActions() {
     S.project && ['Custom fields', 'Set-up', fieldsDialog],
     S.project && ['Codes, fields and views library', 'Set-up', libraryDialog],
     S.project && ['Saved views', 'View', viewsDialog],
+    S.project && ['Filter builder and saved filters', 'Filter', filterDialog],
     ['Keyboard and mouse shortcuts', 'Help', shortcutsSheet],
     S.project && ['Insert activity above', 'Plan', () => insertActivity(true)],
     S.project && ['Progress the selection as planned to the data date', 'Progress', () => { const acts = selectedActs().length ? selectedActs() : S.project.activities; let n = 0; mutate(p => { n = progressAsPlanned(acts, (p.data_date || p.start).slice(0, 10) + 'T16:00:00'); if (!n) return false; }, null); toast(n ? `${n} activit${n === 1 ? 'y' : 'ies'} progressed as planned` : 'Nothing to progress'); }],
@@ -10224,7 +10300,7 @@ function wireToolbar() {
   $('#vLinkMode').onchange = e => { S.view.linkMode = e.target.value; S.view.links = e.target.value !== 'none'; render(); };
   ['flags', 'notes', 'grid'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); el.onchange = () => { S.view[k] = el.checked; render(); }; });
   $('#vPeriods').onchange = e => { S.view.periods = e.target.value; render(); if (e.target.value !== 'none' && !periodsOf(S.project).length) toast('No progress periods closed yet. Close one from More or Monitor.'); };
-  $('#btnColumns').onclick = () => { closePops(); columnsDialog(); }; $('#btnViews').onclick = () => { closePops(); viewsDialog(); };
+  $('#btnColumns').onclick = () => { closePops(); columnsDialog(); }; $('#btnViews').onclick = () => { closePops(); viewsDialog(); }; $('#btnFilter').onclick = () => { closePops(); filterDialog(); };
   $$('#modeSeg [data-mode]').forEach(b => b.onclick = () => { S.view.mode = b.dataset.mode; render(); });
   $$('#paneSeg [data-pane]').forEach(b => b.onclick = () => paneMode(b.dataset.pane));
   $('#vTl').onchange = e => { S.view.tlSource = e.target.value; render(); };
