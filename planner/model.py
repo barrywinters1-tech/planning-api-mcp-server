@@ -254,7 +254,7 @@ class Project(BaseModel):
     # "successor", "project" (the default calendar) or "24h" (elapsed wall-clock hours)
     lag_calendar: Optional[str] = None
     # how an in-progress activity's remaining work is scheduled (P6 "when scheduling progressed activities use"):
-    # "retained" (also when None), "override" or "actual_dates"; see cpm.schedule for the exact semantics
+    # "data_date" (the engine default, also when None), "retained" (P6 retained logic) or "override" (P6 progress override); see cpm.schedule
     progress_logic: Optional[str] = None
     float_paths: Optional[int] = None          # number of P6-style float paths (1-10) to compute after scheduling; None = none
     start_on_new_day: Optional[bool] = None    # Asta "start on new day": a not-started activity never starts part-way through a working day

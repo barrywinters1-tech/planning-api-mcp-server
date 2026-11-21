@@ -145,7 +145,7 @@ def logic_loop():
 
 
 LAG_CALENDARS = (None, "predecessor", "successor", "project", "24h")
-PROGRESS_LOGIC = ("retained", "override", "actual_dates")
+PROGRESS_LOGIC = ("data_date", "retained", "override")
 
 
 def oos_chains():

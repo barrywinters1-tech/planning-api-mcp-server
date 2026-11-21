@@ -14,20 +14,22 @@ progress_logic - how the remaining work of an in-progress activity (status in_pr
 scheduled. In every mode its early start is its actual start, which never moves, and its remaining work never
 starts before the resume point R = the next working time at or after max(data date, resume_date). Not-started and
 complete activities schedule the same in every mode: a complete activity's successors always follow its actual dates.
-  "retained" (default): the remaining work runs from R; the early finish is the later of R + remaining and the
-      finish-side (FF/SF) link dates from its predecessors. FS/SS links into the activity cannot move its start, so
-      they do not hold the remaining work, but they stay in the backward pass: an unfinished predecessor that was
-      overtaken out of sequence is pulled back to the successor's actual start and shows negative float.
-  "override" (P6 progress override): links from predecessors that are not complete are ignored for the in-progress
-      activity in both passes (so neither its finish nor the predecessor's late dates are set by them; they are never
-      driving) and the remaining work runs from R. Links from complete predecessors carry actual dates and still count.
-      An in-progress activity that is itself an out-of-sequence successor is treated the same way.
-  "actual_dates" (P6 actual dates): the remaining work is scheduled by the logic, never earlier than R: it starts at
+  "data_date" (default, also when None: the engine's long-standing behaviour): the remaining work runs from R; the
+      early finish is the later of R + remaining and the finish-side (FF/SF) link dates from its predecessors. FS/SS
+      links into the activity cannot move its start, so they do not hold the remaining work, but they stay in the
+      backward pass: an unfinished predecessor that was overtaken out of sequence is pulled back to the successor's
+      actual start and shows negative float. Not a P6 mode.
+  "retained" (P6 retained logic): the remaining work is scheduled by the logic, never earlier than R: it starts at
       the later of R and the FS/SS link dates from all predecessors, and finishes no earlier than the FF/SF link dates.
       The link that sets the resume point or the finish is driving, so the longest path runs through it, and the
       backward pass and free float measure start-side links against the remaining work's late and early start
       rather than the actual start, so a predecessor that holds the remaining work carries its true float.
-  An unknown value behaves as "retained".
+  "override" (P6 progress override): links from predecessors that are not complete are ignored for the in-progress
+      activity in both passes (so neither its finish nor the predecessor's late dates are set by them; they are never
+      driving) and the remaining work runs from R. Links from complete predecessors carry actual dates and still count.
+      An in-progress activity that is itself an out-of-sequence successor is treated the same way.
+  P6's third option, "actual dates", has no equivalent here: it is the retained/override hybrid that also lets actual
+  dates after the data date drive, which this engine does in every mode. An unknown value behaves as "data_date".
 
 float_paths - when set (1-10), schedule() also computes P6-style multiple float paths (see float_paths()) and stores
 each activity's path number in Activity.float_path (None when on no path, or when the option is unset).
@@ -99,14 +101,14 @@ def _resume_from(a: Activity, data_date: datetime) -> datetime:
     return max(data_date, a.resume_date) if a.resume_date else data_date
 
 
-PROGRESS_LOGIC = ("retained", "override", "actual_dates")
+PROGRESS_LOGIC = ("data_date", "retained", "override")
 DEFAULT_NEAR_CRITICAL_DAYS = 10.0
 MAX_FLOAT_PATHS = 10
 
 
 def _progress_logic(project: Project) -> str:
     mode = project.progress_logic
-    return mode if mode in PROGRESS_LOGIC else "retained"
+    return mode if mode in PROGRESS_LOGIC else "data_date"
 
 
 def _in_progress(a: Activity) -> bool:
@@ -161,7 +163,7 @@ def schedule(project: Project) -> Project:
         r.driving = False
         preds[r.successor_id].append(r)
         succs[r.predecessor_id].append(r)
-    rem_es: dict[str, datetime] = {}   # actual_dates: where an in-progress activity's remaining work starts (early / late)
+    rem_es: dict[str, datetime] = {}   # retained logic: where an in-progress activity's remaining work starts (early / late)
     rem_ls: dict[str, datetime] = {}
 
     # ---------------- forward pass ----------------
@@ -179,10 +181,10 @@ def schedule(project: Project) -> Project:
         resume = cal.next_working_start(_resume_from(a, data_date)) if in_prog else None
 
         if in_prog:
-            # remaining work resumes at the data date, or at a later P6 resume date; under actual_dates the
+            # remaining work resumes at the data date, or at a later P6 resume date; under retained logic the
             # finish is built from the logic below instead of being floored here
             es_floor = a.actual_start
-            if mode != "actual_dates":
+            if mode != "retained":
                 ef_floor = cal.add_hours(resume, rem)
 
         start_links: list = []   # (relationship, date it imposes) for FS/SS
@@ -212,7 +214,7 @@ def schedule(project: Project) -> Project:
             elif a.constraint in (Constraint.FINISH_ON_OR_AFTER, Constraint.MUST_FINISH_ON):
                 ef_floor = cd if (ef_floor is None or a.constraint == Constraint.MUST_FINISH_ON) else max(ef_floor, cd)
 
-        if in_prog and mode == "actual_dates":
+        if in_prog and mode == "retained":
             # remaining work by the logic: after every FS/SS predecessor date, never before the resume point
             es = a.actual_start
             rs_floor = resume
@@ -287,7 +289,7 @@ def schedule(project: Project) -> Project:
             if s.status == Status.COMPLETE or (mode == "override" and _in_progress(s)):
                 continue
             lcal = _lag_calendar(project, r, a, s)
-            s_ls = rem_ls.get(s.id, s.late_start) if mode == "actual_dates" else s.late_start
+            s_ls = rem_ls.get(s.id, s.late_start) if mode == "retained" else s.late_start
             if r.type == LinkType.FS:
                 t = _add_lag(lcal, s_ls, -r.lag_hours)
                 lf_ceil = min(lf_ceil, t)
@@ -326,7 +328,7 @@ def schedule(project: Project) -> Project:
             if mode == "override" and _in_progress(s):
                 continue
             lcal = _lag_calendar(project, r, a, s)
-            s_es = rem_es.get(s.id, s.early_start) if mode == "actual_dates" else s.early_start
+            s_es = rem_es.get(s.id, s.early_start) if mode == "retained" else s.early_start
             if r.type == LinkType.FS:
                 slack = cal.hours_between(_add_lag(lcal, a.early_finish, r.lag_hours), s_es)
             elif r.type == LinkType.SS:

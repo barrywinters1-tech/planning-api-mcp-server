@@ -41,26 +41,17 @@ LAG_CAL_OUT = {v: k for k, v in LAG_CAL_IN.items()}
 
 def progress_logic_in(row: dict) -> str | None:
     """SCHEDOPTIONS -> Project.progress_logic. P6 stores its three-way "when scheduling progressed activities use"
-    as two Y/N flags: sched_retained_logic Y = retained logic (our default, so None), sched_progress_override Y =
-    progress override, both N = actual dates. Blank or missing flags leave the option unset; a sched_use_actual_dates
-    column is not part of P6's table, but Y there is honoured in case another writer emits it."""
-    retained, override = row.get("sched_retained_logic", ""), row.get("sched_progress_override", "")
-    if override == "Y":
-        return "override"
-    if row.get("sched_use_actual_dates", "") == "Y":
-        return "actual_dates"
-    if retained == "N" and override == "N":
-        return "actual_dates"
-    return None
+    as two Y/N flags: sched_retained_logic Y / sched_progress_override N = retained logic, N / Y = progress override,
+    N / N = actual dates. Only progress override is taken over: a file on P6's retained-logic default (or on actual
+    dates, which has no equivalent here) is left unset, so an imported programme keeps the dates this engine has
+    always given it; the planner picks retained logic in the project settings."""
+    return "override" if row.get("sched_progress_override", "") == "Y" else None
 
 
 def progress_logic_out(mode: str | None) -> tuple[str, str]:
-    """Project.progress_logic -> (sched_retained_logic, sched_progress_override)."""
-    if mode == "override":
-        return "N", "Y"
-    if mode == "actual_dates":
-        return "N", "N"
-    return "Y", "N"
+    """Project.progress_logic -> (sched_retained_logic, sched_progress_override): override is N / Y, everything else
+    (None, data_date, retained) is written as P6's retained logic, Y / N."""
+    return ("N", "Y") if mode == "override" else ("Y", "N")
 RSRC_IN = {"RT_Labor": "labour", "RT_Mat": "material", "RT_Equip": "equipment"}
 # user-defined field types: P6 logical data type <-> ours (text, number, date)
 UDF_IN = {"FT_TEXT": "text", "FT_STATICTYPE": "text", "FT_INT": "number", "FT_FLOAT_2_DECIMALS": "number", "FT_MONEY": "number",

@@ -293,10 +293,11 @@ def _oos_project(mode=None):
     return p, p.activity_map(), {(r.predecessor_id, r.successor_id): r.driving for r in p.relationships}
 
 
-@pytest.mark.parametrize("mode", [None, "retained", "bogus"])
-def test_progress_logic_retained_is_the_default(mode):
-    """Remaining work runs from the data date; the finish-side link from A still holds F, the start-side link into B
-    cannot move B's start but pulls A's late finish back to B's actual start (negative float)."""
+@pytest.mark.parametrize("mode", [None, "data_date", "bogus"])
+def test_progress_logic_data_date_is_the_default(mode):
+    """The engine's long-standing default, not a P6 mode: remaining work runs from the data date; the finish-side link
+    from A still holds F, the start-side link into B cannot move B's start but pulls A's late finish back to B's
+    actual start (negative float)."""
     p, a, drv = _oos_project(mode)
     assert a["A"].early_finish == datetime(2026, 1, 14, 16)
     assert a["B"].early_finish == datetime(2026, 1, 9, 16) and a["C"].early_start == datetime(2026, 1, 12, 8)
@@ -319,10 +320,10 @@ def test_progress_logic_override_ignores_unfinished_predecessors():
     assert p.finish == datetime(2026, 1, 14, 16)
 
 
-def test_progress_logic_actual_dates_schedules_remaining_work_by_logic():
-    """B's 16 remaining hours wait for A (Wed 14 Jan 16:00) and run Thu-Fri; its actual start never moves; the links
-    that hold the remaining work are driving, so A-B-C is the longest path and A carries no float."""
-    p, a, drv = _oos_project("actual_dates")
+def test_progress_logic_retained_holds_remaining_work_by_logic():
+    """P6 retained logic: B's 16 remaining hours wait for A (Wed 14 Jan 16:00) and run Thu-Fri; its actual start never
+    moves; the links that hold the remaining work are driving, so A-B-C is the longest path and A carries no float."""
+    p, a, drv = _oos_project("retained")
     assert a["B"].early_start == datetime(2026, 1, 6, 8) and a["B"].early_finish == datetime(2026, 1, 16, 16)
     assert a["C"].early_start == datetime(2026, 1, 19, 8) and p.finish == datetime(2026, 1, 19, 16)
     assert a["F"].early_finish == datetime(2026, 1, 15, 16) and a["F"].total_float_hours == 16 and not a["F"].critical
@@ -333,9 +334,9 @@ def test_progress_logic_actual_dates_schedules_remaining_work_by_logic():
 
 
 def test_progress_logic_modes_agree_without_out_of_sequence_progress():
-    """With the logic intact the three modes give the same dates (actual_dates may add driving flags)."""
+    """With the logic intact the three modes give the same dates (retained may add driving flags)."""
     dates = {}
-    for mode in (None, "override", "actual_dates"):
+    for mode in (None, "override", "retained"):
         p = proj(data_date=datetime(2026, 1, 8, 8), progress_logic=mode)
         p.activities = [Activity(id="A", name="A", duration_hours=16, status=Status.COMPLETE,
                                  actual_start=datetime(2026, 1, 5, 8), actual_finish=datetime(2026, 1, 6, 16)),
@@ -345,7 +346,7 @@ def test_progress_logic_modes_agree_without_out_of_sequence_progress():
         p.relationships = [Relationship(predecessor_id="A", successor_id="B"), Relationship(predecessor_id="B", successor_id="C")]
         schedule(p)
         dates[mode] = [(x.early_start, x.early_finish, x.late_start, x.late_finish, x.total_float_hours, x.critical) for x in p.activities]
-    assert dates[None] == dates["override"] == dates["actual_dates"]
+    assert dates[None] == dates["override"] == dates["retained"]
     assert dates[None][1][1] == datetime(2026, 1, 8, 16)
 
 
