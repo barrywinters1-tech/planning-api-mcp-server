@@ -572,6 +572,8 @@ svg.chart .bar { cursor: grab; }
 svg.chart .bar.dragging, body.dragging-bar { cursor: grabbing; }
 svg.chart .handle { cursor: ew-resize; }
 svg.chart .linkdot { opacity: 0; cursor: crosshair; transition: opacity .12s ease; }
+svg.chart .proghandle { fill: var(--dd); stroke: var(--surface); stroke-width: 2; cursor: ew-resize; opacity: .9; touch-action: none; }
+svg.chart .proghandle:hover, svg.chart .proghandle.dragging { r: 8; opacity: 1; }
 svg.chart g.act:hover .linkdot, svg.chart g.act.sel .linkdot { opacity: 1; }
 svg.chart .linkdot:hover { fill: var(--accent); }
 svg.chart .linktarget { stroke: var(--accent) !important; stroke-width: 3px !important; }
@@ -7981,7 +7983,7 @@ function chart(rs, t0, t1, W, H, bandH) {
       if (S.view.float && a.late_finish && a.total_float_hours > 0) { const fx = x(a.late_finish); if (fx > bx + bw + 1) s += `<line x1="${bx + bw}" y1="${y + mid}" x2="${fx}" y2="${y + mid}" stroke="var(--ink-3)" stroke-width="1.6" opacity=".45"/><line x1="${fx}" y1="${y + mid - 3.5}" x2="${fx}" y2="${y + mid + 3.5}" stroke="var(--ink-3)" stroke-width="1.6" opacity=".55"/>`; }
       if (S.view.float && a.total_float_hours < 0 && a.late_finish) s += `<rect x="${x(a.late_finish)}" y="${y + mid - 1.5}" width="${Math.max(0, bx + bw - x(a.late_finish))}" height="3" rx="1.5" fill="var(--crit)" opacity=".55"/>`;
       s += `<rect class="hit bar" data-id="${a.id}" x="${bx}" y="${by}" width="${bw}" height="${h}" rx="${rr}" fill="${fill}" stroke="${S.sel.has(a.id) ? 'var(--accent)' : 'none'}" stroke-width="2"/>`;
-      if (pct > 0) s += `<rect x="${bx}" y="${by}" width="${Math.max(2, bw * Math.min(100, pct) / 100)}" height="${h}" rx="${rr}" fill="var(--done-ink)" opacity=".34" pointer-events="none"/>`;
+      if (pct > 0) s += `<rect class="done" x="${bx}" y="${by}" width="${Math.max(2, bw * Math.min(100, pct) / 100)}" height="${h}" rx="${rr}" fill="var(--done-ink)" opacity=".34" pointer-events="none"/>`;
       if (a.status === 'in_progress' && a.suspend_date) {   // suspended: a dashed gap until work resumes
         const sx = x(a.suspend_date), rx = x(a.resume_date && a.resume_date > (p.data_date || p.start) ? a.resume_date : (p.data_date || p.start));
         if (rx > sx + 1) s += `<rect x="${sx}" y="${by - 1}" width="${rx - sx}" height="${h + 2}" fill="var(--surface)" stroke="${fill}" stroke-dasharray="3 2" pointer-events="none"/><text x="${(sx + rx) / 2}" y="${by + h - 3}" text-anchor="middle" font-size="9" fill="var(--ink-3)" pointer-events="none">suspended</text>`;
@@ -7993,7 +7995,8 @@ function chart(rs, t0, t1, W, H, bandH) {
       s += `<circle class="hit linkdot" data-id="${a.id}" data-end="S" cx="${bx - 9}" cy="${y + mid}" r="5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6"/>`;
       s += `<circle class="hit linkdot" data-id="${a.id}" data-end="F" cx="${bx + bw + 9}" cy="${y + mid}" r="5" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6"/>`;
       if (lbl) s += `<text x="${bx + bw + 18}" y="${y + mid + 4}" fill="var(--ink-2)">${esc(lbl)}</text>`;
-      if (S.view.progress) { const exp = a.status === 'complete' ? x(dd) : a.status === 'in_progress' ? bx + bw * pct / 100 : Math.min(bx, x(dd)); progressPts.push([exp, y + mid]); }
+      if (S.view.progress) { const exp = a.status === 'complete' ? x(dd) : a.status === 'in_progress' ? bx + bw * pct / 100 : Math.min(bx, x(dd)); progressPts.push([exp, y + mid]);
+        if (a.status !== 'complete') s += `<circle class="hit proghandle" data-id="${a.id}" cx="${a.status === 'in_progress' ? exp : bx}" cy="${y + mid}" r="${TOUCH ? 9 : 6}"><title>Drag along the bar to record progress</title></circle>`; }
     }
     s += '</g>';
   });
@@ -8548,8 +8551,34 @@ function wireChart() {
     b.ondblclick = () => openInspector(b.dataset.id);
   });
   svg.querySelectorAll('.handle').forEach(h => { h.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); if (!S.sel.has(h.dataset.id)) selectRow(h.dataset.id, e); startDrag(e, 'resize', h.dataset.id, h); }; h.ondblclick = () => openInspector(h.dataset.id); h.onmousemove = e => tipFor(e, byId(h.dataset.id)); h.onmouseleave = hideTip; });
+  svg.querySelectorAll('.proghandle').forEach(h => { h.onpointerdown = e => startProgressDrag(e, h); h.ondblclick = e => e.stopPropagation(); });
   svg.querySelectorAll('.linkdot').forEach(d => d.onpointerdown = e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); startDrag(e, 'link', d.dataset.id, d); });
   svg.querySelectorAll('.link').forEach(l => { l.onmousedown = e => { e.stopPropagation(); S.selLink = { p: l.dataset.p, s: l.dataset.s }; S.sel = new Set(); paintSelection(); }; l.ondblclick = e => { e.stopPropagation(); linkDialog(l.dataset.p, l.dataset.s); }; });
+}
+// Progress by dragging the progress line's point along a bar (Asta's way of marking a bar up):
+// left of the start is 0%, past the finish is complete; the data date is the as-of date.
+function startProgressDrag(e, h) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return; e.stopPropagation(); e.preventDefault();
+  if (readOnly()) return roBlocked();
+  const id = h.dataset.id, a = byId(id); if (!a || a.type !== 'task') return;
+  const svg = $('svg.chart'), g = h.closest('g.act'), bar = g && g.querySelector('.bar'); if (!bar) return;
+  const bx = +bar.getAttribute('x'), bw = Math.max(1, +bar.getAttribute('width')), x0 = e.clientX, cx0 = +h.getAttribute('cx');
+  const orig = a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0); let pct = orig, moved = false;
+  let done = g.querySelector('.done');
+  if (!done) { done = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); ['y', 'height', 'rx'].forEach(k => done.setAttribute(k, bar.getAttribute(k))); done.setAttribute('x', bx); done.setAttribute('width', 0); done.setAttribute('fill', 'var(--done-ink)'); done.setAttribute('opacity', '.34'); done.setAttribute('pointer-events', 'none'); bar.after(done); }
+  h.classList.add('dragging'); try { h.setPointerCapture(e.pointerId); } catch { }
+  const mv = ev => {
+    const dx = ev.clientX - x0; if (!moved && Math.abs(dx) < 2) return; moved = true;
+    const raw = Math.max(0, Math.min(100, (cx0 + dx - bx) / bw * 100)); pct = ev.shiftKey ? Math.round(raw) : Math.round(raw / 5) * 5;
+    h.setAttribute('cx', bx + bw * pct / 100); done.setAttribute('width', Math.max(0, bw * pct / 100));
+    tipText(ev, `<b>${pct}% complete</b>${pct >= 100 ? ' · finishes at the data date' : pct === 0 ? ' · not started' : ''}<br><span class="hint">Shift for 1% steps</span>`);
+  };
+  const up = () => {
+    h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up); hideTip(); h.classList.remove('dragging');
+    if (!moved || pct === orig) { render(); return; }
+    mutate(p => setProgress(a, pct, new Date((p.data_date || p.start).slice(0, 10) + 'T16:00:00')), `${id} ${pct}% complete as of ${fmtD(S.project.data_date || S.project.start)}`);
+  };
+  h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
 }
 // ---------- Asta-style dragging ----------
 // Move the bar (push later, pull earlier), drag either end (start or finish), or drag from a link dot onto

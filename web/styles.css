@@ -566,6 +566,8 @@ svg.chart .bar { cursor: grab; }
 svg.chart .bar.dragging, body.dragging-bar { cursor: grabbing; }
 svg.chart .handle { cursor: ew-resize; }
 svg.chart .linkdot { opacity: 0; cursor: crosshair; transition: opacity .12s ease; }
+svg.chart .proghandle { fill: var(--dd); stroke: var(--surface); stroke-width: 2; cursor: ew-resize; opacity: .9; touch-action: none; }
+svg.chart .proghandle:hover, svg.chart .proghandle.dragging { r: 8; opacity: 1; }
 svg.chart g.act:hover .linkdot, svg.chart g.act.sel .linkdot { opacity: 1; }
 svg.chart .linkdot:hover { fill: var(--accent); }
 svg.chart .linktarget { stroke: var(--accent) !important; stroke-width: 3px !important; }
