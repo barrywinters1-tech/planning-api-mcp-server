@@ -1115,10 +1115,10 @@ function zipStore(files) {
   const all = parts.concat(cd, [eocd]); let total = 0; for (const a of all) total += a.length;
   const out = new Uint8Array(total); let p = 0; for (const a of all) { out.set(a, p); p += a.length; } return out;
 }
-function writeBundle(p) {
+function writeBundle(p, opts) {
   const enc = new TextEncoder();
   return zipStore([
-    { name: p.id + '.xer', bytes: enc.encode(E.writeXer(p)) },
+    { name: p.id + '.xer', bytes: enc.encode(E.writeXer(p, opts)) },
     { name: p.id + '.xml', bytes: enc.encode(E.writeMspdi(p)) },
     { name: p.id + '.json', bytes: enc.encode(JSON.stringify(p, null, 1)) },
     { name: 'README.txt', bytes: enc.encode('Programme export for construction scheduling software.\n\n' + p.id + '.xer  - Primavera P6 (File > Import > XER); also Asta Powerproject (File > Import).\n' + p.id + '.xml  - Microsoft Project (Open) and Asta Powerproject (File > Import, MS Project XML).\n' + p.id + '.json - this planner\'s own format (re-import here).\n') },

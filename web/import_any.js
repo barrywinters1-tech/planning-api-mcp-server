@@ -35,7 +35,8 @@ function decodeXer(bytes) {
 const stripBom = s => s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
 
 // readAny(filename, Uint8Array) -> project object (unscheduled), or throws Error with a user-facing message
-function readAny(filename, bytes) {
+function readAny(filename, bytes, opts) {
+  opts = opts || {};
   const name = String(filename || '').toLowerCase();
   const m = name.match(/\.[^./\\]+$/); const ext = m ? m[0] : '';
   const h = head(bytes);
@@ -47,7 +48,7 @@ function readAny(filename, bytes) {
     if (!E.readMspdi || !E.xmlRootTag) throw new Error('XML import is not in this preview yet. Export Primavera P6 XER instead (in Asta: File > Export > Primavera P6 XER) and import that.');
     const text = stripBom(utf8(bytes, false));
     const root = E.xmlRootTag(bytes);
-    if (root === 'Project') return E.readMspdi(text);
+    if (root === 'Project') return E.readMspdi(text, opts.codeTypes);
     if (root === 'APIBusinessObjects') return E.readPmxml(text);
     throw new Error(`Unrecognised XML root <${root}>. Expected MS Project XML (<Project>) or P6 XML (<APIBusinessObjects>).`);
   }

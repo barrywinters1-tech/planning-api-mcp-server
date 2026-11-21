@@ -124,10 +124,11 @@ async function importFile(f) {
   if (LOCAL) return LOCAL.importFile(f);
   const fd = new FormData(); fd.append('file', f); return api('/api/import', { method: 'POST', body: fd });
 }
-async function exportAs(fmt) {
-  if (!S.pid) return;
-  if (LOCAL) { try { await LOCAL.download(S.pid, fmt); } catch (e) { toast((e && e.detail) || e.message, { ms: 6000 }); } return; }
-  location.href = pidPath('/export.' + fmt);
+async function exportAs(fmt, opts) {
+  if (!S.pid) return; opts = opts || {};
+  if (LOCAL) { try { await LOCAL.download(S.pid, fmt, opts); } catch (e) { toast((e && e.detail) || e.message, { ms: 6000 }); } return; }
+  if (opts.project) return toast('Exporting part of a programme works in the in-browser build; the server exports the whole programme.', { ms: 6000 });
+  location.href = pidPath('/export.' + fmt) + (opts.version ? '?version=' + encodeURIComponent(opts.version) : '');
 }
 function setStatus(kind, text) { const el = $('#saveStatus'); el.hidden = !kind; el.className = 'status ' + (kind || ''); el.textContent = text || ''; }
 async function loadList() {
@@ -1325,7 +1326,7 @@ async function compareSheet(preset) {
     if (v.startsWith('prj:')) { const d = await api('/api/projects/' + encodeURIComponent(v.slice(4))); return run(d.project); }
   };
   m.querySelector('#cmpGo').onclick = go;
-  m.querySelector('#cmpFile').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const old = E.readAny(f.name, new Uint8Array(await f.arrayBuffer())); await run(old); } catch (err) { m.querySelector('#cmpOut').innerHTML = `<p class="crit">${esc(err.message || err)}</p>`; } e.target.value = ''; };
+  m.querySelector('#cmpFile').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const old = E.readAny(f.name, new Uint8Array(await f.arrayBuffer()), { codeTypes: Object.keys(S.project.code_types || {}) }); await run(old); } catch (err) { m.querySelector('#cmpOut').innerHTML = `<p class="crit">${esc(err.message || err)}</p>`; } e.target.value = ''; };
   if (preset) { m.querySelector('#cmpOut').innerHTML = ''; renderCompare(m.querySelector('#cmpOut'), preset); }
   else if (revs.length || others.length) go();
 }
@@ -2736,6 +2737,8 @@ function palActions() {
     S.project && ['Insert activity above', 'Plan', () => insertActivity(true)],
     S.project && [S.linkTasks ? 'Link Tasks mode: turn off' : 'Link Tasks mode: new activities link from the previous one', 'Plan', () => toggleLinkTasks()],
     S.project && ['Collapse all summaries', 'View', () => collapseAll(true)],
+    S.project && ['Renumber activity IDs', 'Set-up', renumberDialog],
+    S.project && ['Export the selected summary as its own file', 'File', () => exportCheck('xer')],
     S.project && ['Expand all summaries', 'View', () => collapseAll(false)],
     S.project && ['Collapse completed summaries only', 'View', collapseComplete],
     S.project && ['Snap drags to weeks', 'View', () => { S.view.snap = S.view.snap === 'week' ? 'day' : 'week'; toast(S.view.snap === 'week' ? 'Drags snap to whole weeks' : 'Drags snap to days'); }],
@@ -2930,8 +2933,71 @@ function exportCheck(fmt) {
   catch (e) { return exportAs(fmt); }                  // never block an export on the check itself
   const ok = reps.every(r => r.ok);
   const sec = r => `<h3>${esc(r.tool)}</h3><ul class="fid">${r.items.map(i => `<li class="${i.ok ? 'ok' : 'warn'}"><span class="fi" aria-hidden="true">${i.ok ? '✓' : '!'}</span><div><b>${esc(i.text)}</b>${i.detail ? `<div class="hint">${esc(i.detail)}</div>` : ''}</div></li>`).join('')}</ul>`;
-  modal('What the other tool will receive', `<p class="hint" style="margin-top:-4px">${ok ? 'Everything survives the round trip.' : 'Checked by writing the file and reading it back. Items marked ! will not arrive as they are here.'}</p>${reps.map(sec).join('')}<label class="sw" style="margin-top:6px"><span>Record this as issued revision <b>${esc(nextRev(S.project))}</b>, so later versions can be compared with it</span><input type="checkbox" id="xRev" checked><i></i></label>`,
-    async m => { const issue = m.querySelector('#xRev').checked; await exportAs(fmt); if (issue) await act('/revision', { name: nextRev(S.project), note: 'Issued as ' + (fmt === 'bundle' ? 'XER, MS Project XML and JSON' : fmt.toUpperCase()) }); }, fmt === 'bundle' ? 'Download all three' : 'Download', { wide: true });
+  const scopes = exportScopes(); const verSaved = localStorage.getItem('xerVersion') || '19';
+  const vers = [['24', 'P6 24 (24.12)'], ['23', 'P6 23'], ['22', 'P6 22'], ['21', 'P6 21'], ['20', 'P6 20'], ['19', 'P6 19 (19.12) · widest compatibility'], ['18', 'P6 18'], ['17', 'P6 17'], ['16', 'P6 16'], ['15', 'P6 15.2'], ['8', 'P6 8.4']];
+  const opts = `<div class="row2" style="margin-top:8px">${fmt !== 'xml' ? `<label>P6 version stamp<select id="xVer">${vers.map(([v, l]) => `<option value="${v}" ${v === verSaved ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : '<span></span>'}<label>Scope<select id="xScope">${scopes.map((s, i) => `<option value="${i}">${esc(s.label)}</option>`).join('')}</select></label></div>${fmt !== 'xml' ? '<p class="hint" style="font-size:12px;margin:4px 0 0">Only the header version differs between P6 releases; P6 refuses a file stamped newer than itself, so match the receiving installation.</p>' : ''}`;
+  modal('What the other tool will receive', `<p class="hint" style="margin-top:-4px">${ok ? 'Everything survives the round trip.' : 'Checked by writing the file and reading it back. Items marked ! will not arrive as they are here.'}</p>${reps.map(sec).join('')}${opts}<label class="sw" style="margin-top:6px"><span>Record this as issued revision <b>${esc(nextRev(S.project))}</b>, so later versions can be compared with it</span><input type="checkbox" id="xRev" checked><i></i></label>`,
+    async m => {
+      const issue = m.querySelector('#xRev').checked, sc = scopes[+m.querySelector('#xScope').value] || scopes[0], vEl = m.querySelector('#xVer'), version = vEl ? vEl.value : null;
+      if (version) localStorage.setItem('xerVersion', version);
+      const o = { version: version || undefined }; if (sc.ids) o.project = scopedProject(S.project, sc.ids, sc.label);
+      await exportAs(fmt, o);
+      if (issue && !sc.ids) await act('/revision', { name: nextRev(S.project), note: 'Issued as ' + (fmt === 'bundle' ? 'XER, MS Project XML and JSON' : fmt.toUpperCase()) + (version ? ', P6 ' + version : '') });
+      else if (sc.ids) toast(`${sc.ids.size} activities exported${issue ? '. A part is not recorded as a revision' : ''}`, { ms: 5000 });
+    }, fmt === 'bundle' ? 'Download all three' : 'Download', { wide: true });
+}
+// Export scope: the whole programme, the selected summary (one sub-programme for a subcontractor), or the selected activities.
+function exportScopes() {
+  const p = S.project, out = [{ label: `Whole programme (${p.activities.length} activities)`, ids: null }];
+  const w = S.active && wbsById(S.active);
+  if (w) { const ids = new Set(wbsActs(w.id).map(a => a.id)); if (ids.size) out.push({ label: `Summary "${w.name}" only (${ids.size} activities)`, ids }); }
+  const sel = selectedActs(); if (sel.length > 1 && sel.length < p.activities.length) out.push({ label: `Selected activities (${sel.length})`, ids: new Set(sel.map(a => a.id)) });
+  return out;
+}
+function scopedProject(p, ids, label) {
+  const c = JSON.parse(JSON.stringify(p)); const keep = a => ids.has(a.id);
+  c.activities = c.activities.filter(keep);
+  c.relationships = c.relationships.filter(r => ids.has(r.predecessor_id) && ids.has(r.successor_id));
+  c.assignments = c.assignments.filter(x => ids.has(x.activity_id));
+  const wbsKeep = new Set(); c.activities.forEach(a => { let w = a.wbs_id && c.wbs.find(x => x.id === a.wbs_id); while (w && !wbsKeep.has(w.id)) { wbsKeep.add(w.id); w = w.parent_id && c.wbs.find(x => x.id === w.parent_id); } });
+  c.wbs = c.wbs.filter(w => wbsKeep.has(w.id));
+  (c.baselines || []).forEach(b => { b.dates = Object.fromEntries(Object.entries(b.dates || {}).filter(([k]) => ids.has(k))); });
+  if (c.annotations) c.annotations = c.annotations.filter(n => !n.activity_id || ids.has(n.activity_id));
+  (c.progress_periods || []).forEach(pp => { if (pp.acts) pp.acts = Object.fromEntries(Object.entries(pp.acts).filter(([k]) => ids.has(k))); });
+  delete c.revisions; delete c.changes;
+  c.id = p.id + '-PART'; c.name = p.name + ' · ' + (label || 'part').replace(/ \(\d+ activities\)$/, '');
+  if (ENGINE()) { try { runSchedule(c); } catch (e) { } }   // dates on the part alone, so the receiving tool sees what we see
+  return c;
+}
+// Renumber activity IDs (Asta "Renumber", P6 "Renumber Activity IDs"): prefix, start and step, in the order shown or the stored sequence.
+function renumberDialog() {
+  const p = S.project; if (!p) return;
+  const first = p.activities[0] || { id: 'A1000' }, pre = (first.id.match(/^[A-Za-z_-]*/) || ['A'])[0] || 'A';
+  modal('Renumber activity IDs', `<p class="hint" style="margin-top:-4px">Every activity gets a new ID. Links, resources, baselines, periods and chart notes follow. Issued revisions keep their old IDs, so Compare against them will show renames as removed and added.</p>
+    <div class="grid"><label>Prefix<input name="pre" value="${esc(pre)}" maxlength="12"></label><label>Start at<input name="st" type="number" value="1000" step="1"></label><label>Step<input name="step" type="number" value="10" min="1" step="1"></label></div>
+    <label>Order<select name="ord"><option value="shown">As shown (current sort and grouping)</option><option value="seq">Stored sequence</option></select></label>
+    <p class="hint" id="rnPreview" style="font-size:12px"></p>`, m => {
+      const pre2 = m.querySelector('[name=pre]').value.trim(), st = Math.max(0, Math.round(+m.querySelector('[name=st]').value || 0)), step = Math.max(1, Math.round(+m.querySelector('[name=step]').value || 1)), ord = m.querySelector('[name=ord]').value;
+      renumberIds(pre2, st, step, ord);
+    }, 'Renumber');
+  const prev = () => { const m = $('#modal'); const pre2 = m.querySelector('[name=pre]').value.trim(), st = +m.querySelector('[name=st]').value || 0, step = +m.querySelector('[name=step]').value || 1; m.querySelector('#rnPreview').textContent = `${p.activities.length} activities: ${pre2}${st}, ${pre2}${st + step}, ${pre2}${st + 2 * step} … ${pre2}${st + (p.activities.length - 1) * step}`; };
+  $('#modal').querySelectorAll('input').forEach(i => i.oninput = prev); prev();
+}
+function renumberIds(pre, start, step, order) {
+  const shown = S.rowsCache.filter(r => r.act).map(r => r.act.id);
+  mutate(p => {
+    const seq = order === 'shown' ? shown.concat(p.activities.map(a => a.id).filter(id => !shown.includes(id))) : p.activities.map(a => a.id);
+    const map = {}; seq.forEach((id, i) => { map[id] = `${pre}${start + i * step}`; });
+    const re = id => (id in map ? map[id] : id);
+    p.activities.forEach(a => { a.id = re(a.id); });
+    p.relationships.forEach(r => { r.predecessor_id = re(r.predecessor_id); r.successor_id = re(r.successor_id); });
+    p.assignments.forEach(x => { x.activity_id = re(x.activity_id); });
+    (p.baselines || []).forEach(b => { b.dates = Object.fromEntries(Object.entries(b.dates || {}).map(([k, v]) => [re(k), v])); });
+    (p.annotations || []).forEach(n => { if (n.activity_id) n.activity_id = re(n.activity_id); });
+    (p.progress_periods || []).forEach(pp => { if (pp.acts) pp.acts = Object.fromEntries(Object.entries(pp.acts).map(([k, v]) => [re(k), v])); });
+    (p.changes || []).forEach(c => (c.moved || []).forEach(m => { if (m && m.id) m.id = re(m.id); }));
+    S.sel = new Set([...S.sel].map(re)); S.active = re(S.active); S.linkFrom = re(S.linkFrom);
+  }, `IDs renumbered from ${pre}${start} in steps of ${step}`);
 }
 function importSummary(p, r) {
   const n = (x, w) => `<li><b>${x}</b> ${w}</li>`, exc = Object.values(p.calendars).reduce((t, c) => t + Object.keys(c.exceptions || {}).length, 0);
@@ -3238,7 +3304,7 @@ function wireToolbar() {
   $('#btnSite').onclick = siteUpdateSheet; $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
-  $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog;
+  $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog; $('#btnRenumber').onclick = renumberDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
   $('#btnRepair').onclick = () => act('/repair');
   $('#btnInspector').onclick = () => toggleInspector();
