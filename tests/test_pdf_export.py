@@ -611,6 +611,9 @@ Object.assign(doc.options, patch.options || {});
 Object.assign(doc.meta, patch.meta || {});
 if (patch.page) Object.assign(doc.page, patch.page);
 if (patch.period_lines) doc.period_lines = patch.period_lines;
+if (patch.reports) doc.reports = patch.reports;
+if (patch.charts) doc.charts = patch.charts;
+if (patch.cover) doc.cover = patch.cover;
 for (const [i, r] of Object.entries(patch.rows || {})) Object.assign(doc.rows[+i], r);
 let error = null, layout = null;
 try { const bytes = P.render(doc); fs.writeFileSync(out, bytes); layout = P.layout(doc); } catch (e) { error = String(e.message || e); }
@@ -648,8 +651,10 @@ def b64(data: bytes) -> str:
 
 def render_patched(tmp: Path, patch: dict, page=None, options=None, copies=None) -> dict:
     """The runner's programme (via doc_out) with `patch` applied (options, meta, page, period_lines,
-    rows: {index: fields}), rendered by PlannerPDF. `error` carries a render exception's message;
-    `base` is the layout before the patch and base.pdf the runner's own render of the document."""
+    reports, charts, cover, rows: {index: fields}), rendered by PlannerPDF. `error` carries a render
+    exception's message; `base` is the layout before the patch and base.pdf the runner's own render
+    of the document."""
+    tmp.mkdir(parents=True, exist_ok=True)
     case = {"doc_out": str(tmp / "doc.json")}
     if page:
         case["page"] = page
@@ -991,3 +996,250 @@ def test_new_options_leave_defaults_unchanged(tmp_path):
     L = r["layout"]
     assert L["page_count"] == r["base"]["page_count"] and L["fits"] is True and L["fit_to_pages_tall"] is None and L["logo"] is False
     assert L["bands"] == [{"first": 0, "last": 45}, {"first": 45, "last": 90}, {"first": 90, "last": 92}] and L["rows"] == 92
+
+
+# ----------------------------------------------------------------------------------------
+# report pack: doc.reports (table pages), doc.charts (S-curve / histogram pages), money
+# ----------------------------------------------------------------------------------------
+def milestone_report(n_rows: int, title="Milestone report") -> dict:
+    rows = [{"name": "Phase 1 — substructure", "_bold": True}]
+    for i in range(n_rows):
+        rows.append({"name": f"M-{i + 1:03d} milestone number {i + 1}", "date": f"2026-{1 + i % 12:02d}-{1 + i % 27:02d}",
+                     "baseline": f"2026-{1 + i % 12:02d}-01", "var": (i % 7) - 3, "cost": 1250.5 * (i + 1),
+                     "_indent": i % 3, "_colour": "#c28a1a" if i % 4 == 0 else None})
+        if i == n_rows // 2:
+            rows.append({"name": "Phase 2 — superstructure", "_bold": True})
+    return {"kind": "milestones", "title": title, "subtitle": "Forecast against the tender baseline",
+            "columns": [{"key": "name", "label": "Milestone"}, {"key": "date", "label": "Forecast", "width": 24},
+                        {"key": "baseline", "label": "Baseline", "width": 24}, {"key": "var", "label": "Var (days)", "num": True},
+                        {"key": "cost", "label": "Value", "money": True}],
+            "rows": rows, "notes": "Variance is forecast minus baseline in working days. Values are the activity budgets at the data date."}
+
+
+def scurve_chart() -> dict:
+    planned = [[f"2026-{m:02d}-01", (m - 1) ** 2 * 10000] for m in range(1, 13)]
+    actual = [[f"2026-{m:02d}-01", (m - 1) ** 2 * 9500] for m in range(1, 7)]
+    return {"kind": "scurve", "title": "Cost S-curve", "subtitle": "Cumulative planned and actual value",
+            "y_label": "Cumulative value", "y_money": True, "data_date": "2026-06-15",
+            "series": [{"label": "Planned value", "colour": "#1f5fbf", "points": planned},
+                       {"label": "Actual value", "colour": "#d97706", "points": actual}]}
+
+
+def histogram_chart() -> dict:
+    dates = [(date(2026, 3, 2) + timedelta(days=7 * i)).isoformat() for i in range(20)]
+    return {"kind": "histogram", "title": "Labour histogram", "x_labels": "weeks", "y_label": "Operatives on site",
+            "limit": {"label": "Site capacity", "value": 42}, "data_date": "2026-06-15",
+            "bars": [{"label": "Groundworks", "colour": "#8a5a2b", "points": [[d, 5 + i % 7] for i, d in enumerate(dates)]},
+                     {"label": "Frame", "colour": "#2b6a8a", "points": [[d, 10 + (i % 5) * 4] for i, d in enumerate(dates)]}],
+            "series": [{"label": "Planned total", "colour": "#1f5fbf", "points": [[d, 20 + i % 9] for i, d in enumerate(dates)]}]}
+
+
+def fonts_of(content: bytes, text: str) -> set[str]:
+    """The font resources (F1 regular, F2 bold) a string is drawn with on a page."""
+    body = re.escape(text.encode("cp1252").replace(b"\x97", b"\\227"))
+    return {m.decode() for m in re.findall(rb"/(F[12]) [\d.]+ Tf [-\d.]+ [-\d.]+ Td \(" + body + rb"\) Tj", content)}
+
+
+def test_report_pages_overflow_and_repeat_headers(tmp_path):
+    report = milestone_report(120)
+    r = render_patched(tmp_path, {"reports": [report]}, page={"size": "A4", "orientation": "landscape"})
+    assert r["error"] is None, r["error"]
+    L, base = r["layout"], r["base"]
+    assert L["reports"] == 1 and L["charts"] == 0 and L["chart_pages"] == 0
+    assert L["report_pages"] >= 3 and L["gantt_pages"] == base["page_count"]
+    assert L["page_count"] == L["pages"] == L["cover_pages"] + L["report_pages"] + L["chart_pages"] + L["gantt_pages"]
+    assert base["report_pages"] == 0 and base["pages"] == base["page_count"]
+    pdf = Pdf(r["pdf"])
+    pages = pdf.pages()
+    texts = pdf.page_texts()
+    assert len(pages) == L["page_count"]
+    names = [row["name"] for row in report["rows"] if not row.get("_bold")]
+    seen = []
+    for k in range(L["report_pages"]):
+        page = texts[k]
+        # title (continued after the first page), subtitle and every column header on every page
+        assert any(t.startswith("Milestone report") for t in page)
+        assert ("Milestone report (continued)" in page) == (k > 0)
+        assert "Forecast against the tender baseline" in page
+        for label in ("Milestone", "Forecast", "Baseline", "Var (days)", "Value"):
+            assert label in page, (k, label)
+        on_page = [n for n in names if n in page]
+        assert on_page, k
+        seen += on_page
+        assert f"Page {k + 1} of {L['page_count']}" in page
+        assert any(t.startswith("Report 1/1") for t in page)
+    # every row printed once, in order, split across the report pages; the notes on the last page
+    assert seen == names
+    assert "Variance is forecast minus baseline in working days." in " ".join(texts[L["report_pages"] - 1])
+    assert not any(t.startswith("Variance is forecast") for k in range(L["report_pages"] - 1) for t in texts[k])
+    # section rows are bold; ordinary rows regular; money and numbers formatted
+    first = pdf.page_content(pages[0])
+    assert fonts_of(first, "Phase 1 — substructure") == {"F2"}
+    assert fonts_of(first, "M-001 milestone number 1") == {"F1"}
+    assert "£1,250.50" in texts[0] and "£2,501" in texts[0] and "-3" in texts[0]
+    assert colour_op("#c28a1a") in first                                    # the row swatch
+    # the Gantt pages follow, renumbered, with their row bands intact
+    g = L["report_pages"]
+    assert r["rows"][0]["name"] in texts[g] and any(t.startswith("Rows 1") for t in texts[g])
+    assert "Milestone report" not in texts[g]
+    assert_inside_margins(pdf, L)
+    for p in pages:
+        ops = pdf.page_content(p).split(b"\n")
+        assert ops.count(b"q") == ops.count(b"Q")
+
+
+def test_report_indent_and_truncation(tmp_path):
+    long_name = "A milestone whose name is far too long to fit in its column " * 4
+    report = {"title": "Narrow", "columns": [{"key": "name", "label": "Name", "width": 40}, {"key": "x", "label": "X", "width": 20}],
+              "rows": [{"name": "Root", "_indent": 0}, {"name": "Child", "_indent": 1}, {"name": "Grandchild", "_indent": 2}, {"name": long_name, "_indent": 9}]}
+    r = render_patched(tmp_path, {"reports": [report]}, options={"reports_only": True})
+    assert r["error"] is None
+    L = r["layout"]
+    assert L["reports_only"] is True and L["gantt_pages"] == 0 and L["page_count"] == 1
+    pdf = Pdf(r["pdf"])
+    content = pdf.page_content(pdf.pages()[0])
+    pos = {s: x for s, x, _y, _pt in texts_with_positions(content, L["page_h_mm"]) if s in ("Root", "Child", "Grandchild")}
+    assert pos["Root"] < pos["Child"] < pos["Grandchild"]
+    assert pos["Child"] - pos["Root"] == pytest.approx(2.6, abs=0.02) and pos["Grandchild"] - pos["Child"] == pytest.approx(2.6, abs=0.02)
+    cut = [s for s in pdf.page_texts()[0] if s.startswith("A milestone whose")]
+    assert len(cut) == 1 and cut[0].endswith("…") and len(cut[0]) < len(long_name)
+    assert_inside_margins(pdf, L)
+
+
+def test_money_formatting():
+    script = (
+        f"require({json.dumps(str(PDF_JS))});"
+        "const P = globalThis.PlannerPDF;"
+        "console.log(JSON.stringify([P.money(12500, 'GBP'), P.money(12500, 'EUR'), P.money(12500, 'USD'), P.money(1250.5, 'GBP'),"
+        " P.money(-300, 'USD'), P.money(0.004, 'GBP'), P.money('99.999', 'SEK'), P.money(1200, '£'), P.money(1200), P.money('n/a', 'GBP'),"
+        " P.money(null, 'GBP'), P.money(1234567.891, 'eur'), P.formatNumber(1234567.891), P.formatNumber(-5), P.formatNumber('x')]));"
+    )
+    out = json.loads(subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert out == ["£12,500", "€12,500", "$12,500", "£1,250.50", "-$300", "£0", "SEK 100", "£1,200", "£1,200", "n/a", "",
+                   "€1,234,567.89", "1,234,567.89", "-5", "x"]
+
+
+@pytest.mark.parametrize("currency,symbol", [("GBP", "£"), ("EUR", "€"), ("USD", "$")])
+def test_report_money_column_uses_meta_currency(tmp_path, currency, symbol):
+    report = {"title": "Cost", "columns": [{"key": "item", "label": "Item"}, {"key": "cost", "label": "Cost", "money": True}],
+              "rows": [{"item": "Brickwork", "cost": 12500}, {"item": "Roof", "cost": 8250.25}]}
+    r = render_patched(tmp_path, {"reports": [report], "meta": {"currency": currency}}, options={"reports_only": True})
+    assert r["error"] is None and r["layout"]["currency"] == currency
+    first = Pdf(r["pdf"]).page_texts()[0]
+    assert f"{symbol}12,500" in first and f"{symbol}8,250.25" in first
+    for other in "£€$".replace(symbol, ""):
+        assert not any(t.startswith(other) for t in first)
+
+
+def test_scurve_page(tmp_path):
+    chart = scurve_chart()
+    r = render_patched(tmp_path, {"charts": [chart]}, page={"size": "A4", "orientation": "landscape"})
+    assert r["error"] is None, r["error"]
+    L = r["layout"]
+    assert L["charts"] == 1 and L["chart_pages"] == 1 and L["report_pages"] == 0
+    assert L["page_count"] == r["base"]["page_count"] + 1
+    pdf = Pdf(r["pdf"])
+    pages = pdf.pages()
+    first, content = pdf.page_texts()[0], pdf.page_content(pdf.pages()[0])
+    assert "Cost S-curve" in first and "Cumulative planned and actual value" in first
+    assert "Planned value" in first and "Actual value" in first                # legend
+    assert "Cumulative value" in first                                        # y axis caption
+    assert "Data date 15 Jun 26" in first and "Data date" in first
+    assert "£0" in first and any(re.fullmatch(r"£\d{1,3}(,\d{3})+", t) for t in first)   # money y ticks
+    assert "January 2026" in first and "December 2026" in first               # month ticks
+    assert f"Page 1 of {L['page_count']}" in first and any(t.startswith("Chart 1/1") for t in first)
+    # two polylines in the series colours, a dashed data date line, no images
+    ops = content.split(b"\n")
+    for colour, n_pts in (("#1f5fbf", 12), ("#d97706", 6)):
+        starts = [i for i, o in enumerate(ops) if o == colour_op(colour, 0, "RG")]      # legend swatch, then the series
+        strokes = [o for i in starts for o in ops[i:i + 4] if o.endswith(b" S")]
+        assert [s.count(b" l") for s in strokes] == [1, n_pts - 1]
+    assert colour_op("#8b5cf6", 0, "RG") in ops and b"[4.54 2.83] 0 d" in ops
+    assert ops.count(b"q") == ops.count(b"Q") >= 1
+    assert b"/Image" not in pdf.obj(pages[0]) and b"Do\n" not in content
+    assert_inside_margins(pdf, L)
+    # the Gantt pages follow
+    assert r["rows"][0]["name"] in pdf.page_texts()[1]
+
+
+def test_histogram_page_with_limit(tmp_path):
+    chart = histogram_chart()
+    r = render_patched(tmp_path, {"charts": [chart]}, options={"reports_only": True})
+    assert r["error"] is None, r["error"]
+    L = r["layout"]
+    assert L["page_count"] == 1 and L["chart_pages"] == 1 and L["gantt_pages"] == 0
+    pdf = Pdf(r["pdf"])
+    first, content = pdf.page_texts()[0], pdf.page_content(pdf.pages()[0])
+    assert "Labour histogram" in first and "Operatives on site" in first
+    assert "Groundworks" in first and "Frame" in first and "Planned total" in first and "Site capacity" in first
+    assert "Site capacity  42" in first                                      # the limit line's label
+    assert "0" in first and "40" in first and "50" in first                   # y ticks reach above the limit
+    assert "2 Mar" in first and "13 Jul" in first                             # week ticks
+    ops = content.split(b"\n")
+    # 20 stacked bars per series filled in the bar colour (plus that colour's legend swatch)
+    def fills(colour):
+        last, n = None, 0
+        for o in ops:
+            if o.endswith(b" rg"):
+                last = o
+            elif o.endswith(b" re") and last == colour_op(colour):
+                n += 1
+        return n
+    assert fills("#8a5a2b") == 21 and fills("#2b6a8a") == 21
+    # the limit line: dashed, in the deadline colour
+    i = ops.index(colour_op("#d93f3f", 0, "RG"))
+    assert b"[6.8 2.27 1.42 2.27] 0 d" in ops[i:i + 4]
+    assert ops.count(b"q") == ops.count(b"Q") >= 1
+    assert_inside_margins(pdf, L)
+
+
+def test_report_pack_order_and_reports_only(tmp_path):
+    patch = {"reports": [milestone_report(10), milestone_report(60, title="Second report")], "charts": [scurve_chart(), histogram_chart()],
+             "cover": {"title": "Programme briefing", "headline": "On track."}}
+    r = render_patched(tmp_path / "pack", patch, page={"size": "A4", "orientation": "portrait"})
+    assert r["error"] is None, r["error"]
+    L = r["layout"]
+    assert L["cover_pages"] == 1 and L["reports"] == 2 and L["charts"] == 2 and L["chart_pages"] == 2
+    assert L["report_pages"] >= 2 and L["gantt_pages"] == r["base"]["page_count"] > 0
+    assert L["page_count"] == 1 + L["report_pages"] + 2 + L["gantt_pages"]
+    texts = Pdf(r["pdf"]).page_texts()
+    assert len(texts) == L["page_count"]
+    assert "Programme briefing" in texts[0] and "Briefing" in texts[0]
+    assert any(t.startswith("Milestone report") for t in texts[1]) and any(t.startswith("Report 1/2") for t in texts[1])
+    assert any(t.startswith("Second report") for t in texts[L["report_pages"]]) and any(t.startswith("Report 2/2") for t in texts[L["report_pages"]])
+    assert "Cost S-curve" in texts[1 + L["report_pages"]] and "Labour histogram" in texts[2 + L["report_pages"]]
+    assert any(t.startswith("Rows 1") for t in texts[3 + L["report_pages"]])
+    for k, page in enumerate(texts):
+        assert f"Page {k + 1} of {L['page_count']}" in page
+    # reports_only: the same pages without the Gantt
+    r2 = render_patched(tmp_path / "only", dict(patch, options={"reports_only": True}), page={"size": "A4", "orientation": "portrait"})
+    L2 = r2["layout"]
+    assert L2["reports_only"] is True and L2["gantt_pages"] == 0
+    assert L2["page_count"] == L2["pages"] == 1 + L2["report_pages"] + 2 == L["page_count"] - L["gantt_pages"]
+    texts2 = Pdf(r2["pdf"]).page_texts()
+    assert len(texts2) == L2["page_count"] and not any("Rows 1" in t for page in texts2 for t in page)
+    assert f"Page {L2['page_count']} of {L2['page_count']}" in texts2[-1] and "Labour histogram" in texts2[-1]
+    # reports_only with nothing to print keeps the Gantt rather than writing an empty file
+    r3 = render_patched(tmp_path / "none", {"options": {"reports_only": True}})
+    assert r3["layout"]["reports_only"] is False and r3["layout"]["page_count"] == r3["base"]["page_count"] == len(Pdf(r3["pdf"]).pages())
+
+
+def test_report_pack_deterministic(tmp_path):
+    patch = {"reports": [milestone_report(50)], "charts": [scurve_chart(), histogram_chart()], "meta": {"currency": "EUR"}}
+    a = render_patched(tmp_path / "a", patch)
+    b = render_patched(tmp_path / "b", patch)
+    assert a["error"] is None and len(a["pdf"]) > 10000
+    assert a["pdf"] == b["pdf"]
+    # the same pack under another timezone, byte for byte
+    proc = subprocess.run([NODE, "-e", _PATCH_SCRIPT, str(PDF_JS), str(tmp_path / "a" / "doc.json"), str(tmp_path / "a" / "patch.json"), str(tmp_path / "tz.pdf")],
+                          capture_output=True, text=True, timeout=120, env=dict(os.environ, TZ="Australia/Lord_Howe"))
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "tz.pdf").read_bytes() == a["pdf"]
+
+
+def test_report_pack_absent_leaves_output_unchanged(tmp_path):
+    r = render_patched(tmp_path, {"reports": [], "charts": [], "meta": {"currency": "GBP"}, "options": {"reports_only": False}})
+    assert r["error"] is None
+    assert r["pdf"] == (tmp_path / "base.pdf").read_bytes()
+    L = r["layout"]
+    assert L["report_pages"] == 0 and L["chart_pages"] == 0 and L["gantt_pages"] == L["page_count"] == r["base"]["page_count"]
