@@ -4,7 +4,12 @@
    globalThis.PlannerPDF = { render, layout, formatDate, encodeText, textWidth }.
 
    render(doc) -> Uint8Array   a PDF 1.4 file (uncompressed content streams, exact xref).
-   layout(doc) -> object       the pagination plan render() will use (pages, rows per page, ...).
+   layout(doc) -> object       the pagination plan render() will use: page_w_mm, page_h_mm,
+                               rows_per_page, row_height_mm, body_height_mm, pages_tall, pages_wide,
+                               page_count (= pages), rows (printed), bands [{ first, last }] (row
+                               indices [first, last) per page band), fit_to_pages_tall, fits,
+                               cover, cover_pages, table_width_mm, chart_width_mm, title_block_mm,
+                               title_layout, logo (bool), slices [{ t0, t1 }].
 
    ------------------------------------------------------------------------------------------
    Input `doc`
@@ -17,7 +22,16 @@
        forecast_finish,  // ISO
        deadline,         // ISO | null
        printed_at,       // ISO
-       notes             // free text, wrapped into the title block
+       notes,            // free text, wrapped into the title block
+       title_layout,     // 'standard' (default) | 'compact' (one-line strip) | 'wide' (two rows:
+                         // info cells, then the legend on a row of its own)
+       logo              // null | { data: base64 (a data: URL prefix is fine), type: 'jpeg'|'png',
+                         //   width_mm, height_mm }  drawn in the title block's project cell.
+                         // JPEG is embedded as is (DCTDecode). PNG is embedded without decoding:
+                         // its IDAT stream is read by FlateDecode with the PNG predictor, so only
+                         // non-interlaced, 1-8 bit grey / RGB / palette PNGs work; a PNG with an
+                         // alpha channel, 16-bit samples or interlacing throws a clear Error
+                         // (flatten it or use JPEG). Missing width/height follow the pixel aspect.
      },
      page: { size: 'A3'|'A4'|'A2'|'A1', orientation: 'landscape'|'portrait', margins_mm: 10 },
      columns: [{ title, width_mm, align: 'left'|'right'|'center', indent?: bool }],
@@ -32,11 +46,21 @@
        pct,                           // 0-100 progress
        baseline_start, baseline_finish, // ISO | null
        late_finish,                   // ISO | null (float line drawn from finish to here)
-       label                          // bar text, or ''
+       label,                         // bar text, or ''
+       colour,                        // optional '#rrggbb': overrides the bar fill for this row
+                                      // (progress and edge are darker shades; greyed when colour: false)
+       selected                       // optional bool, read with options.selected_only
      }],
      links: [{ from: rowIndex, to: rowIndex, type: 'FS'|'SS'|'FF'|'SF', critical: bool }],
      range: { t0: ISO, t1: ISO },     // the timescale shown (a date-only t1 is inclusive)
      annotations: [{ date: ISO, row: index|null, text }],  // callouts; row null = whole chart
+     period_lines: [{ label, date: ISO, colour?, points: [{ row: index, x_date: ISO }] }],
+                                      // closed progress periods: one dashed polyline each, in a
+                                      // muted colour (cycled, or `colour`), labelled at the top of
+                                      // the chart; it runs down the period's date and jogs through
+                                      // x_date at each listed row (the app computes them from its
+                                      // on-screen dashed lines). Drawn after the bars and before
+                                      // the current progress line.
      options: {
        show_links, show_float, show_baseline, show_progress_line,  // bool
        legend,                        // bool: legend in the title block
@@ -46,7 +70,20 @@
        // optional extras (defaults shown):
        shade_weekends: true,          // grey Sat/Sun bands when a day is >= 2 mm wide
        row_height_mm: 5,              // preferred (maximum) row height
-       work_hours: [8, 16]            // bar ends: times in this window map linearly onto the day
+       work_hours: [8, 16],           // bar ends: times in this window map linearly onto the day
+       fit_to_pages_tall: null,       // integer >= 1: pick rows_per_page so every row fits N pages
+                                      // tall, shrinking rows (floor 3.2 mm) and text (floor 6 pt);
+                                      // overrides rows_per_page. When even the floor cannot fit,
+                                      // the minimum row height is used and layout().fits is false.
+       page_break_before_groups: false, // new page before every summary row at depth 0 (unless
+                                      // it already starts a page)
+       selected_only: false,          // print only rows with `selected`, plus their ancestor
+                                      // summary rows (when no row is selected, every row prints);
+                                      // links, annotations and period_lines are re-indexed
+       legend_items: []               // [{ label, colour: '#rrggbb' }]: extra swatches after the
+                                      // standard legend items (chart coloured by code/resource).
+                                      // With more than 12 items the legend leaves the info strip
+                                      // and wraps across as many rows as it needs.
      },
      cover: null | {                  // optional briefing page, emitted before the Gantt pages
        title,                         // large heading, e.g. "Construction programme"
@@ -93,8 +130,11 @@
     legend_inline_min_mm: 330, // usable width at which the legend sits inside the info strip
     legend_item_mm: 34,     // legend item width when it runs as a strip above the info strip
     legend_line_mm: 3.6,
-    row_mm: 5               // default row height
+    row_mm: 5,              // default row height
+    row_min_mm: 3.2,        // floor for fit_to_pages_tall
+    compact_mm: 8           // info strip height for title_layout 'compact'
   };
+  const TITLE_LAYOUTS = ['standard', 'compact', 'wide'];
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
     'September', 'October', 'November', 'December'];
@@ -250,6 +290,113 @@
     const h = hex.replace('#', '');
     return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
   }
+  // muted colours for period lines, cycled (greys for the mono palette)
+  const PERIOD_COLOUR = ['#6b8e6b', '#8a7ca8', '#5f8fa3', '#a88a5f', '#9a6f85', '#7a8a9a'];
+  const PERIOD_MONO = ['#555555', '#7a7a7a', '#999999', '#666666', '#8a8a8a', '#444444'];
+  const HEX_RE = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i;
+  /** '#rgb' | '#rrggbb' (hash optional) -> '#rrggbb', or null when it is not a colour. */
+  function hexColour(v) {
+    const m = HEX_RE.exec(String(v == null ? '' : v).trim());
+    if (!m) return null;
+    let h = m[1].toLowerCase();
+    if (h.length === 3) h = h.replace(/./g, c => c + c);
+    return '#' + h;
+  }
+  const hex2 = v => Math.max(0, Math.min(255, Math.round(v * 255))).toString(16).padStart(2, '0');
+  /** `hex` mixed towards black by k (0..1). */
+  function shade(hex, k) { return '#' + rgb(hex).map(v => hex2(v * (1 - k))).join(''); }
+  /** Greyscale equivalent of `hex` (luminance). */
+  function grey(hex) { const [r, g, b] = rgb(hex); return '#' + hex2(0.299 * r + 0.587 * g + 0.114 * b).repeat(3); }
+  /** A user colour adjusted to the active palette. */
+  const tone = (hex, mono) => (mono ? grey(hex) : hex);
+
+  // ---------------------------------------------------------------------------------------
+  // images (meta.logo). JPEG passes straight through (DCTDecode). A PNG is embedded without
+  // decoding anything: its IDAT data is zlib output whose rows carry PNG filter bytes, which is
+  // exactly what FlateDecode with /Predictor 15 reads.
+  // ---------------------------------------------------------------------------------------
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  /** base64 (standard or URL-safe, a data: URL prefix allowed) -> byte string. */
+  function base64Bytes(s) {
+    s = String(s == null ? '' : s).replace(/^data:[^,]*,/, '');
+    let out = '', buf = 0, bits = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '=') break;
+      const v = B64.indexOf(ch === '-' ? '+' : ch === '_' ? '/' : ch);
+      if (v < 0) continue;
+      buf = (buf << 6) | v; bits += 6;
+      if (bits >= 8) { bits -= 8; out += String.fromCharCode((buf >> bits) & 0xff); buf &= (1 << bits) - 1; }
+    }
+    return out;
+  }
+  const be16 = (b, i) => (b.charCodeAt(i) << 8) | b.charCodeAt(i + 1);
+  const be32 = (b, i) => ((b.charCodeAt(i) << 24) | (b.charCodeAt(i + 1) << 16) | (b.charCodeAt(i + 2) << 8) | b.charCodeAt(i + 3)) >>> 0;
+
+  /** JPEG byte string -> { w, h, dict, data } from its frame header (SOFn). */
+  function parseJPEG(b) {
+    let i = 2;
+    while (i + 4 <= b.length) {
+      if (b.charCodeAt(i) !== 0xff) { i++; continue; }
+      const m = b.charCodeAt(i + 1);
+      if (m === 0xff) { i++; continue; }
+      if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; }
+      if (m === 0xda || m === 0xd9) break;                       // scan data before any frame header
+      const len = be16(b, i + 2);
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        const h = be16(b, i + 5), w = be16(b, i + 7), nc = b.charCodeAt(i + 9);
+        if (!w || !h) break;
+        const cs = nc === 1 ? '/DeviceGray' : nc === 4 ? '/DeviceCMYK' : '/DeviceRGB';
+        return { w, h, data: b, dict: `/ColorSpace ${cs} /BitsPerComponent 8 /Filter /DCTDecode` + (nc === 4 ? ' /Decode [1 0 1 0 1 0 1 0]' : '') };
+      }
+      i += 2 + len;
+    }
+    throw new Error('logo: the JPEG has no readable frame header');
+  }
+
+  /** PNG byte string -> { w, h, dict, data } with the IDAT stream as FlateDecode data. */
+  function parsePNG(b) {
+    let i = 8, w = 0, h = 0, depth = 0, ctype = 0, idat = '', plte = '';
+    while (i + 12 <= b.length) {
+      const len = be32(b, i), type = b.slice(i + 4, i + 8), body = b.slice(i + 8, i + 8 + len);
+      if (type === 'IHDR') {
+        w = be32(b, i + 8); h = be32(b, i + 12); depth = b.charCodeAt(i + 16); ctype = b.charCodeAt(i + 17);
+        if (b.charCodeAt(i + 20)) throw new Error('logo: interlaced PNG is not supported; save it non-interlaced or as JPEG');
+      } else if (type === 'PLTE') plte = body;
+      else if (type === 'IDAT') idat += body;
+      else if (type === 'IEND') break;
+      i += 12 + len;
+    }
+    if (!w || !h || !idat) throw new Error('logo: the PNG has no IHDR or IDAT chunk');
+    if (ctype === 4 || ctype === 6) throw new Error('logo: PNG with an alpha channel is not supported; flatten it (no transparency) or use JPEG');
+    if (depth > 8) throw new Error('logo: 16-bit PNG is not supported; save it at 8 bits per channel or as JPEG');
+    if (ctype === 3 && !plte) throw new Error('logo: palette PNG without a PLTE chunk');
+    const colors = ctype === 2 ? 3 : 1;
+    let cs = ctype === 2 ? '/DeviceRGB' : '/DeviceGray';
+    if (ctype === 3) {
+      let hx = '';
+      for (let k = 0; k < plte.length; k++) hx += plte.charCodeAt(k).toString(16).padStart(2, '0');
+      cs = `[/Indexed /DeviceRGB ${Math.floor(plte.length / 3) - 1} <${hx}>]`;
+    }
+    return { w, h, data: idat, dict: `/ColorSpace ${cs} /BitsPerComponent ${depth} /Filter /FlateDecode` +
+      ` /DecodeParms << /Predictor 15 /Colors ${colors} /BitsPerComponent ${depth} /Columns ${w} >>` };
+  }
+
+  /** meta.logo -> { w, h, dict, data, wmm, hmm } or null; throws a clear Error for images it cannot embed. */
+  function normaliseLogo(l) {
+    if (!l || typeof l !== 'object' || !l.data) return null;
+    const bytes = base64Bytes(l.data);
+    if (bytes.length < 16) throw new Error('logo: image data is empty or not base64');
+    let img;
+    if (bytes.charCodeAt(0) === 0xff && bytes.charCodeAt(1) === 0xd8) img = parseJPEG(bytes);
+    else if (bytes.slice(0, 8) === '\x89PNG\r\n\x1a\n') img = parsePNG(bytes);
+    else throw new Error(`logo: not a JPEG or PNG file (type given: ${l.type || 'none'})`);
+    let wmm = +l.width_mm || 0, hmm = +l.height_mm || 0;
+    if (!(wmm > 0) && !(hmm > 0)) hmm = 12;
+    if (!(wmm > 0)) wmm = hmm * img.w / img.h;
+    if (!(hmm > 0)) hmm = wmm * img.h / img.w;
+    return Object.assign(img, { wmm, hmm });
+  }
 
   // ---------------------------------------------------------------------------------------
   // content stream builder (coordinates in mm from the top-left corner)
@@ -303,6 +450,11 @@
         `${X(cx + k)} ${Y(cy - r)} ${X(cx + r)} ${Y(cy - k)} ${X(cx + r)} ${Y(cy)} c ` + (fill && stroke ? 'b' : fill ? 'f' : 's'));
     }
     clip(x, y, w, h) { this.rectPath(x, y, w, h); this.push('W n'); }
+    /** The page's image XObject /Im1 scaled into the box (x, y, w, h) mm. */
+    image(x, y, w, h) {
+      if (w <= 0 || h <= 0) return;
+      this.push('q'); this.push(`${num(w * MM)} 0 0 ${num(h * MM)} ${this.X(x)} ${this.Y(y + h)} cm /Im1 Do`); this.push('Q');
+    }
     /** Text at baseline (x, y) mm. `enc` is an encoded string. align: left|right|center. */
     textEnc(enc, x, y, pt, bold, col, align) {
       if (!enc) return;
@@ -327,14 +479,57 @@
     doc = doc || {};
     const meta = Object.assign({ project_name: '', project_id: '', client: '', revision: '', prepared_by: '',
       title: 'Construction programme', data_date: null, forecast_finish: null, deadline: null,
-      printed_at: null, notes: '' }, doc.meta || {});
+      printed_at: null, notes: '', title_layout: 'standard', logo: null }, doc.meta || {});
+    if (!TITLE_LAYOUTS.includes(meta.title_layout)) meta.title_layout = 'standard';
+    const logo = normaliseLogo(meta.logo);
     const page = Object.assign({ size: 'A3', orientation: 'landscape', margins_mm: 10 }, doc.page || {});
     if (!PAGE_SIZES[page.size]) page.size = 'A3';
     if (!(page.margins_mm >= 0)) page.margins_mm = 10;
     const options = Object.assign({ show_links: true, show_float: true, show_baseline: true,
       show_progress_line: false, legend: true, rows_per_page: null, fit_to_pages_wide: 1, colour: true,
-      shade_weekends: true, row_height_mm: GEOMETRY.row_mm, work_hours: [8, 16] }, doc.options || {});
-    const rows = (doc.rows || []).map(r => Object.assign({ kind: 'task', depth: 0, cells: [], critical: false, pct: 0, label: '' }, r));
+      shade_weekends: true, row_height_mm: GEOMETRY.row_mm, work_hours: [8, 16],
+      fit_to_pages_tall: null, page_break_before_groups: false, selected_only: false, legend_items: [] }, doc.options || {});
+    options.legend_items = (Array.isArray(options.legend_items) ? options.legend_items : [])
+      .map(it => (it && typeof it === 'object' ? { label: it.label == null ? '' : String(it.label).trim(), colour: hexColour(it.colour) || '#888888' } : null))
+      .filter(it => it && it.label);
+    let rows = (doc.rows || []).map(r => Object.assign({ kind: 'task', depth: 0, cells: [], critical: false, pct: 0, label: '' }, r,
+      { colour: hexColour(r && r.colour) }));
+    // row index as given -> index in the printed row list (null = dropped); identity unless selecting
+    const idx = v => (v === null || v === undefined || v === '' || !Number.isInteger(+v) || +v < 0 ? null : +v);
+    let remap = v => { const i = idx(v); return i === null || i >= rows.length ? null : i; };
+    if (options.selected_only && rows.some(r => r.selected)) {
+      const keep = new Array(rows.length).fill(false);
+      for (let i = 0; i < rows.length; i++) {
+        if (!rows[i].selected) continue;
+        keep[i] = true;
+        let d = Math.max(0, +rows[i].depth || 0);
+        for (let j = i - 1; j >= 0 && d > 0; j--) {          // ancestors: nearer summaries at lesser depth
+          const rj = rows[j], dj = Math.max(0, +rj.depth || 0);
+          if (rj.kind === 'summary' && dj < d) { keep[j] = true; d = dj; }
+        }
+      }
+      const map = new Map();
+      rows = rows.filter((r, i) => keep[i] && map.set(i, map.size));
+      remap = v => { const i = idx(v); return i !== null && map.has(i) ? map.get(i) : null; };
+    }
+    const links = (doc.links || []).map(L => {
+      if (!L || typeof L !== 'object') return null;
+      const from = remap(L.from), to = remap(L.to);
+      return from === null || to === null ? null : Object.assign({}, L, { from, to });
+    }).filter(Boolean);
+    const annotations = (doc.annotations || []).map(an => {
+      if (!an || typeof an !== 'object') return null;
+      if (idx(an.row) === null) return an;                          // whole-chart callout
+      const row = remap(an.row);
+      return row === null ? null : Object.assign({}, an, { row });
+    }).filter(Boolean);
+    const period_lines = (Array.isArray(doc.period_lines) ? doc.period_lines : []).map(pl => {
+      if (!pl || typeof pl !== 'object' || !parseISO(pl.date)) return null;
+      const points = (Array.isArray(pl.points) ? pl.points : [])
+        .map(p => (p && typeof p === 'object' && parseISO(p.x_date) ? { row: remap(p.row), x_date: p.x_date } : null))
+        .filter(p => p && p.row !== null).sort((a, b) => a.row - b.row);
+      return { label: pl.label == null ? '' : String(pl.label), date: pl.date, colour: hexColour(pl.colour), points };
+    }).filter(Boolean);
     let columns = (doc.columns && doc.columns.length ? doc.columns : [{ title: 'Activity', width_mm: 70, align: 'left' }])
       .map(c => Object.assign({ title: '', width_mm: 20, align: 'left' }, c));
     // timescale range
@@ -350,7 +545,7 @@
     }
     let d0 = r0.ms / DAY, d1 = r1.ms / DAY + (r1.dateOnly ? 1 : 0);
     if (!(d1 > d0)) d1 = d0 + 7;
-    return { meta, page, options, rows, columns, links: doc.links || [], annotations: doc.annotations || [], d0, d1,
+    return { meta, page, options, rows, columns, links, annotations, period_lines, logo, d0, d1,
       cover: normaliseCover(doc.cover) };
   }
 
@@ -378,11 +573,26 @@
   const LEGEND_ITEMS = ['Critical activity', 'Non-critical activity', 'Progress', 'Summary', 'Milestone',
     'Baseline', 'Total float', 'Link (critical / other)', 'Data date', 'Deadline', 'Progress line'];
 
+  /** Legend entries: [{ key, label, colour? }] - the standard items that apply, then options.legend_items. */
   function legendItems(n) {
     const o = n.options;
-    return LEGEND_ITEMS.filter(k => !((k === 'Baseline' && !o.show_baseline) || (k === 'Total float' && !o.show_float) ||
+    const std = LEGEND_ITEMS.filter(k => !((k === 'Baseline' && !o.show_baseline) || (k === 'Total float' && !o.show_float) ||
       (k.startsWith('Link') && !o.show_links) || (k === 'Progress line' && !o.show_progress_line) ||
-      (k === 'Deadline' && !parseISO(n.meta.deadline))));
+      (k === 'Deadline' && !parseISO(n.meta.deadline)))).map(k => ({ key: k, label: k }));
+    return std.concat(o.legend_items.map(it => ({ key: 'custom', label: it.label, colour: it.colour })));
+  }
+
+  /** Row bands [first, last) per page: at most `rpp` rows each and, with `breaks`, a new page
+      before every summary row at depth 0 unless it starts a page anyway. Always >= 1 band. */
+  function bandsFor(rows, rpp, breaks) {
+    const bands = [];
+    let first = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (i > first && (i - first >= rpp || (breaks && r.kind === 'summary' && !(+r.depth > 0)))) { bands.push({ first, last: i }); first = i; }
+    }
+    if (first < rows.length || !bands.length) bands.push({ first, last: rows.length });
+    return bands;
   }
 
   function plan(n) {
@@ -391,23 +601,42 @@
     const land = n.page.orientation !== 'portrait';
     const W = land ? b : a, H = land ? a : b, m = n.page.margins_mm;
     const usableW = W - 2 * m;
-    const legendOn = !!n.options.legend;
-    const legendInline = legendOn && usableW >= G.legend_inline_min_mm;
+    const titleLayout = n.meta.title_layout;
+    const items = legendItems(n);
+    const legendOn = !!n.options.legend && items.length > 0;
+    // the legend sits inside the info strip only in the standard layout, on a wide sheet, when
+    // its 3 x 4 grid holds every item; otherwise it is a strip of its own (above the info strip,
+    // or below it for 'wide') wrapping over as many rows as it needs
+    const legendInline = legendOn && titleLayout === 'standard' && usableW >= G.legend_inline_min_mm && items.length <= 12;
     let legendStrip = 0, legendPerLine = 0;
     if (legendOn && !legendInline) {
       legendPerLine = Math.max(1, Math.floor(usableW / G.legend_item_mm));
-      legendStrip = 1.6 + Math.ceil(legendItems(n).length / legendPerLine) * G.legend_line_mm;
+      legendStrip = 1.6 + Math.ceil(items.length / legendPerLine) * G.legend_line_mm;
     }
-    const tbH = G.info_mm + legendStrip;
+    const infoH = titleLayout === 'compact' ? G.compact_mm : G.info_mm;
+    const tbH = infoH + legendStrip;
     const headerY = m, tsY = m + G.header_mm + G.gap_mm, tsH = 3 * G.tier_mm, bodyY = tsY + tsH;
     const tbY = H - m - tbH;
     const bodyH = tbY - G.gap_mm - bodyY;
     const base = n.options.row_height_mm > 0 ? n.options.row_height_mm : G.row_mm;
-    let rpp, rowH;
+    const breaks = !!n.options.page_break_before_groups;
+    const fitTall = Math.floor(+n.options.fit_to_pages_tall || 0);
+    let rpp, rowH, fits = true;
     const req = Math.floor(+n.options.rows_per_page || 0);
-    if (req > 0) { rpp = req; rowH = Math.min(base, bodyH / rpp); }
+    if (fitTall > 0) {
+      // the fewest rows per page (tallest rows) that fits fitTall pages; rows/fitTall is a lower
+      // bound, page breaks before groups may need more, and the row height floor caps it
+      const maxRpp = Math.max(1, Math.floor(bodyH / G.row_min_mm + 1e-9));
+      rpp = Math.max(1, Math.min(maxRpp, Math.floor(bodyH / base + 1e-9)));
+      while (bandsFor(n.rows, rpp, breaks).length > fitTall && rpp < maxRpp) {
+        rpp = Math.min(maxRpp, Math.max(rpp + 1, Math.ceil(n.rows.length / fitTall)));
+      }
+      rowH = Math.min(base, bodyH / rpp);
+      fits = bandsFor(n.rows, rpp, breaks).length <= fitTall;
+    } else if (req > 0) { rpp = req; rowH = Math.min(base, bodyH / rpp); }
     else { rowH = base; rpp = Math.max(1, Math.floor(bodyH / rowH + 1e-9)); }
-    const pagesTall = Math.max(1, Math.ceil(n.rows.length / rpp));
+    const bands = bandsFor(n.rows, rpp, breaks);
+    const pagesTall = bands.length;
     // columns: the table may take at most 50% of the width (60% on wide sheets). Shrink the
     // indented (name) column first, down to 32 mm, then scale every column.
     const widths = n.columns.map(c => Math.max(0, +c.width_mm || 0));
@@ -438,8 +667,9 @@
       for (let i = 0; i < wide; i++) slices.push([s0 + i * weeks * 7, s0 + (i + 1) * weeks * 7]);
     }
     const coverPages = n.cover ? 1 : 0;
-    return { W, H, m, usableW, headerY, tsY, tsH, bodyY, bodyH, tbY, tbH, legendInline, legendStrip, legendPerLine,
-      rowH, rpp, pagesTall, wide, slices, cols, tableW, indentCol, chartX, chartW, coverPages, pageCount: pagesTall * wide + coverPages };
+    return { W, H, m, usableW, headerY, tsY, tsH, bodyY, bodyH, tbY, tbH, infoH, titleLayout, legendInline, legendStrip, legendPerLine,
+      rowH, rpp, bands, pagesTall, fitTall, fits, wide, slices, cols, tableW, indentCol, chartX, chartW, coverPages,
+      pageCount: pagesTall * wide + coverPages };
   }
 
   /** Public pagination plan. */
@@ -448,8 +678,11 @@
     const iso = d => { const ms = Math.round(d * DAY); return new Date(ms).toISOString().slice(0, 19); };
     return { page_w_mm: p.W, page_h_mm: p.H, rows_per_page: p.rpp, row_height_mm: p.rowH, body_height_mm: p.bodyH,
       pages_tall: p.pagesTall, pages_wide: p.wide, page_count: p.pageCount, pages: p.pageCount,
+      rows: n.rows.length, bands: p.bands.map(b => ({ first: b.first, last: b.last })),   // [first, last) per band
+      fit_to_pages_tall: p.fitTall > 0 ? p.fitTall : null, fits: p.fits,
       cover: !!n.cover, cover_pages: p.coverPages,
-      table_width_mm: p.tableW, chart_width_mm: p.chartW, title_block_mm: p.tbH,
+      table_width_mm: p.tableW, chart_width_mm: p.chartW, title_block_mm: p.tbH, title_layout: p.titleLayout,
+      logo: !!n.logo,
       slices: p.slices.map(([a, b]) => ({ t0: iso(a), t1: iso(b) })) };
   }
 
@@ -469,9 +702,11 @@
     };
     const dispIso = s => { const v = msOf(s); return v === null ? null : disp(v); };
     const rowH = P.rowH;
-    const first = g * P.rpp, last = Math.min(n.rows.length, first + P.rpp); // [first, last)
+    const { first, last } = P.bands[g];                // rows [first, last) on this page
     const rowTop = i => P.bodyY + (i - first) * rowH;
-    const fontPt = Math.min(7, rowH * MM * 0.5);
+    const mono = n.options.colour === false;
+    // text scales with the row; fit_to_pages_tall keeps it readable (6 pt floor) as rows shrink
+    const fontPt = P.fitTall > 0 ? Math.max(6, Math.min(7, rowH * MM * 0.5)) : Math.min(7, rowH * MM * 0.5);
     const bodyBottom = P.bodyY + P.bodyH;
     const chartR = P.chartX + P.chartW;
     const tableL = P.m;
@@ -605,24 +840,29 @@
       if (!gm) continue;
       const crit = !!r.critical;
       obstacles.push({ x: gm.xs, y: rowTop(i), w: gm.xe - gm.xs, h: rowH });
+      // a row colour (chart coloured by code / resource) replaces the critical / normal fills
+      const own = r.colour ? tone(r.colour, mono) : null;
+      const fillC = own || (crit ? C.crit : C.norm);
+      const progC = own ? shade(own, 0.45) : (crit ? C.critProg : C.normProg);
+      const edgeC = own ? shade(own, 0.3) : (crit ? C.critEdge : C.normEdge);
       if (r.kind === 'summary') {
         const t = gm.top, h = rowH * 0.2, tri = rowH * 0.22, w = Math.max(gm.xe - gm.xs, 0.4);
-        cv.rect(gm.xs, t, w, h, C.summary);
+        const sc = own || C.summary;
+        cv.rect(gm.xs, t, w, h, sc);
         const tw = Math.min(tri, w / 2);
-        cv.polygon([[gm.xs, t + h], [gm.xs + tw, t + h], [gm.xs, t + h + tri]], C.summary);
-        cv.polygon([[gm.xe, t + h], [gm.xe - tw, t + h], [gm.xe, t + h + tri]], C.summary);
+        cv.polygon([[gm.xs, t + h], [gm.xs + tw, t + h], [gm.xs, t + h + tri]], sc);
+        cv.polygon([[gm.xe, t + h], [gm.xe - tw, t + h], [gm.xe, t + h + tri]], sc);
       } else if (r.kind === 'milestone') {
         const x = gm.x, y = gm.yMid, hh = msHalf;
         const done = (+r.pct || 0) >= 100;
-        cv.polygon([[x, y - hh], [x + hh, y], [x, y + hh], [x - hh, y]],
-          done ? (crit ? C.critProg : C.normProg) : (crit ? C.crit : C.norm), C.msEdge, 0.12);
+        cv.polygon([[x, y - hh], [x + hh, y], [x, y + hh], [x - hh, y]], done ? progC : fillC, C.msEdge, 0.12);
       } else {
         const w = gm.xe - gm.xs;
-        cv.rect(gm.xs, gm.top, w, barH, crit ? C.crit : C.norm, crit ? C.critEdge : C.normEdge, 0.1);
+        cv.rect(gm.xs, gm.top, w, barH, fillC, edgeC, 0.1);
         const pct = Math.max(0, Math.min(100, +r.pct || 0));
         if (pct > 0) {
-          cv.rect(gm.xs, gm.top, w * pct / 100, barH, crit ? C.critProg : C.normProg);
-          cv.rect(gm.xs, gm.top, w, barH, null, crit ? C.critEdge : C.normEdge, 0.1);
+          cv.rect(gm.xs, gm.top, w * pct / 100, barH, progC);
+          cv.rect(gm.xs, gm.top, w, barH, null, edgeC, 0.1);
         }
       }
     }
@@ -659,6 +899,26 @@
         else if (chartR - 0.5 - xr > 6) cv.textEnc(fitEnc(enc, chartR - 0.5 - xr, labPt, bold), xr, y, labPt, bold, C.text);
       }
     }
+    // period lines (closed progress periods): dashed, one muted colour each, labelled at the top
+    const periodCols = mono ? PERIOD_MONO : PERIOD_COLOUR;
+    n.period_lines.forEach((pl, k) => {
+      const d = dispIso(pl.date);
+      if (d === null || d < s0 || d > s1) return;
+      const xd = X(d), col = pl.colour ? tone(pl.colour, mono) : periodCols[k % periodCols.length];
+      const pts = [[xd, P.bodyY]];
+      for (const p of pl.points) {
+        if (!(p.row >= first && p.row < last)) continue;
+        const px = dispIso(p.x_date);
+        if (px === null) continue;
+        const x = X(px);
+        if (Math.abs(x - xd) < 0.05) continue;
+        const t = rowTop(p.row);
+        pts.push([xd, t + rowH * 0.1], [x, t + rowH / 2], [xd, t + rowH * 0.9]);
+      }
+      pts.push([xd, P.bodyY + (last - first) * rowH]);
+      cv.polyline(pts, col, 0.25, [1.2, 0.8]);
+      if (pl.label && chartR - xd > 6) cv.text(pl.label, xd + 0.7, P.bodyY + 2.2, 5, false, col, 'left', chartR - xd - 1.2);
+    });
     // progress line
     const ddRaw = msOf(n.meta.data_date);
     const dd = ddRaw === null ? null : disp(ddRaw);
@@ -943,29 +1203,114 @@
 
   function drawLegend(cv, n, x, y, w, h, perLine, C, withLabel) {
     const items = legendItems(n);
+    const mono = n.options.colour === false;
     const pt = 5.6;
     let top = y + 0.8;
     if (withLabel) { cv.text('LEGEND', x + 1.5, y + 3.0, 5, true, C.muted); top = y + 4.0; }
     const cols = perLine || Math.max(1, Math.ceil(items.length / Math.max(1, Math.floor((h - (top - y) - 0.5) / GEOMETRY.legend_line_mm))));
     const colW = (w - 3) / cols;
-    items.forEach((k, i) => {
+    items.forEach((it, i) => {
       const cx = x + 1.5 + (i % cols) * colW, cy = top + Math.floor(i / cols) * GEOMETRY.legend_line_mm;
-      legendSwatch(cv, k, cx, cy + 0.4, 6, 2.6, C);
-      cv.text(k, cx + 7.2, cy + 2.6, pt, false, C.text, 'left', colW - 8);
+      if (it.key === 'custom') { const c = tone(it.colour, mono); cv.rect(cx, cy + 0.4 + 2.6 * 0.2, 6, 2.6 * 0.6, c, shade(c, 0.3), 0.1); }
+      else legendSwatch(cv, it.key, cx, cy + 0.4, 6, 2.6, C);
+      cv.text(it.label, cx + 7.2, cy + 2.6, pt, false, C.text, 'left', colW - 8);
     });
+  }
+
+  /** The logo (if any) at the top-left of a cell: returns the width it takes including a gap, or
+      0. `maxH` is the room available; the image keeps its aspect ratio. */
+  function drawLogo(cv, n, x, y, maxW, maxH) {
+    const L = n.logo;
+    if (!L || maxW <= 2 || maxH <= 2) return 0;
+    const k = Math.min(1, maxH / L.hmm, maxW / L.wmm);
+    cv.image(x, y, L.wmm * k, L.hmm * k);
+    return L.wmm * k + 2;
   }
 
   /** `band` is the row band shown (0-based), or null on the cover page. */
   function drawTitleBlock(cv, n, P, pageNo, band, sheet, C) {
-    const x0 = P.m, W = P.usableW, meta = n.meta;
+    const x0 = P.m, W = P.usableW;
     let y0 = P.tbY;
     cv.rect(x0, y0, W, P.tbH, '#ffffff', C.frame, 0.45);
-    if (P.legendStrip) {
+    const legendAbove = P.legendStrip > 0 && P.titleLayout !== 'wide';
+    if (legendAbove) {
       drawLegend(cv, n, x0, y0, W, P.legendStrip, P.legendPerLine, C, false);
       y0 += P.legendStrip;
       cv.line(x0, y0, x0 + W, y0, C.frame, 0.3);
     }
-    const H = GEOMETRY.info_mm;
+    if (P.titleLayout === 'compact') drawInfoCompact(cv, n, P, pageNo, band, sheet, C, y0);
+    else drawInfoStandard(cv, n, P, pageNo, band, sheet, C, y0);
+    if (P.legendStrip > 0 && !legendAbove) {               // 'wide': the legend row under the info row
+      y0 += P.infoH;
+      cv.line(x0, y0, x0 + W, y0, C.frame, 0.3);
+      drawLegend(cv, n, x0, y0, W, P.legendStrip, P.legendPerLine, C, false);
+    }
+  }
+
+  /** The SHEET cell's second line: which rows / sheet this page shows ('' when there is one page). */
+  function sheetNote(n, P, band, sheet) {
+    if (band === null) return 'Briefing';
+    if (P.wide > 1) return `Rows ${band + 1}/${P.pagesTall}  •  across ${sheet + 1}/${P.wide}`;
+    if (P.pagesTall > 1) { const b = P.bands[band]; return `Rows ${b.first + 1}–${b.last} of ${n.rows.length}`; }
+    return '';
+  }
+
+  /** 'compact': a single 8 mm line - project (with logo) and title, dates, issue, page. */
+  function drawInfoCompact(cv, n, P, pageNo, band, sheet, C, y0) {
+    const x0 = P.m, W = P.usableW, meta = n.meta, H = P.infoH;
+    const narrow = W < 260;
+    const wPage = narrow ? 20 : 30, wDates = narrow ? 56 : 82, wIssue = narrow ? 56 : 72;
+    const cells = [['PROJECT', W - wPage - wDates - wIssue], ['DATES', wDates], ['ISSUE', wIssue], ['SHEET', wPage]];
+    const by = y0 + H / 2 + 1.1;                            // one baseline for the strip
+    const pt = narrow ? 5.5 : 6;
+    let x = x0;
+    const defs = {};
+    for (const [name, w] of cells) { defs[name] = { x, w }; x += w; if (x < x0 + W - 0.01) cv.line(x, y0, x, y0 + H, C.frame, 0.25); }
+    // a labelled cell of "part  •  part" items in display order; when short of room the items
+    // with the highest drop rank go first, so the ones that remain print whole
+    const labelled = (name, parts) => {
+      const { x: cx, w } = defs[name];
+      cv.text(name, cx + 1.5, by, 5, true, C.muted);
+      const lw = textWidth(name, 5, true) + 1.5, avail = w - 3 - lw;
+      const list = parts.filter(p => p[0]);
+      while (list.length > 1 && textWidth(list.map(p => p[0]).join('  •  '), pt, false) > avail) {
+        let k = 0;
+        list.forEach((p, i) => { if (p[1] > list[k][1]) k = i; });
+        list.splice(k, 1);
+      }
+      cv.text(list.map(p => p[0]).join('  •  ') || '—', cx + 1.5 + lw, by, pt, false, C.text, 'left', avail);
+    };
+    {
+      const { x: cx, w } = defs.PROJECT;
+      const off = drawLogo(cv, n, cx + 1.5, y0 + 1, (w - 3) * 0.5, H - 2);
+      cv.text('PROJECT', cx + 1.5 + off, by, 5, true, C.muted);
+      const lw = off + textWidth('PROJECT', 5, true) + 1.5;
+      const nameEnc = encodeText(meta.project_name || ''), avail = w - 3 - lw;
+      const nw = widthEnc(nameEnc, 7, true);
+      if (meta.title && nw + 3 + 6 <= avail) {
+        cv.textEnc(nameEnc, cx + 1.5 + lw, by, 7, true, C.text);
+        cv.text('•  ' + meta.title, cx + 1.5 + lw + nw + 2, by, pt, false, C.muted, 'left', avail - nw - 2);
+      } else cv.textEnc(fitEnc(nameEnc, avail, 7, true), cx + 1.5 + lw, by, 7, true, C.text);
+    }
+    const dated = (k, v) => (formatDate(v) ? k + ' ' + formatDate(v) : '');
+    labelled('DATES', [[dated('Data date', meta.data_date), 0], [dated('Forecast', meta.forecast_finish), 2], [dated('Deadline', meta.deadline), 1]]);
+    labelled('ISSUE', [[meta.revision ? 'Rev ' + meta.revision : '', 0], [meta.prepared_by || '', 1], [dated('Printed', meta.printed_at), 2]]);
+    {
+      const { x: cx, w } = defs.SHEET;
+      const note = sheetNote(n, P, band, sheet);
+      const pageTxt = `Page ${pageNo} of ${P.pageCount}`;
+      if (note && !narrow && textWidth(pageTxt, 7, true) + 2 + textWidth(note, 5, false) <= w - 3) {
+        cv.text(pageTxt, cx + 1.5, by, 7, true, C.text);
+        cv.text(note, cx + w - 1.5, by, 5, false, C.muted, 'right');
+      } else cv.text(pageTxt, cx + w / 2, by, 7, true, C.text, 'center', w - 2);
+    }
+  }
+
+  /** 'standard' and 'wide': the info strip of labelled cells (the legend inline only when
+      plan() put it there). */
+  function drawInfoStandard(cv, n, P, pageNo, band, sheet, C, y0) {
+    const x0 = P.m, W = P.usableW, meta = n.meta;
+    const H = P.infoH;
     const narrow = W < 260;
     // cell widths (mm): fixed parts first, the project (and title) cells share what is left
     const wPage = narrow ? 26 : 30, wDates = narrow ? 42 : 44, wIssue = narrow ? 46 : 44;
@@ -993,24 +1338,26 @@
     };
     const defs = {};
     for (const [name, w] of cells) { defs[name] = { x, w }; x += w; if (x < x0 + W - 0.01) cv.line(x, y0, x, y0 + H, C.frame, 0.25); }
-    // project
+    // project (the logo, when there is one, sits at the left and the text moves right of it)
     {
       const { x: cx, w } = defs.PROJECT;
       label('PROJECT', cx);
+      const off = drawLogo(cv, n, cx + 1.5, y0 + 4.4, (w - 3) * 0.5, H - 5.6);
+      const tx = cx + 1.5 + off, tw = w - 3 - off;
       const enc = encodeText(meta.project_name || '');
       if (narrow) {
-        const pt = fitSize(enc, w - 3, 9.5, 7, 1);
-        cv.textEnc(fitEnc(enc, w - 3, pt, true), cx + 1.5, y0 + 7.2, pt, true, C.text);
-        cv.text(meta.title || '', cx + 1.5, y0 + 10.9, 7, true, C.muted, 'left', w - 3);
-        if (meta.project_id) cv.text('Project ID: ' + meta.project_id, cx + 1.5, y0 + 14.5, 6.3, false, C.text, 'left', w - 3);
-        if (meta.client) cv.text('Client: ' + meta.client, cx + 1.5, y0 + 17.9, 6.3, false, C.text, 'left', w - 3);
+        const pt = fitSize(enc, tw, 9.5, 7, 1);
+        cv.textEnc(fitEnc(enc, tw, pt, true), tx, y0 + 7.2, pt, true, C.text);
+        cv.text(meta.title || '', tx, y0 + 10.9, 7, true, C.muted, 'left', tw);
+        if (meta.project_id) cv.text('Project ID: ' + meta.project_id, tx, y0 + 14.5, 6.3, false, C.text, 'left', tw);
+        if (meta.client) cv.text('Client: ' + meta.client, tx, y0 + 17.9, 6.3, false, C.text, 'left', tw);
       } else {
-        const pt = fitSize(enc, w - 3, 10, 7.5, 2);
-        const lines = wrapEnc(enc, w - 3, pt, true, 2);
+        const pt = fitSize(enc, tw, 10, 7.5, 2);
+        const lines = wrapEnc(enc, tw, pt, true, 2);
         const lh = pt / MM * 1.18;
-        lines.forEach((l, i) => cv.textEnc(l, cx + 1.5, y0 + 7.4 + i * lh, pt, true, C.text));
-        if (meta.project_id) cv.text('Project ID: ' + meta.project_id, cx + 1.5, y0 + H - 5.0, 6.5, false, C.text, 'left', w - 3);
-        if (meta.client) cv.text('Client: ' + meta.client, cx + 1.5, y0 + H - 1.8, 6.5, false, C.text, 'left', w - 3);
+        lines.forEach((l, i) => cv.textEnc(l, tx, y0 + 7.4 + i * lh, pt, true, C.text));
+        if (meta.project_id) cv.text('Project ID: ' + meta.project_id, tx, y0 + H - 5.0, 6.5, false, C.text, 'left', tw);
+        if (meta.client) cv.text('Client: ' + meta.client, tx, y0 + H - 1.8, 6.5, false, C.text, 'left', tw);
       }
     }
     // title + notes
@@ -1052,9 +1399,8 @@
       const { x: cx, w } = defs.SHEET;
       label('SHEET', cx);
       cv.text(`Page ${pageNo} of ${P.pageCount}`, cx + w / 2, y0 + 10.5, 9, true, C.text, 'center', w - 2);
-      if (band === null) cv.text('Briefing', cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
-      else if (P.wide > 1) cv.text(`Rows ${band + 1}/${P.pagesTall}  •  across ${sheet + 1}/${P.wide}`, cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
-      else if (P.pagesTall > 1) cv.text(`Rows ${band * P.rpp + 1}–${Math.min(n.rows.length, band * P.rpp + P.rpp)} of ${n.rows.length}`, cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
+      const note = sheetNote(n, P, band, sheet);
+      if (note) cv.text(note, cx + w / 2, y0 + 15, 5.4, false, C.muted, 'center', w - 2);
     }
   }
 
@@ -1308,18 +1654,24 @@
     return `D:${z(d.getUTCFullYear(), 4)}${z(d.getUTCMonth() + 1)}${z(d.getUTCDate())}${z(d.getUTCHours())}${z(d.getUTCMinutes())}${z(d.getUTCSeconds())}`;
   }
 
-  function assemble(pages, W, H, info) {
+  /** `logo` (optional) is the parsed image every page may draw as /Im1. */
+  function assemble(pages, W, H, info, logo) {
     const objs = [];                     // index i -> object i+1 body
     const add = body => { objs.push(body); return objs.length; };
     const catalog = add(null), pagesId = add(null);
     const f1 = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
     const f2 = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
     const infoId = add(`<< /Title (${pdfString(encodeText(info.title))}) /Subject (${pdfString(encodeText(info.subject))}) /Author (${pdfString(encodeText(info.author))}) /Producer (PlannerPDF) /Creator (Construction programme planner) /CreationDate (${info.date}) >>`);
+    let xobj = '', procs = '/PDF /Text';
+    if (logo) {
+      const im = add(`<< /Type /XObject /Subtype /Image /Width ${logo.w} /Height ${logo.h} ${logo.dict} /Length ${logo.data.length} >>\nstream\n${logo.data}\nendstream`);
+      xobj = ` /XObject << /Im1 ${im} 0 R >>`; procs += ' /ImageB /ImageC';
+    }
     const kids = [];
     const mb = `[0 0 ${num(W * MM)} ${num(H * MM)}]`;
     for (const content of pages) {
       const cid = add(`<< /Length ${content.length} >>\nstream\n${content}endstream`);
-      kids.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox ${mb} /Resources << /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >> /ProcSet [/PDF /Text] >> /Contents ${cid} 0 R >>`));
+      kids.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox ${mb} /Resources << /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >>${xobj} /ProcSet [${procs}] >> /Contents ${cid} 0 R >>`));
     }
     objs[catalog - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R /PageLayout /SinglePage >>`;
     objs[pagesId - 1] = `<< /Type /Pages /Kids [${kids.map(k => k + ' 0 R').join(' ')}] /Count ${kids.length} >>`;
@@ -1355,7 +1707,7 @@
       }
     }
     const title = [n.meta.project_name, n.meta.title].filter(Boolean).join(' - ');
-    return assemble(pages, P.W, P.H, { title, subject: n.meta.title || '', author: n.meta.prepared_by || '', date: pdfDate(n.meta.printed_at) });
+    return assemble(pages, P.W, P.H, { title, subject: n.meta.title || '', author: n.meta.prepared_by || '', date: pdfDate(n.meta.printed_at) }, n.logo);
   }
 
   root.PlannerPDF = { render, layout, formatDate, encodeText, textWidth, GEOMETRY };

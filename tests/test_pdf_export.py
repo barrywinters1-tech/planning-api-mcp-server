@@ -12,13 +12,17 @@ Skipped when node is not installed.
 """
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import zlib
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -78,12 +82,14 @@ class Pdf:
     def obj(self, num: int) -> bytes:
         return self.objects[num]
 
-    def stream(self, num: int) -> bytes:
+    def stream(self, num: int, eol: bytes = b"") -> bytes:
+        """The stream's data; `eol` is the end-of-line the writer puts before `endstream`
+        (none for content streams, b"\\n" for binary image data)."""
         body = self.obj(num)
         length = int(re.search(rb"/Length (\d+)", body).group(1))
         start = body.index(b"stream\n") + len(b"stream\n")
         content = body[start:start + length]
-        assert body[start + length:].startswith(b"endstream"), "stream /Length is wrong"
+        assert body[start + length:].startswith(eol + b"endstream"), "stream /Length is wrong"
         return content
 
     def pages(self) -> list[int]:
@@ -587,3 +593,401 @@ def test_cover_parses_with_pdf_library(tmp_path):
         assert "Programme briefing" in text and "Watertight" in text and "Page 1 of 4" in text
         return
     pytest.skip("no pypdf or poppler available")
+
+
+# ----------------------------------------------------------------------------------------
+# fit to pages tall, page breaks before groups, selected rows only, legend items and row
+# colours, period lines, logo, title-block layouts
+# ----------------------------------------------------------------------------------------
+_PATCH_SCRIPT = r"""
+const fs = require('fs');
+const [pdfJs, docPath, patchPath, out] = process.argv.slice(1);
+require(pdfJs);
+const P = globalThis.PlannerPDF;
+const doc = JSON.parse(fs.readFileSync(docPath, 'utf8'));
+const patch = JSON.parse(fs.readFileSync(patchPath, 'utf8'));
+const base = P.layout(doc);
+Object.assign(doc.options, patch.options || {});
+Object.assign(doc.meta, patch.meta || {});
+if (patch.page) Object.assign(doc.page, patch.page);
+if (patch.period_lines) doc.period_lines = patch.period_lines;
+for (const [i, r] of Object.entries(patch.rows || {})) Object.assign(doc.rows[+i], r);
+let error = null, layout = null;
+try { const bytes = P.render(doc); fs.writeFileSync(out, bytes); layout = P.layout(doc); } catch (e) { error = String(e.message || e); }
+process.stdout.write(JSON.stringify({ base, layout, error, data_date: doc.meta.data_date, range: doc.range,
+  rows: doc.rows.map(r => ({ kind: r.kind, depth: r.depth, id: r.cells[0], name: r.cells[1], start: r.start, finish: r.finish, pct: r.pct })) }));
+"""
+
+# a 1 x 1 baseline greyscale JPEG written by hand: DQT (all ones), SOF0, one-code DC and AC
+# Huffman tables, SOS and a single byte of scan data (DC category 0, then EOB)
+JPEG_1PX = (b"\xff\xd8" + b"\xff\xdb\x00\x43\x00" + b"\x01" * 64
+            + b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00"
+            + b"\xff\xc4\x00\x14\x00" + b"\x01" + b"\x00" * 15 + b"\x00"
+            + b"\xff\xc4\x00\x14\x10" + b"\x01" + b"\x00" * 15 + b"\x00"
+            + b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00" + b"\x3f" + b"\xff\xd9")
+PNG_ROW = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0])      # 4 RGB pixels: red, green, blue, yellow
+
+
+def make_png(width=4, height=3, colour_type=2, interlace=0) -> bytes:
+    """A small 8-bit PNG built with zlib only (filter byte 0 on every row)."""
+    bpp = {0: 1, 2: 3, 4: 2, 6: 4}[colour_type]
+    if colour_type == 2:
+        row = b"\x00" + PNG_ROW[:width * 3]
+    else:
+        row = b"\x00" + bytes((x * 61 + c * 17) % 256 for x in range(width) for c in range(bpp))
+
+    def chunk(tag, body):
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, colour_type, 0, 0, interlace)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(row * height)) + chunk(b"IEND", b"")
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+def render_patched(tmp: Path, patch: dict, page=None, options=None, copies=None) -> dict:
+    """The runner's programme (via doc_out) with `patch` applied (options, meta, page, period_lines,
+    rows: {index: fields}), rendered by PlannerPDF. `error` carries a render exception's message;
+    `base` is the layout before the patch and base.pdf the runner's own render of the document."""
+    case = {"doc_out": str(tmp / "doc.json")}
+    if page:
+        case["page"] = page
+    if options:
+        case["options"] = options
+    if copies:
+        case["copies"] = copies
+    run_runner({"base": case}, tmp)
+    (tmp / "patch.json").write_text(json.dumps(patch), encoding="utf-8")
+    out = tmp / "patched.pdf"
+    if out.exists():
+        out.unlink()
+    proc = subprocess.run([NODE, "-e", _PATCH_SCRIPT, str(PDF_JS), str(tmp / "doc.json"), str(tmp / "patch.json"), str(out)],
+                          capture_output=True, text=True, timeout=120, env=dict(os.environ, TZ="UTC"))
+    assert proc.returncode == 0, proc.stderr
+    r = json.loads(proc.stdout)
+    r["pdf"] = out.read_bytes() if out.exists() else b""
+    return r
+
+
+def body_height(size: str, orientation: str, legend_items=10, info=INFO, margins=10) -> float:
+    """Chart body height in mm, as plan() computes it (the legend strip applies on narrow sheets,
+    with more than 12 legend entries, or in the compact / wide title layouts)."""
+    a, b = PAGE_SIZES[size]
+    w, h = (b, a) if orientation == "landscape" else (a, b)
+    usable_w = w - 2 * margins
+    strip = 0.0
+    if usable_w < LEGEND_INLINE_MIN or legend_items > 12 or info != INFO:
+        per_line = max(1, math.floor(usable_w / LEGEND_ITEM))
+        strip = 1.6 + math.ceil(legend_items / per_line) * LEGEND_LINE
+    return h - 2 * margins - HEADER - GAP - 3 * TIER - GAP - info - strip
+
+
+def colour_op(hex_colour: str, shade=0.0, op="rg") -> bytes:
+    """The content-stream operator PlannerPDF writes for a colour (optionally mixed towards black)."""
+    def comp(i):
+        v = int(hex_colour[i:i + 2], 16) / 255
+        if shade:
+            v = round(v * (1 - shade) * 255) / 255
+        return str(math.floor(v * 100 + 0.5) / 100)
+    return (" ".join(comp(i) for i in (1, 3, 5)) + " " + op).encode()
+
+
+def texts_with_positions(content: bytes, h_mm: float) -> list[tuple[str, float, float, float]]:
+    """(string, x_mm, y_mm, pt) for every text drawn in a content stream."""
+    out = []
+    for pt, x, y, raw in re.findall(rb"/F[12] ([\d.]+) Tf ([-\d.]+) ([-\d.]+) Td \(((?:\\.|[^\\)])*)\) Tj", content, re.S):
+        out.append((unescape(raw).decode("cp1252"), float(x) * 25.4 / 72, h_mm - float(y) * 25.4 / 72, float(pt)))
+    return out
+
+
+def assert_inside_margins(pdf: Pdf, L: dict):
+    for p in pdf.pages():
+        for x, y in text_positions(pdf.page_content(p), L["page_w_mm"], L["page_h_mm"]):
+            assert 10 <= x <= L["page_w_mm"] - 10 + 0.01 and 10 <= y <= L["page_h_mm"] - 10 + 0.01, (x, y)
+
+
+def test_fit_to_pages_tall(tmp_path):
+    r = run_runner({
+        "fit2": {"copies": 2, "max_rows": 120, "options": {"fit_to_pages_tall": 2}},
+        "fit1000": {"copies": 11, "max_rows": 1000, "page": {"size": "A4", "orientation": "landscape"}, "options": {"fit_to_pages_tall": 1}},
+        "fit_easy": {"options": {"fit_to_pages_tall": 5}},
+    }, tmp_path)
+    # 120 rows on two A3 pages: 60 rows a page, rows shrunk to fit but above the 3.2 mm floor
+    L = r["fit2"]["layout"]
+    assert r["fit2"]["rows"] == 120
+    assert L["fit_to_pages_tall"] == 2 and L["fits"] is True
+    assert L["rows_per_page"] == 60 and L["pages_tall"] == 2 and L["page_count"] == 2
+    assert L["row_height_mm"] == pytest.approx(body_height("A3", "landscape") / 60) and 3.2 <= L["row_height_mm"] < 5
+    assert L["bands"] == [{"first": 0, "last": 60}, {"first": 60, "last": 120}]
+    pdf = Pdf(r["fit2"]["pdf"])
+    texts = pdf.page_texts()
+    assert len(texts) == 2
+    ids = r["fit2"]["row_ids"]
+    assert set(ids[:60]) <= set(texts[0]) and set(ids[60:]) <= set(texts[1])
+    assert "Page 2 of 2" in texts[1] and any(t.startswith("Rows 61") for t in texts[1])
+    # 1000 rows cannot fit one A4 page: the floor applies and the layout says so honestly
+    L = r["fit1000"]["layout"]
+    assert r["fit1000"]["rows"] == 1000
+    assert L["fits"] is False and L["fit_to_pages_tall"] == 1
+    max_rpp = math.floor(body_height("A4", "landscape") / 3.2 + 1e-9)
+    assert L["rows_per_page"] == max_rpp
+    assert 3.2 <= L["row_height_mm"] < 3.3
+    pdf = Pdf(r["fit1000"]["pdf"])
+    assert L["pages_tall"] == math.ceil(1000 / max_rpp) == L["page_count"] == len(pdf.pages())
+    # text never drops below 6 pt in fit mode: the activity names on page 1 are 6 pt
+    content = pdf.page_content(pdf.pages()[0])
+    sizes = {pt for s, _x, _y, pt in texts_with_positions(content, L["page_h_mm"]) if s == "Strip topsoil and reduce levels (Block A)"}
+    assert sizes == {6.0}
+    # a budget larger than needed changes nothing
+    L = r["fit_easy"]["layout"]
+    assert L["fits"] is True and L["rows_per_page"] == 45 and L["row_height_mm"] == 5 and L["pages_tall"] == 3
+
+
+def test_page_break_before_groups(rendered, tmp_path):
+    r = run_runner({"brk": {"options": {"page_break_before_groups": True}}}, tmp_path)["brk"]
+    L, kinds, names = r["layout"], r["row_kinds"], r["row_names"]
+    groups = [i for i, k in enumerate(kinds) if k == "summary"]
+    assert len(groups) > 3 and groups[0] == 0
+    # every group starts a page; a group longer than a page (45 rows) continues on the next
+    starts = [b["first"] for b in L["bands"]]
+    assert set(groups) <= set(starts) and L["rows_per_page"] == 45
+    for k, b in enumerate(L["bands"]):
+        assert b["last"] - b["first"] <= 45
+        if b["first"] not in groups:
+            assert L["bands"][k - 1]["last"] - L["bands"][k - 1]["first"] == 45
+    assert len(groups) <= L["page_count"] == len(L["bands"]) and L["page_count"] > rendered["a3"]["layout"]["page_count"]
+    assert L["bands"][-1]["last"] == r["rows"]
+    pdf = Pdf(r["pdf"])
+    pages = pdf.pages()
+    texts = pdf.page_texts()
+    assert len(pages) == L["page_count"]
+    ids = r["row_ids"]
+    for g, (band, page) in enumerate(zip(L["bands"], pages)):
+        band_names = names[band["first"]:band["last"]]
+        assert set(ids[band["first"]:band["last"]]) <= set(texts[g])
+        others = {i for i in set(ids) - set(ids[band["first"]:band["last"]]) if re.search(r"[A-Z]\d", i)}
+        assert not others & set(texts[g])
+        if g:
+            assert names[band["first"]] not in texts[g - 1]
+        # the group title is the topmost row of its page
+        if band["first"] in groups:
+            assert kinds[band["first"]] == "summary"
+            pos = {s: y for s, _x, y, _pt in texts_with_positions(pdf.page_content(page), L["page_h_mm"]) if s in band_names}
+            assert pos[names[band["first"]]] == min(pos.values())
+        assert f"Page {g + 1} of {L['page_count']}" in texts[g]
+
+
+def test_page_breaks_with_fit_to_pages(tmp_path):
+    # fit_to_pages_tall counts the pages the breaks produce: 8 groups cannot fit 2 pages
+    r = render_patched(tmp_path, {"options": {"page_break_before_groups": True, "fit_to_pages_tall": 2}})
+    L = r["layout"]
+    assert L["fits"] is False and 2 < L["pages_tall"] <= 8
+    assert all(r["rows"][b["first"]]["kind"] == "summary" for b in L["bands"])
+    r = render_patched(tmp_path, {"options": {"page_break_before_groups": True, "fit_to_pages_tall": 10}})
+    assert r["layout"]["fits"] is True and r["layout"]["pages_tall"] == 8 and r["layout"]["row_height_mm"] == 5
+
+
+def test_selected_only(tmp_path):
+    base = render_patched(tmp_path, {})
+    rows = base["rows"]
+    groups = [i for i, r in enumerate(rows) if r["kind"] == "summary"]
+    # nest part of the second group: a sub-summary with two children beneath it
+    sub = groups[1] + 2
+    patch_rows = {str(sub): {"kind": "summary", "depth": 1}, str(sub + 1): {"depth": 2}, str(sub + 2): {"depth": 2, "selected": True},
+                  str(groups[3] + 1): {"selected": True}, str(groups[3] + 3): {"selected": True}}
+    r = render_patched(tmp_path, {"options": {"selected_only": True}, "rows": patch_rows})
+    L = r["layout"]
+    kept = sorted({sub + 2, groups[1], sub, groups[3] + 1, groups[3] + 3, groups[3]})
+    assert L["rows"] == len(kept) == 6 and L["page_count"] == 1 < base["layout"]["page_count"]
+    pdf = Pdf(r["pdf"])
+    first = pdf.page_texts()[0]
+    for i in kept:
+        assert rows[i]["name"] in first, rows[i]["name"]
+    dropped = [rows[i]["name"] for i in range(len(rows)) if i not in kept]
+    assert dropped and not any(n in first for n in dropped)
+    # the kept rows print in their original order
+    ys = {s: y for s, _x, y, _pt in texts_with_positions(pdf.page_content(pdf.pages()[0]), L["page_h_mm"]) if s in {rows[i]["name"] for i in kept}}
+    assert [n for n, _ in sorted(ys.items(), key=lambda kv: kv[1])] == [rows[i]["name"] for i in kept]
+    # selected_only with nothing selected prints everything
+    r = render_patched(tmp_path, {"options": {"selected_only": True}})
+    assert r["layout"]["rows"] == len(rows) and r["layout"]["page_count"] == base["layout"]["page_count"]
+
+
+def test_legend_items_and_row_colours(tmp_path):
+    items = [{"label": "Groundworks", "colour": "#8a5a2b"}, {"label": "Frame", "colour": "#2b6a8a"}, {"label": "Envelope", "colour": "#5a8a2b"},
+             {"label": "Fit-out", "colour": "#8a2b6a"}, {"label": "M&E", "colour": "#c28a1a"}]
+    r = run_runner({"leg": {"options": {"legend_items": items}}, "leg2": {"options": {"legend_items": items[:2]}}}, tmp_path)
+    # 15 legend entries leave the info strip and wrap into two rows above it; 12 stay inline
+    L = r["leg"]["layout"]
+    assert L["rows_per_page"] == math.floor(body_height("A3", "landscape", legend_items=15) / ROW + 1e-9) == 43
+    assert L["title_block_mm"] == pytest.approx(INFO + 1.6 + 2 * LEGEND_LINE)
+    assert r["leg2"]["layout"]["rows_per_page"] == 45 and r["leg2"]["layout"]["title_block_mm"] == INFO
+    for name in ("leg", "leg2"):
+        pdf = Pdf(r[name]["pdf"])
+        shown = items if name == "leg" else items[:2]
+        for page, p in zip(pdf.page_texts(), pdf.pages()):
+            for it in shown:
+                assert it["label"] in page
+            assert "Critical activity" in page and "Milestone" in page
+            assert colour_op("#8a5a2b") in pdf.page_content(p)              # the Groundworks swatch
+        assert_inside_margins(pdf, r[name]["layout"])
+    # a row colour replaces the bar fill (and shades the progress and edge); mono output greys it
+    base = render_patched(tmp_path, {})
+    task = next(i for i, row in enumerate(base["rows"]) if row["kind"] == "task" and 0 < row["pct"] < 100)
+    r2 = render_patched(tmp_path, {"rows": {str(task): {"colour": "#c28a1a"}}})
+    content = Pdf(r2["pdf"]).page_content(Pdf(r2["pdf"]).pages()[0])
+    assert colour_op("#c28a1a") in content and colour_op("#c28a1a", 0.45) in content and colour_op("#c28a1a", 0.3, "RG") in content
+    assert colour_op("#c28a1a") not in Pdf(base["pdf"]).page_content(Pdf(base["pdf"]).pages()[0])
+    r3 = render_patched(tmp_path, {"rows": {str(task): {"colour": "#c28a1a"}}, "options": {"colour": False, "legend_items": items}})
+    mono = Pdf(r3["pdf"])
+    for p in mono.pages():
+        for r_, g_, b_ in re.findall(rb"([\d.]+) ([\d.]+) ([\d.]+) (?:rg|RG)", mono.page_content(p)):
+            assert r_ == g_ == b_, "greyscale output must not contain colour"
+
+
+def test_period_lines(tmp_path):
+    base = render_patched(tmp_path, {})
+    rows, d0 = base["rows"], date.fromisoformat(base["data_date"][:10])
+    p2, p1 = (d0 - timedelta(days=28)).isoformat(), (d0 - timedelta(days=56)).isoformat()
+    tasks = [i for i, r in enumerate(rows) if r["kind"] == "task" and r["start"]][:6]
+    points = [{"row": i, "x_date": (d0 - timedelta(days=33)).isoformat()} for i in tasks]
+    assert len(points) >= 3
+    lines = [{"label": "Period 2 (to " + p2 + ")", "date": p2, "points": points}, {"label": "Period 1", "date": p1, "points": [], "colour": "#aa3366"}]
+    r = render_patched(tmp_path, {"period_lines": lines, "options": {"show_progress_line": True}})
+    L = r["layout"]
+    assert r["error"] is None and L["page_count"] == base["layout"]["page_count"]
+    pdf = Pdf(r["pdf"])
+    pages = pdf.pages()
+    texts = pdf.page_texts()
+    assert "Period 2 (to " + p2 + ")" in texts[0] and "Period 1" in texts[0]
+    content = pdf.page_content(pages[0])
+    ops = content.split(b"\n")
+    # the first line: dashed, the first muted colour, one jog (three segments) per point on the page
+    i = ops.index(colour_op("#6b8e6b", 0, "RG"))
+    stroke = next(o for o in ops[i:i + 4] if o.endswith(b" S"))
+    assert b"[3.4 2.27] 0 d" in ops[i:i + 4]                              # dash [1.2 0.8] mm
+    on_page = [p for p in points if p["row"] < L["rows_per_page"]]
+    assert len(on_page) >= 3 and stroke.count(b" l") == 3 * len(on_page) + 1
+    # the second line in its own colour, straight; both before the current progress line
+    j = ops.index(colour_op("#aa3366", 0, "RG"))
+    assert next(o for o in ops[j:j + 4] if o.endswith(b" S")).count(b" l") == 1
+    assert ops.index(colour_op("#8b5cf6", 0, "RG")) > max(i, j)
+    # every page carries the lines (the dates are on every page's timescale); none in the base document
+    assert all(b"[3.4 2.27] 0 d" in pdf.page_content(p) for p in pages)
+    assert b"[3.4 2.27] 0 d" not in Pdf(base["pdf"]).page_content(Pdf(base["pdf"]).pages()[0])
+
+
+def test_logo_jpeg(tmp_path):
+    logo = {"data": b64(JPEG_1PX), "type": "jpeg", "width_mm": 24, "height_mm": 12}
+    r = render_patched(tmp_path, {"meta": {"logo": logo}})
+    assert r["error"] is None and r["layout"]["logo"] is True and r["layout"]["page_count"] == r["base"]["page_count"]
+    pdf = Pdf(r["pdf"])
+    images = [num for num, o in pdf.objects.items() if b"/Subtype /Image" in o]
+    assert len(images) == 1
+    im = pdf.obj(images[0])
+    assert b"/Width 1 /Height 1" in im and b"/ColorSpace /DeviceGray" in im and b"/Filter /DCTDecode" in im
+    assert pdf.stream(images[0], eol=b"\n") == JPEG_1PX
+    for p in pdf.pages():
+        body = pdf.obj(p)
+        assert b"/XObject << /Im1 %d 0 R >>" % images[0] in body and b"/ImageC" in body
+        content = pdf.page_content(p)
+        ops = content.split(b"\n")
+        assert ops.count(b"q") == ops.count(b"Q")
+        cms = re.findall(rb"([\d.]+) 0 0 ([\d.]+) ([\d.]+) ([\d.]+) cm /Im1 Do", content)
+        assert len(cms) == 1
+        w, h, x, _y = (float(v) * 25.4 / 72 for v in cms[0])
+        assert (w, h) == pytest.approx((24, 12), abs=0.01) and x == pytest.approx(11.5, abs=0.01)   # at the left of the project cell
+    assert PROJECT_NAME in pdf.page_texts()[0]
+    assert_inside_margins(pdf, r["layout"])
+    py = _pypdf_python()
+    if py:
+        path = tmp_path / "logo.pdf"
+        path.write_bytes(r["pdf"])
+        check = ("import pypdf, sys; r = pypdf.PdfReader(sys.argv[1], strict=True); x = r.pages[0]['/Resources']['/XObject']['/Im1'].get_object();"
+                 " print(len(r.pages), x['/Width'], len(x.get_data()))")
+        proc = subprocess.run([py, "-c", check, str(path)], capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.split() == [str(r["layout"]["page_count"]), "1", str(len(JPEG_1PX))]
+
+
+def test_logo_png(tmp_path):
+    r = render_patched(tmp_path, {"meta": {"logo": {"data": "data:image/png;base64," + b64(make_png()), "type": "png", "height_mm": 9}}})
+    assert r["error"] is None
+    pdf = Pdf(r["pdf"])
+    images = [num for num, o in pdf.objects.items() if b"/Subtype /Image" in o]
+    assert len(images) == 1
+    im = pdf.obj(images[0])
+    assert b"/Width 4 /Height 3" in im and b"/ColorSpace /DeviceRGB" in im and b"/BitsPerComponent 8" in im
+    assert b"/Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns 4 >>" in im
+    content = pdf.page_content(pdf.pages()[0])
+    cms = re.findall(rb"([\d.]+) 0 0 ([\d.]+) ([\d.]+) ([\d.]+) cm /Im1 Do", content)
+    assert len(cms) == 1 and float(cms[0][0]) / float(cms[0][1]) == pytest.approx(4 / 3, abs=0.01)   # width from the pixel aspect
+    py = _pypdf_python()
+    if py:   # FlateDecode with the PNG predictor yields the pixel rows exactly
+        path = tmp_path / "logo_png.pdf"
+        path.write_bytes(r["pdf"])
+        check = ("import pypdf, sys; r = pypdf.PdfReader(sys.argv[1], strict=True);"
+                 " sys.stdout.buffer.write(r.pages[0]['/Resources']['/XObject']['/Im1'].get_object().get_data())")
+        proc = subprocess.run([py, "-c", check, str(path)], capture_output=True, timeout=120)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == PNG_ROW * 3
+    # images the writer cannot embed are refused with a clear message and no file
+    for data, msg in ((make_png(colour_type=6), "alpha"), (make_png(interlace=1), "interlaced"), (b"not an image at all, honestly", "not a JPEG or PNG")):
+        r = render_patched(tmp_path, {"meta": {"logo": {"data": b64(data), "type": "png"}}})
+        assert r["error"] and msg in r["error"], r["error"]
+        assert r["pdf"] == b""
+
+
+@pytest.mark.parametrize("layout_name", ["standard", "compact", "wide"])
+@pytest.mark.parametrize("size,orientation", [("A3", "landscape"), ("A4", "portrait")])
+def test_title_layouts(tmp_path, layout_name, size, orientation):
+    logo = {"data": b64(JPEG_1PX), "type": "jpeg", "width_mm": 20, "height_mm": 10}
+    r = render_patched(tmp_path, {"meta": {"title_layout": layout_name, "logo": logo}, "page": {"size": size, "orientation": orientation},
+                                  "options": {"show_progress_line": True}})
+    assert r["error"] is None, r["error"]
+    L = r["layout"]
+    assert L["title_layout"] == layout_name
+    a, b = PAGE_SIZES[size]
+    usable_w = (b if orientation == "landscape" else a) - 20
+    strip = 1.6 + math.ceil(11 / max(1, math.floor(usable_w / LEGEND_ITEM))) * LEGEND_LINE
+    inline = layout_name == "standard" and usable_w >= LEGEND_INLINE_MIN
+    assert L["title_block_mm"] == pytest.approx((8 if layout_name == "compact" else INFO) + (0 if inline else strip))
+    assert L["rows_per_page"] == max(1, math.floor(L["body_height_mm"] / ROW + 1e-9))
+    pdf = Pdf(r["pdf"])
+    pages = pdf.pages()
+    assert len(pages) == L["page_count"]
+    tb_top = L["page_h_mm"] - 10 - L["title_block_mm"]
+    for g, (p, page) in enumerate(zip(pages, pdf.page_texts())):
+        joined = " | ".join(page)
+        assert f"Page {g + 1} of {L['page_count']}" in page
+        assert PROJECT_NAME in page and "Critical activity" in page and "Progress line" in page
+        assert "15 Jun 26" in joined and "C03" in joined
+        if layout_name == "compact":
+            assert "DATES" in page and "ISSUE" in page and any(t.startswith("Data date 15 Jun 26") for t in page)
+            assert "PROGRAMME DATES" not in page
+            assert not any(t.endswith("…") for t in page if t.startswith(("Data date", "Rev ")))   # parts dropped, never cut
+            if usable_w >= 260:
+                assert "Forecast 23 Apr 27" in joined and "Printed 17 Nov 26" in joined
+        else:
+            assert "PROGRAMME DATES" in page and "J. Okafor (Planning)" in page and "17 Nov 26 09:30" in page
+        content = pdf.page_content(p)
+        assert len(re.findall(rb"cm /Im1 Do", content)) == 1
+        ops = content.split(b"\n")
+        assert ops.count(b"q") == ops.count(b"Q") >= 1
+        # every string inside the margins; the title block's labels and legend inside the block
+        for s, x, y, _pt in texts_with_positions(content, L["page_h_mm"]):
+            assert 10 <= x <= L["page_w_mm"] - 10 + 0.01 and 10 <= y <= L["page_h_mm"] - 10 + 0.01, (s, x, y)
+            if s in ("PROJECT", "ISSUE", "SHEET", "DATES", "PROGRAMME DATES", "Critical activity", "Progress line"):
+                assert tb_top <= y <= L["page_h_mm"] - 10, (s, y)
+
+
+def test_new_options_leave_defaults_unchanged(tmp_path):
+    # explicit defaults for every new option render byte-for-byte what the plain document renders
+    r = render_patched(tmp_path, {"options": {"fit_to_pages_tall": None, "page_break_before_groups": False, "selected_only": False, "legend_items": []},
+                                  "meta": {"title_layout": "standard", "logo": None}, "period_lines": []})
+    assert r["error"] is None
+    assert r["pdf"] == (tmp_path / "base.pdf").read_bytes()
+    L = r["layout"]
+    assert L["page_count"] == r["base"]["page_count"] and L["fits"] is True and L["fit_to_pages_tall"] is None and L["logo"] is False
+    assert L["bands"] == [{"first": 0, "last": 45}, {"first": 45, "last": 90}, {"first": 90, "last": 92}] and L["rows"] == 92
