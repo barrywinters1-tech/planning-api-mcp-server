@@ -16,6 +16,8 @@ The engine does the arithmetic; the shell is built around a planner's week.
 - **Bars that explain themselves.** Hover a bar for its dates, float, baseline variance, constraint, why it starts when it does (its driving predecessor) and what it holds up.
 - **Issue.** PDF for issue carries the briefing headline in the title block and, optionally, the briefing as a cover page.
 
+Design rules for the interface (tokens, roles, states, motion), written for people and agents alike, are in [`docs/design-conventions.md`](docs/design-conventions.md).
+
 ## What it does
 
 | Layer | File | What |

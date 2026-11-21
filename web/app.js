@@ -197,7 +197,7 @@ function paintChrome() {
 function moveThumb(instant) {
   const b = $(`#seg [data-screen="${S.screen}"]`), th = $('#segThumb'); if (!b || !b.offsetWidth) return;
   th.style.width = b.offsetWidth + 'px';
-  animate(th, { x: b.offsetLeft - 3 }, { response: .32, damping: .82, instant: instant || !th.style.transform });
+  animate(th, { x: b.offsetLeft - 3 }, { response: .32, damping: 1, instant: instant || !th.style.transform });
 }
 
 // ---------- motion: interruptible springs (damping ratio + response, as UIKit uses) ----------
@@ -320,7 +320,7 @@ function toast(msg, o = {}) {
   const t = $('#toast'); clearTimeout(t._t);
   t.innerHTML = `<span>${esc(msg)}</span>` + (o.undo && S.pid ? '<button type="button" id="tUndo">Undo</button>' : '') + (o.action ? `<button type="button" id="tAct">${esc(o.action.label)}</button>` : '');
   const fresh = t.hidden; t.hidden = false;
-  animate(t, { y: 0, opacity: 1, scale: 1 }, { from: fresh ? { y: 28, opacity: 0, scale: .98 } : undefined, response: .36, damping: .9 });
+  animate(t, { y: 0, opacity: 1, scale: 1 }, { from: fresh ? { y: 28, opacity: 0, scale: .98 } : undefined, response: .36, damping: 1 });
   if ($('#tUndo')) $('#tUndo').onclick = () => { hideToast(); act('/undo'); };
   if ($('#tAct')) $('#tAct').onclick = () => { hideToast(); o.action.fn(); };
   t._t = setTimeout(hideToast, o.ms || 2800);
