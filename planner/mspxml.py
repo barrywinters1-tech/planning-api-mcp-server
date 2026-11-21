@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 
 from .model import (Activity, ActivityType, Assignment, Calendar, Constraint, LinkType, Project,
                     Relationship, Resource, Status, WBSNode)
+from .xer import _num_text, udf_defs
 
 NS = "http://schemas.microsoft.com/project"
 ISO = "%Y-%m-%dT%H:%M:%S"
@@ -28,6 +29,63 @@ CSTR_IN = {
 CSTR_OUT = {v: k for k, v in CSTR_IN.items()}
 RES_IN = {"0": "material", "1": "labour", "2": "cost"}
 RES_OUT = {"material": "0", "labour": "1", "equipment": "1", "cost": "2"}
+# MS Project local task custom fields, by FieldID. MSPDI's <FieldID> is the PjCustomField enumeration value of the
+# field (ExtendedAttribute element, https://learn.microsoft.com/en-us/office-project/xml-data-interchange/extendedattribute-element:
+# "the FieldID 188743731 for the Information local custom field matches the pjCustomTaskText1 value"); the values below
+# are from that enumeration, https://learn.microsoft.com/en-us/office/vba/api/project.pjcustomfield (pjCustomTask*).
+# Written: Text1-30, Number1-20, Date1-10. Read: those, plus Start1-10 and Finish1-10 as dates and Cost1-10 as numbers.
+# Text1-10 and Start/Finish1-5 interleave (731 Text1, 732 Start1, 733 Finish1, 734 Text2 ...); Project 2003+ fields follow.
+_TEXT_IDS = [188743731, 188743734, 188743737, 188743740, 188743743, 188743746, 188743747, 188743748, 188743749, 188743750] + \
+    list(range(188743997, 188744017))                                                  # Text11-30
+_NUMBER_IDS = list(range(188743767, 188743772)) + list(range(188743982, 188743997))    # Number1-5, Number6-20
+_DATE_IDS = list(range(188743945, 188743955))                                          # Date1-10
+_START_IDS = [188743732, 188743735, 188743738, 188743741, 188743744, 188743962, 188743964, 188743966, 188743968, 188743970]
+_FINISH_IDS = [188743733, 188743736, 188743739, 188743742, 188743745, 188743963, 188743965, 188743967, 188743969, 188743971]
+_COST_IDS = [188743786, 188743787, 188743788] + list(range(188743938, 188743945))      # Cost1-3, Cost4-10
+FIELD_IDS = {"text": ("Text", _TEXT_IDS), "number": ("Number", _NUMBER_IDS), "date": ("Date", _DATE_IDS)}
+# FieldID (as text) -> (MS Project field name, our field type)
+CUSTOM_FIELD: dict[str, tuple[str, str]] = {}
+for _prefix, _ids, _typ in (("Text", _TEXT_IDS, "text"), ("Number", _NUMBER_IDS, "number"), ("Date", _DATE_IDS, "date"),
+                            ("Start", _START_IDS, "date"), ("Finish", _FINISH_IDS, "date"), ("Cost", _COST_IDS, "number")):
+    for _i, _fid in enumerate(_ids):
+        CUSTOM_FIELD[str(_fid)] = (f"{_prefix}{_i + 1}", _typ)
+CODE_COLOUR = "#7a8aa6"   # colour of a code value first seen in a file (the app's default)
+
+
+def custom_fields(project: Project) -> list[dict]:
+    """The custom fields an MSPDI export carries, each with its MS Project FieldID: the user-defined fields (text,
+    number, date; xer.udf_defs), then every activity code type as a text field named after it, so Asta and MS Project
+    users see the codes as columns. MS Project has 30 text, 20 number and 10 date local fields; the rest are dropped.
+    A code type that shares its name with a user field is not written twice (the field wins)."""
+    defs = [{**d, "code": False} for d in udf_defs(project)]
+    names = {d["name"] for d in defs}
+    for ct in list(project.code_types) + [ct for a in project.activities for ct in a.codes]:
+        if ct and ct not in names:
+            names.add(ct)
+            defs.append({"name": ct, "type": "text", "code": True})
+    used = {"text": 0, "number": 0, "date": 0}
+    out = []
+    for d in defs:
+        prefix, ids = FIELD_IDS[d["type"]]
+        n = used[d["type"]]
+        if n < len(ids):
+            used[d["type"]] = n + 1
+            out.append({**d, "field_id": ids[n], "field_name": f"{prefix}{n + 1}"})
+    return out
+
+
+def _field_value_text(typ: str, v) -> str | None:
+    """A field value as MSPDI writes it: numbers as plain decimals, dates as YYYY-MM-DDT00:00:00; None = not written."""
+    if v is None:
+        return None
+    if typ == "number":
+        try:
+            return _num_text(v)
+        except (TypeError, ValueError):
+            return None
+    if typ == "date":
+        return f"{str(v)[:10]}T00:00:00" if v else None
+    return str(v) if str(v) != "" else None
 
 
 def _q(tag: str) -> str:
@@ -76,7 +134,9 @@ def _fmt(dt: datetime | None) -> str:
 # --------------------------------------------------------------------------------------
 # read
 # --------------------------------------------------------------------------------------
-def read_mspdi(text: str) -> Project:
+def read_mspdi(text: str, code_types=None) -> Project:
+    """code_types: names of the activity code types the receiving programme already has. A text custom field with such
+    a name is read back as that code (write_mspdi writes each code type as one); every other field is a user field."""
     root = ET.fromstring(text)
     if root.tag != _q("Project"):
         # tolerate files without the namespace
@@ -85,13 +145,14 @@ def read_mspdi(text: str) -> Project:
         global NS
         saved, NS = NS, ""
         try:
-            return _read(root)
+            return _read(root, code_types)
         finally:
             NS = saved
-    return _read(root)
+    return _read(root, code_types)
 
 
-def _read(root: ET.Element) -> Project:
+def _read(root: ET.Element, code_types=None) -> Project:
+    code_types = set(code_types or ())
     minutes_per_day = float(_text(root, "MinutesPerDay", "480") or 480)
     hpd_default = minutes_per_day / 60
 
@@ -145,6 +206,22 @@ def _read(root: ET.Element) -> Project:
         default_calendar_id=default_cal, calendars=cals,
     )
 
+    # custom fields: <ExtendedAttributes> declares each FieldID with its alias (the name MS Project shows); a FieldID
+    # we know is typed by its range; a FieldID never declared is named by its MS Project field name (Text1 ...)
+    field_defs: dict[str, tuple[str, str]] = {}   # FieldID -> (name, type)
+    for ea in root.findall(f"{_q('ExtendedAttributes')}/{_q('ExtendedAttribute')}"):
+        fid = _text(ea, "FieldID")
+        known = CUSTOM_FIELD.get(fid)
+        if not known or fid in field_defs:
+            continue
+        name = _text(ea, "Alias") or _text(ea, "FieldName") or known[0]
+        if name not in {v[0] for v in field_defs.values()}:
+            field_defs[fid] = (name, known[1])
+    is_code = lambda name, typ: typ == "text" and name in code_types  # noqa: E731
+    for name, typ in field_defs.values():
+        if is_code(name, typ):
+            project.code_types.setdefault(name, {})
+
     uid_to_id: dict[str, str] = {}
     stack: list[tuple[int, str]] = []  # (outline level, wbs id)
     pending_links: list[tuple[str, ET.Element]] = []
@@ -195,6 +272,31 @@ def _read(root: ET.Element) -> Project:
             notes=_text(t, "Notes"),
         )
         project.activities.append(a)
+        for ea in t.findall(_q("ExtendedAttribute")):
+            fid = _text(ea, "FieldID")
+            d = field_defs.get(fid)
+            if d is None:
+                known = CUSTOM_FIELD.get(fid)
+                if not known or known[0] in {v[0] for v in field_defs.values()}:
+                    continue
+                d = field_defs[fid] = known
+            name, typ = d
+            raw = _text(ea, "Value")
+            if raw == "":
+                continue
+            if typ == "number":
+                try:
+                    val = float(raw)
+                except ValueError:
+                    continue
+            else:
+                val = raw[:10] if typ == "date" else raw
+            if is_code(name, typ):
+                a.codes[name] = val
+                project.code_types.setdefault(name, {}).setdefault(val, CODE_COLOUR)
+            else:
+                a.fields = a.fields or {}
+                a.fields[name] = val
         for link in t.findall(_q("PredecessorLink")):
             pending_links.append((uid, link))
 
@@ -225,6 +327,7 @@ def _read(root: ET.Element) -> Project:
             project.assignments.append(Assignment(activity_id=uid_to_id[tu], resource_id=res_by_uid[ru].id,
                                                   units=parse_duration_hours(_text(x, "Work")),
                                                   cost=float(_text(x, "Cost", "0") or 0)))
+    project.user_fields = [{"name": n, "type": ty} for n, ty in field_defs.values() if not is_code(n, ty)] or None
     project.ensure_default_calendar()
     return project
 
@@ -273,6 +376,14 @@ def write_mspdi(project: Project) -> str:
     _sub(root, "DaysPerMonth", 20)
     _sub(root, "DurationFormat", 7)
     _sub(root, "NewTasksAreManual", 0)
+
+    # custom fields (user fields, then code types as text fields) are declared before the calendars, as the schema orders
+    fields = custom_fields(project)
+    if fields:
+        eas = _sub(root, "ExtendedAttributes")
+        for d in fields:
+            ea = _sub(eas, "ExtendedAttribute")
+            _sub(ea, "FieldID", d["field_id"]); _sub(ea, "FieldName", d["field_name"]); _sub(ea, "Alias", d["name"])
 
     cals = _sub(root, "Calendars")
     for cid, cal in project.calendars.items():
@@ -378,6 +489,12 @@ def write_mspdi(project: Project) -> str:
             _sub(el, "ActualFinish", _fmt(a.actual_finish))
         if a.notes:
             _sub(el, "Notes", a.notes)
+        for d in fields:   # <ExtendedAttribute> sits between Notes and Baseline in the Task schema
+            v = a.codes.get(d["name"]) if d["code"] else (a.fields or {}).get(d["name"])
+            txt = _field_value_text(d["type"], v)
+            if txt is not None:
+                ea = _sub(el, "ExtendedAttribute")
+                _sub(ea, "FieldID", d["field_id"]); _sub(ea, "Value", txt)
         if a.baseline_start or a.baseline_finish:
             b = _sub(el, "Baseline")
             _sub(b, "Number", 0)

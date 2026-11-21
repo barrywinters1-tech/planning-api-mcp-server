@@ -95,10 +95,25 @@ function fidelityReport(project, fmt) {
   if (bl.length) add(blQ.length >= bl.length, `${blQ.length} of ${bl.length} baseline dates`, blQ.length < bl.length ? (fmt === 'xer' ? 'XER carries the current schedule only; send the baseline as its own XER, or use MS Project XML.' : 'Some baseline dates were not carried.') : '');
   const nRes = (p.resources || []).length; if (nRes) add((q.resources || []).length >= nRes, `${(q.resources || []).length} of ${nRes} resources, ${(q.assignments || []).length} of ${(p.assignments || []).length} assignments`);
   const codeVals = x => x.activities.reduce((t, a) => t + Object.keys(a.codes || {}).length, 0);
-  if (codeVals(p)) add(codeVals(q) >= codeVals(p), `${codeVals(q)} of ${codeVals(p)} activity code values`, codeVals(q) < codeVals(p) ? (fmt === 'xml' ? 'MS Project XML has no activity codes; they are left out.' : '') : '');
+  const filled = v => v != null && v !== '';
+  if (codeVals(p)) {
+    if (fmt === 'xml') {
+      // MSPDI has no activity codes: writeMspdi writes each code type as a text custom field named after it, which the
+      // plain reader gives back as a text field; count the code values that arrived that way
+      const carried = p.activities.reduce((t, a) => { const w = twin(a); return t + Object.entries(a.codes || {}).filter(([k, v]) => w && w.fields && w.fields[k] === v).length; }, 0);
+      add(carried >= codeVals(p), `${carried} of ${codeVals(p)} activity code values carried as text fields`,
+        'MS Project XML has no activity codes, so each code type goes out as a text custom field (Text1-30) named after it: a column in MS Project or Asta. Imported into a programme that already has a code type of that name, it comes back as that code.'
+        + (carried < codeVals(p) ? ' MS Project has 30 text fields, shared with the text custom fields; code types beyond that are left out.' : ''));
+    } else add(codeVals(q) >= codeVals(p), `${codeVals(q)} of ${codeVals(p)} activity code values`);
+  }
   const notes = p.activities.filter(a => a.notes).length; if (notes) add(q.activities.filter(a => a.notes).length >= notes, `${q.activities.filter(a => a.notes).length} of ${notes} activity notes`);
-  const fieldVals = x => x.activities.reduce((t, a) => t + Object.values(a.fields || {}).filter(v => v != null && v !== '').length, 0);
-  if (fieldVals(p)) add(fieldVals(q) >= fieldVals(p), `${fieldVals(q)} of ${fieldVals(p)} custom field values`, fieldVals(q) < fieldVals(p) ? (fmt === 'xml' ? 'This MS Project XML export leaves custom fields out. Use XER, or send the coding sheet (CSV) alongside.' : 'Values that do not fit the field type (text in a number field) are left out.') : '');
+  const fieldVals = x => x.activities.reduce((t, a) => t + Object.values(a.fields || {}).filter(filled).length, 0);
+  if (fieldVals(p)) {
+    const fieldKept = p.activities.reduce((t, a) => { const w = twin(a); return t + Object.entries(a.fields || {}).filter(([k, v]) => filled(v) && w && w.fields && filled(w.fields[k])).length; }, 0);
+    add(fieldKept >= fieldVals(p), `${fieldKept} of ${fieldVals(p)} custom field values`, fieldKept < fieldVals(p)
+      ? (fmt === 'xml' ? 'Carried as MS Project custom fields (Text1-30, Number1-20, Date1-10, shared with code types written as text). Fields beyond those limits, and values that do not fit the field type (text in a number field), are left out.'
+        : 'Values that do not fit the field type (text in a number field) are left out.') : '');
+  }
   if ((p.annotations || []).length) add(false, `${p.annotations.length} chart note${p.annotations.length > 1 ? 's' : ''} not carried`, 'Notes on the chart print on the PDF but have no place in this format.');
   if ((p.progress_periods || []).length) add(false, `${p.progress_periods.length} closed progress period${p.progress_periods.length > 1 ? 's' : ''} not carried`, 'Period records and their progress lines stay in this programme; the file carries the current progress only.');
   if (p.must_finish_by) add(!!q.must_finish_by, q.must_finish_by ? 'Deadline (must finish by) carried' : 'Deadline (must finish by) not carried', q.must_finish_by ? '' : 'This format has no field for it. Add it as a constraint on the completion milestone if the other tool must see it.');

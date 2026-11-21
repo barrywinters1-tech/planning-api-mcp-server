@@ -30,8 +30,8 @@ Design rules for the interface (tokens, roles, states, motion), written for peop
 | Repairer | `planner/repair.py` | Turns failing checks into patch operations: closes open ends, removes leads, softens hard constraints, splits over-long activities, closes dangling logic. Negative float is explained, not silently compressed |
 | Commands | `planner/commands.py` | `add 2 weeks to A1240`, `link A1010 -> A1020 SS+2d`, `finish by 1 Nov 2026`, `progress A1010 50% as of 20 Apr 2026`, `fix` … type `help` |
 | Patches | `planner/plan.py` | `DraftPlan` (neutral programme description) and `Patch` / `apply_patch` (small auditable edits) used by everything above |
-| P6 | `planner/xer.py`, `planner/pmxml.py` | XER read and write (including the `clndr_data` blob); P6 XML read |
-| Asta / MS Project | `planner/mspxml.py` | MSPDI XML read and write: outline WBS, calendars, links, constraints, progress, baseline, resources |
+| P6 | `planner/xer.py`, `planner/pmxml.py` | XER read and write (including the `clndr_data` blob), with a target P6 version for the header (`write_xer(p, version="24")`: 15.2, 19, 21, 24 ...; only the ERMHDR version differs, every table written exists unchanged since P6 8); P6 XML read |
+| Asta / MS Project | `planner/mspxml.py` | MSPDI XML read and write: outline WBS, calendars, links, constraints, deadlines, progress, baseline, resources, custom fields (`ExtendedAttributes` with the standard Text1-30 / Number1-20 / Date1-10 FieldIDs, aliases as names; Start, Finish and Cost fields read too) and activity codes written as a text field per code type, read back as codes when the receiving programme has that code type |
 | Anything else | `planner/mpxj_bridge.py` | Optional. With `pip install mpxj JPype1` and Java 11+, reads Asta `.pp`, MS Project `.mpp`, P3, SureTrak and more through [MPXJ](https://www.mpxj.org) |
 | Levelling, baselines | `planner/levelling.py` | Serial-method resource levelling against `max_units_per_day`; named baselines |
 | Analysis | `planner/analysis.py` | Resource histograms, cost S-curve, earned value (BCWS, BCWP, ACWP, SPI, CPI), baseline variance |

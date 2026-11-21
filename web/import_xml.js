@@ -1238,7 +1238,25 @@ const MSP_ELAPSED_LAG = new Set(['4', '6', '8', '10', '12', '20', '36', '38', '4
 const MSP_CSTR = { 0: 'none', 1: 'as_late_as_possible', 2: 'must_start_on', 3: 'must_finish_on', 4: 'start_on_or_after', 5: 'start_on_or_before',
   6: 'finish_on_or_after', 7: 'finish_on_or_before' };
 const MSP_RES = { 0: 'material', 1: 'labour', 2: 'cost' };
-const RE_DURATION = /^P(?:(\p{Nd}+)D)?T?(?:(\p{Nd}+)H)?(?:(\p{Nd}+)M)?(?:(\p{Nd}+(?:\.\p{Nd}+)?)S)?/u;
+// MS Project local task custom fields by FieldID (mspxml.CUSTOM_FIELD; the PjCustomField enumeration values, sources in
+// planner/mspxml.py): Text1-30, Number1-20, Date1-10, and Start/Finish1-10 as dates, Cost1-10 as numbers
+const MSP_RANGE = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
+const MSP_CUSTOM_FIELD = new Map();
+for (const [prefix, ids, typ] of [
+  ['Text', [188743731, 188743734, 188743737, 188743740, 188743743, 188743746, 188743747, 188743748, 188743749, 188743750].concat(MSP_RANGE(188743997, 188744017)), 'text'],
+  ['Number', MSP_RANGE(188743767, 188743772).concat(MSP_RANGE(188743982, 188743997)), 'number'],
+  ['Date', MSP_RANGE(188743945, 188743955), 'date'],
+  ['Start', [188743732, 188743735, 188743738, 188743741, 188743744, 188743962, 188743964, 188743966, 188743968, 188743970], 'date'],
+  ['Finish', [188743733, 188743736, 188743739, 188743742, 188743745, 188743963, 188743965, 188743967, 188743969, 188743971], 'date'],
+  ['Cost', [188743786, 188743787, 188743788].concat(MSP_RANGE(188743938, 188743945)), 'number']]) {
+  ids.forEach((fid, i) => MSP_CUSTOM_FIELD.set(String(fid), [prefix + (i + 1), typ]));
+}
+const MSP_CODE_COLOUR = '#7a8aa6';                   // mspxml.CODE_COLOUR
+function put(o, k, v) {                               // d[k] = v for any string key
+  if (k === '__proto__') Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
+  else o[k] = v;
+}
+const RE_DURATION =/^P(?:(\p{Nd}+)D)?T?(?:(\p{Nd}+)H)?(?:(\p{Nd}+)M)?(?:(\p{Nd}+(?:\.\p{Nd}+)?)S)?/u;
 function parseDurationHours(s) {                     // PT16H30M0S -> 16.5
   const m = (s || '').match(RE_DURATION);
   if (!m) return 0;
@@ -1251,15 +1269,18 @@ function mdt(s) {
   return strptime19(pySlice(s, 19)) || strptime10(pySlice(s, 10));
 }
 
-function readMspdi(text) {
+// codeTypes: names of the activity code types the receiving programme already has; a text custom field with such a
+// name is read back as that code (writeMspdi writes each code type as one), every other field is a user field
+function readMspdi(text, codeTypes) {
   let root = parseXml(text);
   if (root.tag !== `{${MSP_NS}}Project`) {             // tolerate files without the namespace
     root = parseXml(String(text).replace(/xmlns="[^"]*"/, ''));
-    return readMsp(root, '');
+    return readMsp(root, '', codeTypes);
   }
-  return readMsp(root, MSP_NS);
+  return readMsp(root, MSP_NS, codeTypes);
 }
-function readMsp(root, NS) {
+function readMsp(root, NS, codeTypes) {
+  codeTypes = new Set(codeTypes || []);
   const q = t => `{${NS}}${t}`;
   const find = (el, t) => { if (!el) return null; const w = q(t); for (const c of el.children) if (tagMatches(c.tag, w)) return c; return null; };
   const findall = (el, ...path) => {
@@ -1316,6 +1337,19 @@ function readMsp(root, NS) {
     default_calendar_id: defaultCal,
   });
 
+  // custom fields: <ExtendedAttributes> declares each FieldID with its alias; a known FieldID is typed by its range;
+  // one never declared is named by its MS Project field name (Text1 ...). Port of the same block in mspxml._read.
+  const fieldDefs = new Map();                        // FieldID -> [name, type]
+  const defNames = () => new Set([...fieldDefs.values()].map(v => v[0]));
+  for (const ea of findall(root, 'ExtendedAttributes', 'ExtendedAttribute')) {
+    const fid = text(ea, 'FieldID'), known = MSP_CUSTOM_FIELD.get(fid);
+    if (!known || fieldDefs.has(fid)) continue;
+    const name = text(ea, 'Alias') || text(ea, 'FieldName') || known[0];
+    if (!defNames().has(name)) fieldDefs.set(fid, [name, known[1]]);
+  }
+  const isCode = (name, typ) => typ === 'text' && codeTypes.has(name);
+  for (const [name, typ] of fieldDefs.values()) if (isCode(name, typ) && !has(project.code_types, name)) put(project.code_types, name, {});
+
   const uidToId = new Map(), stack = [], pending = [], ids = new Set();
   for (const t of findall(root, 'Tasks', 'Task')) {
     const uid = text(t, 'UID'), name = text(t, 'Name');
@@ -1358,6 +1392,28 @@ function readMsp(root, NS) {
       notes: text(t, 'Notes'),
     }));
     ids.add(aid);
+    const a = project.activities[project.activities.length - 1];
+    for (const ea of findall(t, 'ExtendedAttribute')) {
+      const fid = text(ea, 'FieldID');
+      let d = fieldDefs.get(fid);
+      if (!d) {
+        const known = MSP_CUSTOM_FIELD.get(fid);
+        if (!known || defNames().has(known[0])) continue;
+        d = known; fieldDefs.set(fid, known);
+      }
+      const [fname, typ] = d, raw = text(ea, 'Value');
+      if (raw === '') continue;
+      let val;
+      if (typ === 'number') { try { val = pyFloat(raw); } catch (e) { continue; } } else val = typ === 'date' ? pySlice(raw, 10) : raw;
+      if (isCode(fname, typ)) {
+        put(a.codes, fname, val);
+        if (!has(project.code_types, fname)) put(project.code_types, fname, {});
+        if (!has(project.code_types[fname], val)) put(project.code_types[fname], val, MSP_CODE_COLOUR);
+      } else {
+        if (!a.fields) a.fields = {};
+        put(a.fields, fname, val);
+      }
+    }
     for (const link of findall(t, 'PredecessorLink')) pending.push([uid, link]);
   }
   for (const [succUid, link] of pending) {
@@ -1384,6 +1440,8 @@ function readMsp(root, NS) {
       project.assignments.push(mkAssignment(uidToId.get(tu), resByUid.get(ru).id, parseDurationHours(text(x, 'Work')), pyFloat(text(x, 'Cost', '0') || '0')));
     }
   }
+  const userFields = [...fieldDefs.values()].filter(([n, ty]) => !isCode(n, ty)).map(([name, type]) => ({ name, type }));
+  if (userFields.length) project.user_fields = userFields;
   return finishProject(project, cals);
 }
 
