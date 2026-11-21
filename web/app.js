@@ -34,6 +34,11 @@ const ALL_COLS = {
   tf: { t: 'TF', w: 48, num: 1, get: a => a.total_float_hours == null ? '' : fmt1(daysOf(a, a.total_float_hours)) + 'd', cls: a => a.total_float_hours < 0 ? 'crit' : '' },
   ff: { t: 'FF', w: 48, num: 1, get: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)) + 'd' },
   fpath: { t: 'Path', w: 46, num: 1, get: a => a.float_path == null ? '' : String(a.float_path), cls: a => a.float_path === 1 ? 'crit' : '' },
+  // progress columns (MS Project tracking table, P6 status tab): original, actual-to-date and remaining durations, and a status word
+  odur: { t: 'Orig dur', w: 62, num: 1, get: a => a.type !== 'task' ? '' : fmt1(origDays(a)) + 'd' },
+  adur: { t: 'Act dur', w: 60, num: 1, get: a => a.type !== 'task' || !a.actual_start ? '' : fmt1(actualDays(a)) + 'd' },
+  rem: { t: 'Rem', w: 52, num: 1, get: a => a.type !== 'task' ? '' : a.status === 'complete' ? '0d' : fmt1(daysOf(a, a.remaining_hours == null ? a.duration_hours : a.remaining_hours)) + 'd', set: (a, v) => { if (a.type !== 'task' || a.status === 'complete') return; const d = parseDays(v); if (!(d >= 0)) return; if (a.status === 'not_started') { a.duration_hours = Math.max(hpd(a) / 2, d * hpd(a)); return; } a.remaining_hours = d * hpd(a); a.percent_complete = a.duration_hours ? Math.max(0, Math.min(99, Math.round(100 * (1 - a.remaining_hours / a.duration_hours)))) : 0; } },
+  status: { t: 'Status', w: 86, get: a => a.status === 'complete' ? 'Complete' : a.status === 'in_progress' ? (a.suspend_date && !(a.resume_date && a.resume_date <= (S.project.data_date || '')) ? 'Suspended' : 'In progress') : 'Not started', cls: a => a.status === 'in_progress' ? 'warn' : '' },
   preds: { t: 'Predecessors', w: 150, get: a => predsText(a), set: (a, v) => setPreds(a, v) },
   succs: { t: 'Successors', w: 150, get: a => succsText(a) },
   pct: { t: '%', w: 42, num: 1, get: a => a.status === 'not_started' ? '' : Math.round(a.percent_complete) + '%', set: (a, v) => setProgress(a, parseFloat(v) || 0) },
@@ -503,8 +508,10 @@ function goToActivity(id) {
   openInspector(id);
 }
 // ---------- CSV export (opens in Excel with real dates and numbers) ----------
+function origDays(a) { const b = S.project.baselines && S.project.baselines.length ? (S.project.baselines[S.project.baselines.length - 1].dates || {})[a.id] : null; return b && b.duration_hours != null ? daysOf(a, b.duration_hours) : daysOf(a, a.duration_hours); }
+function actualDays(a) { if (!a.actual_start) return 0; const end = a.actual_finish ? new Date(a.actual_finish) : new Date(S.project.data_date || S.project.start); const st = new Date(a.actual_start); if (end <= st) return 0; return workingDaysBetween(calOf(a), st, end) + (isWorking(calOf(a), st) && end.toDateString() !== st.toDateString() ? 0 : 0); }
 const CSV_DATE = { start: a => a.actual_start || a.early_start, finish: a => a.actual_finish || a.early_finish, astart: a => a.actual_start, afinish: a => a.actual_finish, bstart: a => a.baseline_start, bfinish: a => a.baseline_finish, ls: a => a.late_start, lf: a => a.late_finish };
-const CSV_NUM = { dur: a => a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) : 0, tf: a => a.total_float_hours == null ? '' : fmt1(daysOf(a, a.total_float_hours)), ff: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)), pct: a => a.status === 'complete' ? 100 : Math.round(a.percent_complete), delay: a => fmt1(daysOf(a, a.level_delay_hours || 0)), drag: a => S.dragMap && S.dragMap[a.id] != null ? S.dragMap[a.id] : '' };
+const CSV_NUM = { odur: a => a.type === 'task' ? fmt1(origDays(a)) : 0, adur: a => a.actual_start && a.type === 'task' ? fmt1(actualDays(a)) : 0, rem: a => a.type !== 'task' ? 0 : a.status === 'complete' ? 0 : fmt1(daysOf(a, a.remaining_hours == null ? a.duration_hours : a.remaining_hours)), dur: a => a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) : 0, tf: a => a.total_float_hours == null ? '' : fmt1(daysOf(a, a.total_float_hours)), ff: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)), pct: a => a.status === 'complete' ? 100 : Math.round(a.percent_complete), delay: a => fmt1(daysOf(a, a.level_delay_hours || 0)), drag: a => S.dragMap && S.dragMap[a.id] != null ? S.dragMap[a.id] : '' };
 function csvText() {
   // numbers pass through; text that a spreadsheet would run as a formula is neutralised
   const q = v => { if (typeof v === 'number') return String(v); v = v == null ? '' : String(v); const f = /^[=+\-@\t\r]/.test(v); return f || /[",\n\r]/.test(v) ? '"' + (f ? "'" : '') + v.replace(/"/g, '""') + '"' : v; };
@@ -824,7 +831,7 @@ function chart(rs, t0, t1, W, H, bandH) {
   if (S.view.notes !== false) (p.annotations || []).forEach(n => {          // notes pinned to a date (and a row) on the chart
     const i = n.activity_id ? rs.findIndex(r => r.act && r.act.id === n.activity_id) : -1; if (n.activity_id && i < 0) return;
     const ax = x(n.date), ay = i >= 0 ? i * RH + 3 : 4, w = Math.min(220, 14 + n.text.length * 6.2);
-    s += `<g class="hit note" data-note="${esc(n.id)}" style="cursor:pointer"><line x1="${ax}" y1="${ay}" x2="${ax}" y2="${ay + RH - 6}" stroke="var(--warn)" stroke-width="2"/><rect x="${ax + 3}" y="${ay}" width="${w}" height="16" rx="4" fill="var(--warn)" opacity=".92"/><text x="${ax + 9}" y="${ay + 12}" fill="#111" font-size="11" font-weight="600">${esc(n.text.length > 34 ? n.text.slice(0, 33) + '…' : n.text)}</text><title>${esc(n.text)}</title></g>`;
+    s += `<g class="hit note" data-note="${esc(n.id)}" style="cursor:pointer"><line x1="${ax}" y1="${ay}" x2="${ax}" y2="${ay + RH - 6}" stroke="var(--warn)" stroke-width="2"/><rect x="${ax + 3}" y="${ay}" width="${w + (n.photo ? 14 : 0)}" height="16" rx="4" fill="var(--warn)" opacity=".92"/><text x="${ax + 9}" y="${ay + 12}" fill="#111" font-size="11" font-weight="600">${n.photo ? '▣ ' : ''}${esc(n.text.length > 34 ? n.text.slice(0, 33) + '…' : n.text)}</text><title>${esc(n.text)}${n.photo ? ' (photo attached)' : ''}</title></g>`;
   });
   if (S.view.progress && progressPts.length) {
     let d = `M${x(dd)},0`; progressPts.forEach(([px_, py]) => { d += ` L${px_},${py}`; }); d += ` L${x(dd)},${H - bandH}`;
@@ -1056,9 +1063,12 @@ function shadeDialog(b, date) {
 }
 function noteDialog(n, date, actId) {
   const isNew = !n; n = n || { id: 'N' + Date.now().toString(36), date: date || S.project.data_date || S.project.start, activity_id: actId || null, text: '' };
-  const { m } = modal(isNew ? 'Note on the chart' : 'Edit note', `<label>Note<textarea name="t" rows="3" style="width:100%" placeholder="e.g. Road closure booked; crane on site">${esc(n.text)}</textarea></label><div class="row2"><label>Date<input type="date" name="d" value="${String(n.date).slice(0, 10)}"></label><label>Row<select name="a"><option value="">Top of the chart</option>${S.project.activities.map(a => `<option value="${esc(a.id)}" ${a.id === n.activity_id ? 'selected' : ''}>${esc(a.id)} ${esc(a.name.slice(0, 40))}</option>`).join('')}</select></label></div>${isNew ? '' : '<button type="button" class="btn" id="nDel">Delete note</button>'}<p class="hint">Notes print as callouts on the PDF.</p>`,
+  const { m } = modal(isNew ? 'Note on the chart' : 'Edit note', `<label>Note<textarea name="t" rows="3" style="width:100%" placeholder="e.g. Road closure booked; crane on site">${esc(n.text)}</textarea></label><div class="row2"><label>Date<input type="date" name="d" value="${String(n.date).slice(0, 10)}"></label><label>Row<select name="a"><option value="">Top of the chart</option>${S.project.activities.map(a => `<option value="${esc(a.id)}" ${a.id === n.activity_id ? 'selected' : ''}>${esc(a.id)} ${esc(a.name.slice(0, 40))}</option>`).join('')}</select></label></div><label>Photo <span class="hint">(site record; kept with the programme, shrunk to 900px)</span><input type="file" name="ph" accept="image/*" capture="environment"></label>${n.photo ? `<div class="note-photo"><img src="${n.photo}" alt="Photo on this note"><button type="button" class="btn" id="nPhDel">Remove photo</button></div>` : ''}${isNew ? '' : '<button type="button" class="btn" id="nDel">Delete note</button>'}<p class="hint">Notes print as callouts on the PDF; photos stay in the app.</p>`,
     mm => { const t = mm.querySelector('[name=t]').value.trim(); if (!t) return false; const d = mm.querySelector('[name=d]').value, a = mm.querySelector('[name=a]').value || null;
-      mutate(p => { p.annotations = (p.annotations || []).filter(x => x.id !== n.id).concat([{ id: n.id, date: (d || String(n.date).slice(0, 10)) + 'T12:00:00', activity_id: a, text: t }]); }, isNew ? 'Note added' : 'Note updated'); }, 'Save');
+      const photo = m._photo === null ? null : (m._photo || n.photo || null);
+      mutate(p => { p.annotations = (p.annotations || []).filter(x => x.id !== n.id).concat([Object.assign({ id: n.id, date: (d || String(n.date).slice(0, 10)) + 'T12:00:00', activity_id: a, text: t }, photo ? { photo } : {})]); }, isNew ? 'Note added' : 'Note updated'); }, 'Save');
+  m.querySelector('[name=ph]').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { m._photo = await shrinkImage(f, 900); toast('Photo attached: save the note to keep it'); } catch (err) { toast('Could not read that image'); } };
+  const phDel = m.querySelector('#nPhDel'); if (phDel) phDel.onclick = () => { m._photo = null; phDel.parentElement.remove(); };
   const del = m.querySelector('#nDel'); if (del) del.onclick = () => { modalClose(); mutate(p => { p.annotations = (p.annotations || []).filter(x => x.id !== n.id); }, 'Note deleted'); };
 }
 // ---------- PDF for issue: the programme as shown (filters, grouping, columns), on A4-A1 with a title block ----------
@@ -1252,10 +1262,11 @@ function siteList(p) {
   return p.activities.filter(a => (a.type === 'task' || a.type.endsWith('milestone')) && a.status !== 'complete' && (a.status === 'in_progress' || (a.early_start && +new Date(a.early_start) <= horizon) || (a.baseline_start && +new Date(a.baseline_start) <= +dd)))
     .sort((a, b) => (b.status === 'in_progress') - (a.status === 'in_progress') || (a.actual_start || a.early_start || '').localeCompare(b.actual_start || b.early_start || '')).slice(0, 60);
 }
-function siteUpdateSheet() {
-  const p = S.project; if (!p) return; const acts = siteList(p);
+function siteUpdateSheet(staged, fromFile) {
+  const p = S.project; if (!p) return; let acts = siteList(p);
+  if (staged) Object.keys(staged).forEach(id => { if (!acts.some(a => a.id === id) && byId(id)) acts.push(byId(id)); });   // a returned sheet may cover more than the two-week window
   const asOf0 = (p.data_date || p.start).slice(0, 10), today = iso(new Date()).slice(0, 10);
-  const U = {};       // staged updates by id: {st:'n'|'p'|'c', sdate, fdate, pct, left, mode}
+  const U = Object.assign({}, staged || {});       // staged updates by id: {st:'n'|'p'|'c', sdate, fdate, pct, left, mode, comment}
   const init = a => ({ st: a.status === 'in_progress' ? 'p' : 'n', sdate: a.actual_start ? a.actual_start.slice(0, 10) : '', fdate: '', pct: Math.round(a.percent_complete || 0), left: +fmt1(daysOf(a, a.remaining_hours != null ? a.remaining_hours : a.duration_hours)), mode: 'pct' });
   const ms_ = a => a.type !== 'task';
   const card = a => { const u = U[a.id] || init(a), o = init(a), ch = !!U[a.id]; const behind = a.status === 'not_started' && a.baseline_start && a.baseline_start.slice(0, 10) < asOf0;
@@ -1266,8 +1277,10 @@ function siteUpdateSheet() {
         <div class="su-row"><span class="su-l">or days left</span><div class="stepper"><button type="button" data-left="-1" aria-label="One day fewer">−</button><output>${fmt1(u.left)}</output><button type="button" data-left="1" aria-label="One day more">+</button></div><span class="hint">${u.mode === 'left' ? `about ${u.pct}% done` : ''}</span></div>` : ''}
       ${(u.st === 'p' && o.st !== 'p') || (u.st === 'c' && !a.actual_start && !ms_(a)) ? `<label class="su-row"><span class="su-l">Started on</span><input type="date" data-d="sdate" value="${u.sdate || ''}"></label>` : ''}
       ${u.st === 'c' ? `<label class="su-row"><span class="su-l">${ms_(a) ? 'Achieved on' : 'Finished on'}</span><input type="date" data-d="fdate" value="${u.fdate || ''}"></label>` : ''}
+      ${u.comment ? `<div class="su-row"><span class="su-l">Site says</span><span class="hint">${esc(u.comment)}</span></div>` : ''}
     </div>`; };
-  const { m } = modal('Site update', `<p class="hint" style="margin-top:-4px">Work in progress, and anything due in the next two weeks. Tap what happened. A start left blank is taken as planned; a finish left blank is the as-of date.</p>
+  const { m } = modal('Site update', `<p class="hint" style="margin-top:-4px">${fromFile ? `Read from <b>${esc(fromFile)}</b>: ${Object.keys(U).length} change${Object.keys(U).length === 1 ? '' : 's'} staged. Check them, then save.` : 'Work in progress, and anything due in the next two weeks. Tap what happened. A start left blank is taken as planned; a finish left blank is the as-of date.'}</p>
+    <div class="bar-row" style="margin:0 0 8px"><button type="button" class="btn" id="suCsv">Lookahead sheet (CSV)</button><label class="btn" style="cursor:pointer">Import returned sheet<input type="file" id="suImp" accept=".csv,text/csv" hidden></label></div>
     <div class="su-asof"><label>As of<input type="date" id="suAsOf" value="${asOf0}"></label>${today > asOf0 ? `<button type="button" class="btn" id="suToday">Today</button>` : ''}<span class="hint" id="suCount"></span></div>
     <div id="suList">${acts.length ? '' : '<div class="empty"><b>Nothing in hand</b>No work is in progress or due in the next two weeks.</div>'}</div>
     <label class="sw" style="margin-top:10px"><span>Close the progress period after saving</span><input type="checkbox" id="suClose"><i></i></label>`,
@@ -1276,17 +1289,18 @@ function siteUpdateSheet() {
       if (!ids.length) { toast('Nothing changed'); return false; }
       const bad = ids.find(id => [U[id].sdate, U[id].fdate].some(d => d && d > asOf)); if (bad) { toast(`${bad}: a date is after the as-of date ${fmtD(asOf)}`, { ms: 4200 }); return false; }
       const bad2 = ids.find(id => U[id].sdate && U[id].fdate && U[id].fdate < U[id].sdate); if (bad2) { toast(`${bad2}: finishes before it starts`, { ms: 4200 }); return false; }
-      ids.forEach(id => { const a = byId(id); if (a) applySiteUpdate(a, U[id], asOf); });
+      ids.forEach(id => { const a = byId(id); if (a) { applySiteUpdate(a, U[id], asOf); if (U[id].comment) a.notes = (a.notes ? a.notes + '\n' : '') + fmtD(asOf) + ' site: ' + U[id].comment; } });
       S.project.data_date = asOf + 'T08:00:00';
       const closeAfter = m.querySelector('#suClose').checked;
       await save(`Site update: ${ids.length} activit${ids.length === 1 ? 'y' : 'ies'} as of ${fmtD(asOf)}`);
       if (closeAfter) await closePeriod(nextPeriod(S.project), true);
     }, 'Save update', { wide: true });
   m.classList.add('su-sheet');
+  m.querySelector('#suCsv').onclick = exportLookaheadCsv; m.querySelector('#suImp').onchange = e => { const f = e.target.files[0]; if (f) { modalClose(); importLookaheadFile(f); } };
   const list = m.querySelector('#suList'), byIdLocal = Object.fromEntries(acts.map(a => [a.id, a]));
   const count = () => { const n = Object.keys(U).length; m.querySelector('#suCount').textContent = n ? `${n} change${n === 1 ? '' : 's'}` : ''; };
   const paint = id => { const a = byIdLocal[id], el = list.querySelector(`.su[data-id="${CSS.escape(id)}"]`); const t = document.createElement('div'); t.innerHTML = card(a); el.replaceWith(t.firstElementChild); count(); };
-  if (acts.length) list.innerHTML = acts.map(card).join('');
+  if (acts.length) list.innerHTML = acts.map(card).join(''); count();
   const touch = (a, f) => { const u = U[a.id] || init(a); f(u); const o = init(a); if (u.st === o.st && u.pct === o.pct && u.left === o.left && !u.fdate && u.sdate === o.sdate) delete U[a.id]; else U[a.id] = u; paint(a.id); };
   list.addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return; const a = byIdLocal[b.closest('.su').dataset.id]; if (!a) return;
@@ -1716,6 +1730,86 @@ function collapseComplete() {
   let n = 0; S.project.wbs.forEach(w => { const acts = wbsActs(w.id); if (acts.length && acts.every(a => a.status === 'complete') && !S.collapsed.has(w.id)) { S.collapsed.add(w.id); n++; } });
   render(); toast(n ? `${n} completed summar${n === 1 ? 'y' : 'ies'} collapsed` : 'No summary is fully complete yet');
 }
+// ---------- paste from Excel (tab-separated rows into the grid, starting at the active cell) ----------
+document.addEventListener('paste', e => {
+  if (!S.project || S.screen !== 'plan' || S.editing) return; const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName) || (document.activeElement && document.activeElement.isContentEditable);
+  if (typing || !$('#modalBack').hidden) return;
+  const text = (e.clipboardData || window.clipboardData).getData('text/plain') || '';
+  clearTimeout(S.pasteT); S.pasteT = null;
+  if (/\t/.test(text) || /\r?\n.+\r?\n/.test(text.trim())) { e.preventDefault(); pasteTable(text); } else pasteClip();
+});
+function pasteTable(text) {
+  const rows = text.replace(/\r/g, '').split('\n').filter(l => l.trim() !== '').map(l => l.split('\t'));
+  if (!rows.length) return;
+  const cols = S.cols.slice(Math.max(0, S.cols.indexOf(S.activeCol || 'name'))).filter(k => ALL_COLS[k] && (ALL_COLS[k].set || ALL_COLS[k].setOpt));
+  if (!cols.length) return toast('Put the active cell on a column that can be edited, then paste');
+  const headerish = rows.length > 1 && rows[0].every(c => !/\d/.test(c)) && rows[0].some(c => cols.some(k => ALL_COLS[k].t.toLowerCase() === c.trim().toLowerCase()));
+  const body = headerish ? rows.slice(1) : rows;
+  const keys = S.rowsCache.map(rowKey); let i = keys.indexOf(S.active); if (i < 0) i = keys.length - 1;
+  let updated = 0, added = 0;
+  mutate(p => {
+    let anchor = S.rowsCache[i];
+    body.forEach((cells, j) => {
+      let r = S.rowsCache[i + j]; let a = r && r.act;
+      if (!a || j > 0 && r && !r.act) {   // past the end, or onto a summary row: a new activity below the previous one
+        const id = nextId(); const prev = anchor && anchor.act;
+        a = { id, name: 'New activity', wbs_id: prev ? prev.wbs_id : (anchor && anchor.wbs ? anchor.wbs.id : (p.wbs[0] && p.wbs[0].id) || null), calendar_id: null, type: 'task', duration_hours: 5 * hpd({ calendar_id: null }), constraint: 'none', constraint_date: null, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, notes: '', codes: {}, priority: 500, level_delay_hours: 0, critical: false };
+        const idx = prev ? p.activities.indexOf(prev) + 1 : p.activities.length; p.activities.splice(idx, 0, a); added++;
+        if (S.linkTasks && prev && prev.type !== 'finish_milestone') p.relationships.push({ predecessor_id: prev.id, successor_id: id, type: 'FS', lag_hours: 0 });
+        anchor = { act: a };
+      } else { updated++; anchor = r; }
+      cells.forEach((v, c) => { const k = cols[c]; if (k == null) return; v = v.trim(); if (v === '' && k !== 'notes') return; const col = ALL_COLS[k]; try { if (col.setOpt) col.setOpt(a, v); else col.set(a, v); } catch (err) { } });
+    });
+    const last = anchor && anchor.act; if (last) { S.sel = new Set([last.id]); S.active = last.id; }
+  }, `Pasted ${body.length} row${body.length === 1 ? '' : 's'}: ${updated} updated, ${added} added`);
+}
+// ---------- lookahead sheet: a CSV the site fills in and sends back ----------
+const LA_HEAD = ['ID', 'Activity', 'Planned start', 'Planned finish', 'Duration (days)', 'Status', '% complete', 'Actual start', 'Actual finish', 'Days left', 'Comment'];
+function lookaheadActs(p) { const shown = S.view.show === 'lookahead' ? S.rowsCache.filter(r => r.act).map(r => r.act) : []; return shown.length ? shown : siteList(p); }
+async function exportLookaheadCsv() {
+  const p = S.project; if (!p) return; const acts = lookaheadActs(p);
+  const q = v => { v = v == null ? '' : String(v); return /^[=+\-@]/.test(v) || /[",\n\r]/.test(v) ? '"' + (/^[=+\-@]/.test(v) ? "'" : '') + v.replace(/"/g, '""') + '"' : v; };
+  const st = a => a.status === 'complete' ? 'Finished' : a.status === 'in_progress' ? 'Started' : 'Not started';
+  const lines = [LA_HEAD.map(q).join(',')].concat(acts.map(a => [a.id, a.name, (a.actual_start || a.early_start || '').slice(0, 10), (a.actual_finish || a.early_finish || '').slice(0, 10), a.type === 'task' ? fmt1(daysOf(a, a.duration_hours)) : 0, st(a), a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0), (a.actual_start || '').slice(0, 10), (a.actual_finish || '').slice(0, 10), a.type !== 'task' || a.status === 'complete' ? 0 : fmt1(daysOf(a, a.remaining_hours == null ? a.duration_hours : a.remaining_hours)), ''].map(q).join(',')));
+  const dd = (p.data_date || p.start).slice(0, 10);
+  if (await saveBlob(`${p.id}-lookahead-${dd}.csv`, new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' }))) toast(`Lookahead sheet saved: ${acts.length} activities. Site fills in Status, % complete, dates, days left and Comment; import it back from Site update.`, { ms: 6500 });
+}
+// Reads a returned sheet into staged site-update entries {id: {st, sdate, fdate, pct, left, comment}}; nothing is applied until the planner saves the sheet.
+function parseLookaheadCsv(text) {
+  const rows = parseCsv(text); if (!rows.length) return { U: {}, n: 0, unknown: [] };
+  const head = rows[0].map(h => String(h).trim().toLowerCase()); const col = name => head.findIndex(h => h === name.toLowerCase() || h.startsWith(name.toLowerCase()));
+  const ci = { id: col('ID'), st: col('Status'), pct: col('% complete'), as: col('Actual start'), af: col('Actual finish'), left: col('Days left'), com: col('Comment') };
+  if (ci.id < 0) throw new Error('No ID column: export the lookahead sheet from here and fill that one in');
+  const U = {}, unknown = []; const date = v => { const d = parseDateInput(v); return d ? iso(d).slice(0, 10) : ''; }; let n = 0;
+  rows.slice(1).forEach(r => {
+    const id = String(r[ci.id] || '').trim(); if (!id) return; const a = byId(id); if (!a) { unknown.push(id); return; }
+    const stTxt = ci.st >= 0 ? String(r[ci.st] || '').trim().toLowerCase() : '', pctTxt = ci.pct >= 0 ? String(r[ci.pct] || '').trim() : '', leftTxt = ci.left >= 0 ? String(r[ci.left] || '').trim() : '';
+    const sdate = ci.as >= 0 ? date(r[ci.as]) : '', fdate = ci.af >= 0 ? date(r[ci.af]) : '', com = ci.com >= 0 ? String(r[ci.com] || '').trim() : '';
+    let st = /fin|comp|done|achiev/.test(stTxt) ? 'c' : /start|prog|begun|underway/.test(stTxt) ? 'p' : /not/.test(stTxt) ? 'n' : null;
+    let pct = pctTxt === '' ? null : Math.max(0, Math.min(100, Math.round(parseFloat(pctTxt.replace('%', '')) || 0)));
+    if (pct === 100 || fdate) st = 'c'; else if (pct != null && pct > 0 && !st) st = 'p'; else if (sdate && !st) st = 'p';
+    if (a.type !== 'task' && st === 'p') { st = 'n'; pct = 0; }   // a milestone is achieved or not
+    const cur = a.status === 'complete' ? 'c' : a.status === 'in_progress' ? 'p' : 'n', curPct = a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0);
+    const left = leftTxt === '' ? null : Math.max(0, parseFloat(leftTxt) || 0);
+    const changed = (st && st !== cur) || (pct != null && pct !== curPct) || (sdate && sdate !== (a.actual_start || '').slice(0, 10)) || (fdate && fdate !== (a.actual_finish || '').slice(0, 10)) || (left != null && a.status !== 'complete' && Math.abs(left - daysOf(a, a.remaining_hours == null ? a.duration_hours : a.remaining_hours)) >= 0.25) || com;
+    if (!changed) return;
+    const dur = daysOf(a, a.duration_hours); const u = { st: st || cur, sdate: sdate || (a.actual_start || '').slice(0, 10), fdate, pct: pct != null ? pct : curPct, left: left != null ? left : +fmt1(dur * (1 - (pct != null ? pct : curPct) / 100)), mode: left != null && pct == null ? 'left' : 'pct', comment: com };
+    if (u.mode === 'left' && dur) u.pct = Math.max(0, Math.min(99, Math.round(100 * (1 - u.left / dur))));
+    if (u.st === 'c') { u.pct = 100; u.left = 0; } if (u.st === 'n') { u.pct = 0; u.left = +fmt1(dur); }
+    U[id] = u; n++;
+  });
+  return { U, n, unknown };
+}
+async function importLookaheadFile(f) {
+  let text = await f.text(); let r; try { r = parseLookaheadCsv(text); } catch (e) { return toast(e.message, { ms: 6000 }); }
+  if (!r.n) return toast(r.unknown.length ? `No changes found. ${r.unknown.length} IDs are not in this programme (${r.unknown.slice(0, 3).join(', ')}${r.unknown.length > 3 ? '…' : ''})` : 'No changes found in that sheet', { ms: 6000 });
+  siteUpdateSheet(r.U, f.name); if (r.unknown.length) toast(`${r.unknown.length} row${r.unknown.length === 1 ? '' : 's'} skipped: IDs not in this programme`, { ms: 5000 });
+}
+// Shrinks a photo to a JPEG data URL no wider or taller than max px, so a note can carry a site record without bloating the file much.
+function shrinkImage(file, max) {
+  return new Promise((res, rej) => { const url = URL.createObjectURL(file); const im = new Image(); im.onload = () => { const k = Math.min(1, max / Math.max(im.width, im.height)); const c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', 0.8)); }; im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('bad image')); }; im.src = url; });
+}
+
 // ---------- structural edits ----------
 function selectedActs() { return [...S.sel].map(byId).filter(Boolean); }
 function selectedRowsInOrder() { return S.rowsCache.filter(r => S.sel.has(rowKey(r))); }
@@ -2187,7 +2281,7 @@ function onKey(e) {
   else if (e.altKey && k === 'ArrowUp') { e.preventDefault(); moveRow(-1); } else if (e.altKey && k === 'ArrowDown') { e.preventDefault(); moveRow(1); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'l') { e.preventDefault(); linkSelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'u') { e.preventDefault(); unlinkSelected(); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'x') { e.preventDefault(); cutSelected(); }
-  else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'c') { e.preventDefault(); copySelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'v') { e.preventDefault(); pasteClip(); }
+  else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'c') { e.preventDefault(); copySelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'v') { clearTimeout(S.pasteT); S.pasteT = setTimeout(() => { S.pasteT = null; pasteClip(); }, 150); }   // the paste event decides: a table from Excel, or our own clipboard
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'a') { e.preventDefault(); S.sel = new Set(S.rowsCache.map(rowKey)); paintSelection(); }
   else if (k === 'Escape') { S.sel = new Set(); S.selLink = null; paintSelection(); clearTrace(); }
   else if (k === '+' || k === '=') zoom(1.25); else if (k === '-') zoom(0.8);
@@ -2512,7 +2606,7 @@ function renderMonitor() {
   el.scrollTop = scroll; drawViz(el);
   if (!S.ringShown[p.id]) { S.ringShown[p.id] = true; requestAnimationFrame(() => requestAnimationFrame(() => { const arc = $('#ringArc'); if (arc) arc.style.strokeDashoffset = C * (1 - score / 100); })); }
   el.querySelector('#mPlan').onclick = () => go('plan');
-  el.querySelector('#mSite').onclick = siteUpdateSheet; el.querySelector('#perClose').onclick = closePeriodDialog; el.querySelector('#perBuilt').onclick = exportAsBuilt;
+  el.querySelector('#mSite').onclick = () => siteUpdateSheet(); el.querySelector('#perClose').onclick = closePeriodDialog; el.querySelector('#perBuilt').onclick = exportAsBuilt;
   el.querySelectorAll('[data-pdel]').forEach(b => b.onclick = () => deletePeriod(b.dataset.pdel));
   el.querySelectorAll('[data-pcmp]').forEach(b => b.onclick = () => { const r = (p.revisions || []).find(x => x.name === b.dataset.pcmp); if (r && window.PlannerEngine) compareSheet(window.PlannerEngine.compareProjects(r.project, S.project)); });
   const fix = el.querySelector('#mFix'); if (fix) fix.onclick = () => act('/repair');
@@ -2755,7 +2849,8 @@ function palActions() {
     S.project && ['PDF for issue (print)', 'File', printSheet],
     S.project && ['Add a note on the chart', 'Plan', () => noteDialog(null, null, S.active && byId(S.active) ? S.active : null)],
     S.project && ['Issue revision', 'Plan', revisionDialog],
-    S.project && ['Site update: record progress on site', 'Progress', siteUpdateSheet],
+    S.project && ['Site update: record progress on site', 'Progress', () => siteUpdateSheet()],
+    S.project && ['Lookahead sheet (CSV) for the site to fill in', 'Progress', exportLookaheadCsv],
     S.project && ['Close progress period', 'Progress', closePeriodDialog],
     S.project && ['As-built record (CSV)', 'File', exportAsBuilt],
     S.project && ['Custom fields', 'Set-up', fieldsDialog],
@@ -3264,7 +3359,7 @@ function renderOverview() {
   el.scrollTop = scroll;
   wireModeSeg(el);
   const on = (sel, fn) => { const n = el.querySelector(sel); if (n) n.onclick = fn; };
-  on('#ovPlan', () => go('plan')); on('#ovSite', siteUpdateSheet); on('#ovPdf', printSheet); on('#ovAsk', () => { openPalette(); $('#cmdIn').placeholder = 'Ask anything about the programme'; }); on('#ovTry', tryStart);
+  on('#ovPlan', () => go('plan')); on('#ovSite', () => siteUpdateSheet()); on('#ovPdf', printSheet); on('#ovAsk', () => { openPalette(); $('#cmdIn').placeholder = 'Ask anything about the programme'; }); on('#ovTry', tryStart);
   el.querySelectorAll('[data-stage]').forEach(btn => btn.onclick = () => { const s = stages.find(x => x.k === btn.dataset.stage); if (s) s.action[1](); });
   el.querySelectorAll('[data-help]').forEach(btn => btn.onclick = () => helpSheet(btn.dataset.help));
   el.querySelectorAll('[data-act]').forEach(btn => btn.onclick = () => ACTION_FN[btn.dataset.act]());
@@ -3335,7 +3430,7 @@ function wireToolbar() {
   $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
   $('#btnRisk').onclick = riskSheet; $('#btnDrag').onclick = () => computeDrag();
   $('#btnRevision').onclick = revisionDialog; $('#btnCompare').onclick = () => compareSheet();
-  $('#btnSite').onclick = siteUpdateSheet; $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
+  $('#btnSite').onclick = () => siteUpdateSheet(); $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnSchedOpts').onclick = schedOptionsDialog; $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog; $('#btnRenumber').onclick = renumberDialog;
