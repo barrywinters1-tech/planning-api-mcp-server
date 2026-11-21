@@ -952,13 +952,42 @@ function udfDefs(p) {
   for (const a of p.activities) for (const [k, v] of Object.entries(a.fields || {})) if (!seen.has(k)) { seen.add(k); defs.push({ name: k, type: typeof v === 'number' ? 'number' : 'text' }); }
   return defs;
 }
-function writeXer(p) {
+// MS Project local task custom field ids written to MSPDI (mspxml.FIELD_IDS: the PjCustomField enumeration values, sources
+// in planner/mspxml.py): Text1-30, Number1-20, Date1-10
+const MSP_RANGE = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
+const MSP_FIELD_IDS = {
+  text: ['Text', [188743731, 188743734, 188743737, 188743740, 188743743, 188743746, 188743747, 188743748, 188743749, 188743750].concat(MSP_RANGE(188743997, 188744017))],
+  number: ['Number', MSP_RANGE(188743767, 188743772).concat(MSP_RANGE(188743982, 188743997))],
+  date: ['Date', MSP_RANGE(188743945, 188743955)],
+};
+// the custom fields an MSPDI export carries (mspxml.custom_fields): the user fields, then each activity code type as a text
+// field named after it (so Asta / MS Project users see the codes as columns); MS Project's 30/20/10 limits drop the rest
+function mspdiFields(p) {
+  const defs = udfDefs(p).map(d => Object.assign({ code: false }, d)), names = new Set(defs.map(d => d.name));
+  for (const ct of Object.keys(p.code_types || {}).concat(p.activities.flatMap(a => Object.keys(a.codes || {})))) if (ct && !names.has(ct)) { names.add(ct); defs.push({ name: ct, type: 'text', code: true }); }
+  const used = { text: 0, number: 0, date: 0 }, out = [];
+  for (const d of defs) { const [prefix, ids] = MSP_FIELD_IDS[d.type], n = used[d.type]; if (n < ids.length) { used[d.type] = n + 1; out.push(Object.assign({}, d, { fieldId: ids[n], fieldName: prefix + (n + 1) })); } }
+  return out;
+}
+function mspdiValue(typ, v) {                                  // mspxml._field_value_text: null = not written
+  if (v == null) return null;
+  if (typ === 'number') { const n = Number(v); return (v === '' || isNaN(n)) ? null : String(n); }
+  if (typ === 'date') return v ? String(v).slice(0, 10) + 'T00:00:00' : null;
+  return String(v) !== '' ? String(v) : null;
+}
+// target P6 version for the ERMHDR line (xer.XER_VERSIONS): a major alone becomes the release P6 stamps, a full string is
+// written as given. Only the header differs between versions: every table and column written here has existed unchanged
+// since P6 8, and the columns later releases added are optional on import. Default 19.12, as before.
+const XER_VERSIONS = { 8: '8.4', 15: '15.2', 16: '16.2', 17: '17.12', 18: '18.8', 19: '19.12', 20: '20.12', 21: '21.12', 22: '22.12', 23: '23.12', 24: '24.12' };
+function xerVersion(v) { v = String(v || '19.12').trim(); return Object.prototype.hasOwnProperty.call(XER_VERSIONS, v) ? XER_VERSIONS[v] : v; }
+
+function writeXer(p, opts) {
   E.ensureCalendars(p); const now = E.nowISO(); const nowS = fmtDt(now); const pid = 1;
   const calIds = {}; Object.keys(p.calendars).forEach((c, i) => calIds[c] = i + 1);
   const taskIds = {}; p.activities.forEach((a, i) => taskIds[a.id] = i + 1);
   const wbsIds = {}; p.wbs.forEach((w, i) => wbsIds[w.id] = i + 2);
   const rsrcIds = {}; p.resources.forEach((r, i) => rsrcIds[r.id] = i + 1);
-  const header = ['ERMHDR', '19.12', now.slice(0, 10), 'Project', 'admin', 'admin', 'dbxDatabaseNoName', 'Project Management', 'GBP'].join('\t');
+  const header = ['ERMHDR', xerVersion(opts && opts.version), now.slice(0, 10), 'Project', 'admin', 'admin', 'dbxDatabaseNoName', 'Project Management', 'GBP'].join('\t');
   const currtype = table('CURRTYPE', ['curr_id', 'decimal_digit_cnt', 'curr_symbol', 'decimal_symbol', 'digit_group_symbol', 'pos_curr_fmt_type', 'neg_curr_fmt_type', 'curr_type', 'curr_short_name', 'group_digit_cnt', 'base_exch_rate'], [{ curr_id: 1, decimal_digit_cnt: 2, curr_symbol: 'GBP', decimal_symbol: '.', digit_group_symbol: ',', pos_curr_fmt_type: '#1,1.1', neg_curr_fmt_type: '(#1,1.1)', curr_type: 'Pound Sterling', curr_short_name: 'GBP', group_digit_cnt: 3, base_exch_rate: 1 }]);
   const calendar = table('CALENDAR', ['clndr_id', 'default_flag', 'clndr_name', 'proj_id', 'base_clndr_id', 'last_chng_date', 'clndr_type', 'day_hr_cnt', 'week_hr_cnt', 'month_hr_cnt', 'year_hr_cnt', 'rsrc_private', 'clndr_data'], Object.values(p.calendars).map(c => ({ clndr_id: calIds[c.id], default_flag: c.id === p.default_calendar_id ? 'Y' : 'N', clndr_name: c.name, proj_id: '', base_clndr_id: '', last_chng_date: nowS, clndr_type: 'CA_Base', day_hr_cnt: c.hours_per_day, week_hr_cnt: c.hours_per_day * c.working_days.length, month_hr_cnt: Math.round(c.hours_per_day * c.working_days.length * 52 / 12 * 10) / 10, year_hr_cnt: c.hours_per_day * c.working_days.length * 52, rsrc_private: 'N', clndr_data: buildClndrData(c) })));
   const finish = p.finish || p.start;
@@ -1012,6 +1041,9 @@ function writeMspdi(p) {
   el('StartDate', fmtDtSec(p.start)); el('FinishDate', fmtDtSec(p.finish || p.start)); el('StatusDate', fmtDtSec(p.data_date || p.start)); el('CurrentDate', now);
   el('CalendarUID', calUid[p.default_calendar_id]); el('DefaultStartTime', dcal.day_start); el('DefaultFinishTime', endTime(dcal.hours_per_day));
   el('MinutesPerDay', Math.round(dcal.hours_per_day * 60)); el('MinutesPerWeek', Math.round(dcal.hours_per_day * 60 * dcal.working_days.length)); el('DaysPerMonth', 20); el('DurationFormat', 7); el('NewTasksAreManual', 0);
+  // custom fields (user fields, then code types as text fields) are declared before the calendars, as the schema orders
+  const fields = mspdiFields(p);
+  if (fields.length) { L.push('<ExtendedAttributes>'); for (const f of fields) { L.push('<ExtendedAttribute>'); el('FieldID', f.fieldId); el('FieldName', f.fieldName); el('Alias', f.name); L.push('</ExtendedAttribute>'); } L.push('</ExtendedAttributes>'); }
   L.push('<Calendars>');
   for (const cidPair of Object.entries(p.calendars)) { const cid = cidPair[0]; const c = new E.Cal(cidPair[1]); L.push('<Calendar>'); el('UID', calUid[cid]); el('Name', c.name); el('IsBaseCalendar', 1); el('BaseCalendarUID', -1); L.push('<WeekDays>'); for (let dt = 1; dt <= 7; dt++) { L.push('<WeekDay>'); el('DayType', dt); const working = c.working_days.includes((dt - 2 + 7) % 7); el('DayWorking', working ? 1 : 0); if (working) { L.push('<WorkingTimes><WorkingTime>'); el('FromTime', c.day_start); el('ToTime', endTime(c.hours_per_day)); L.push('</WorkingTime></WorkingTimes>'); } L.push('</WeekDay>'); } L.push('</WeekDays>'); const exs = Object.entries(c.exceptions).sort(); if (exs.length) { L.push('<Exceptions>'); for (const dh of exs) { const d = dh[0], h = dh[1]; L.push('<Exception>'); L.push('<TimePeriod>'); el('FromDate', d + 'T00:00:00'); el('ToDate', d + 'T23:59:00'); L.push('</TimePeriod>'); el('Occurrences', 1); el('Name', h == 0 ? 'Non-working' : 'Working exception'); el('Type', 1); el('DayWorking', h > 0 ? 1 : 0); if (h > 0) { L.push('<WorkingTimes><WorkingTime>'); el('FromTime', c.day_start); el('ToTime', endTime(h)); L.push('</WorkingTime></WorkingTimes>'); } L.push('</Exception>'); } L.push('</Exceptions>'); } L.push('</Calendar>'); }
   L.push('</Calendars>'); L.push('<Tasks>');
@@ -1039,6 +1071,7 @@ function writeMspdi(p) {
     if (a.actual_start) el('ActualStart', fmtDtSec(a.actual_start));
     if (a.actual_finish) el('ActualFinish', fmtDtSec(a.actual_finish));
     if (a.notes) el('Notes', a.notes);
+    for (const f of fields) { const s = mspdiValue(f.type, f.code ? (a.codes || {})[f.name] : (a.fields || {})[f.name]); if (s != null) { L.push('<ExtendedAttribute>'); el('FieldID', f.fieldId); el('Value', s); L.push('</ExtendedAttribute>'); } }   // between Notes and Baseline, as the Task schema orders
     if (a.baseline_start || a.baseline_finish) { L.push('<Baseline>'); el('Number', 0); el('Start', fmtDtSec(a.baseline_start)); el('Finish', fmtDtSec(a.baseline_finish)); L.push('</Baseline>'); }
     for (const r of kept.filter(x => x.successor_id === a.id)) { if (taskUid[r.predecessor_id] == null) continue; L.push('<PredecessorLink>'); el('PredecessorUID', taskUid[r.predecessor_id]); el('Type', LINK_MSP[r.type]); el('CrossProject', 0); el('LinkLag', Math.round(r.lag_hours * 600)); el('LagFormat', (r.lag_calendar || p.lag_calendar) === '24h' ? 8 : 7); L.push('</PredecessorLink>'); }
     L.push('</Task>');
@@ -1051,14 +1084,14 @@ function writeMspdi(p) {
   return L.join('\n');
 }
 
-function writeAny(p, fmt) {
+function writeAny(p, fmt, opts) {
   fmt = fmt.toLowerCase().replace(/^\./, '');
   if (fmt === 'json') return [JSON.stringify(p, null, 1), 'application/json', p.id + '.json'];
-  if (fmt === 'xer') return [writeXer(p), 'text/plain', p.id + '.xer'];
+  if (fmt === 'xer') return [writeXer(p, opts), 'text/plain', p.id + '.xer'];
   if (fmt === 'xml' || fmt === 'mspdi' || fmt === 'msproject') return [writeMspdi(p), 'application/xml', p.id + '.xml'];
   throw new Error('format must be json, xer or xml');
 }
-Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships, udfDefs });
+Object.assign(global.PlannerEngine, { writeXer, writeMspdi, writeAny, buildClndrData, exportRelationships, udfDefs, mspdiFields, xerVersion, XER_VERSIONS });
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 6: export bundle (store-only ZIP of .xer + .xml + .json) ---- */

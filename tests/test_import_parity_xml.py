@@ -79,6 +79,32 @@ def _corpus() -> list[tuple[str, dict]]:
     odd.activities[4].notes = "Line one\r\nline two & <three>\ttab"
     odd.resources[0].name = "Équipe façade & vitrage"
     out.append(("non-ascii", odd.model_dump(mode="json")))
+    # custom fields (<ExtendedAttributes>): declared text / number / date fields, an unknown type, undeclared fields,
+    # blanks, None, text in a number field, a number in a text field
+    uf = Project.model_validate(progress())
+    uf.user_fields = [{"name": "Package", "type": "text"}, {"name": "Cost", "type": "number"}, {"name": "Permit due", "type": "date"},
+                      {"name": "Odd", "type": "flag"}, {"name": "", "type": "text"}]
+    for i, a in enumerate(uf.activities):
+        a.fields = ({"Package": f"Pkg {i % 3} <&> \"q\" 'é'\ttab", "Cost": 1250.5 * i, "Permit due": f"2026-04-{i % 28 + 1:02d}", "Odd": i}
+                    if i % 2 == 0 else {"Undeclared": "x", "Blank": "", "Nothing": None, "Cost": "abc", "Number too": 7, "Package": 12.5})
+    out.append(("user-fields", uf.model_dump(mode="json")))
+    # activity codes go out as text fields named after the code type; a user field with a code type's name wins
+    cd = Project.model_validate(hammocks())
+    cd.code_types = {"Trade": {"Brick": "#ff0000", "Steel": "#00ff00"}, "Zone": {}}
+    for i, a in enumerate(cd.activities):
+        a.codes = {"Trade": ["Brick", "Steel", "Unlisted"][i % 3]} if i % 2 == 0 else {"Zone": f"Z{i}", "Phase": "P1", "Empty": ""}
+    cd.user_fields = [{"name": "Zone", "type": "text"}]
+    cd.activities[0].fields = {"Zone": "field value"}
+    out.append(("codes", cd.model_dump(mode="json")))
+    # more fields than MS Project has: 32 text (Text1-30), 21 number (Number1-20), 11 date (Date1-10); a code type past the limit
+    many = Project.model_validate(constraints())
+    many.user_fields = [{"name": f"T{i}", "type": "text"} for i in range(32)] + [{"name": f"N{i}", "type": "number"} for i in range(21)] + \
+        [{"name": f"D{i}", "type": "date"} for i in range(11)]
+    for j, a in enumerate(many.activities):
+        a.fields = {d["name"]: (f"t{j}" if d["type"] == "text" else j * 1.5 if d["type"] == "number" else f"2026-0{j % 9 + 1}-15") for d in many.user_fields}
+    many.code_types = {"Late code": {"dropped": "#000000"}}
+    many.activities[1].codes = {"Late code": "dropped"}
+    out.append(("fields-overflow", many.model_dump(mode="json")))
     return out
 
 
@@ -354,7 +380,61 @@ P6_HAND = """<?xml version="1.0" encoding="UTF-8"?>
 </APIBusinessObjects>
 """
 
-BAD_XML = ["", " ", "not xml", "﻿", "<a>", "<a></b>", "<a/><b/>", "<a/>junk", "<a>&foo;</a>", "<a>&#0;</a>",
+# custom fields by hand: aliases, FieldName only, neither (named by the FieldID), Start / Finish / Cost ranges, a Flag (not
+# carried), unknown and empty FieldIDs, duplicate FieldIDs and names, undeclared FieldIDs on tasks, bad and blank values
+MSPDI_FIELDS = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Project xmlns="{MSP_NS}">
+  <Name>Fields</Name><StartDate>2026-03-02T08:00:00</StartDate>
+  <ExtendedAttributes>
+    <ExtendedAttribute><FieldID>188743767</FieldID><FieldName>Number1</FieldName></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743731</FieldID><FieldName>Text1</FieldName><Alias>Supplier</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743945</FieldID></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743735</FieldID><FieldName>Start2</FieldName><Alias>Kick-off</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743971</FieldID><FieldName>Finish10</FieldName><Alias>Wrap</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743944</FieldID><FieldName>Cost10</FieldName><Alias>Budget</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743752</FieldID><FieldName>Flag1</FieldName><Alias>Flagged</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743731</FieldID><FieldName>Text1</FieldName><Alias>Duplicate id</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743734</FieldID><FieldName>Text2</FieldName><Alias>Supplier</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743737</FieldID><FieldName>Text3</FieldName><Alias>Number1</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>188743740</FieldID><FieldName>Text4</FieldName><Alias>Text6</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID></FieldID><Alias>No id</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>1</FieldID><Alias>Unknown id</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID> 188743743</FieldID><Alias>Padded id</Alias></ExtendedAttribute>
+    <ExtendedAttribute><FieldID>205521019</FieldID><FieldName>Cost1</FieldName><Alias>Resource field</Alias></ExtendedAttribute>
+  </ExtendedAttributes>
+  <Tasks>
+    <Task><UID>1</UID><ID>1</ID><Name>A</Name><WBS>A</WBS><OutlineLevel>1</OutlineLevel><Duration>PT16H0M0S</Duration>
+      <ExtendedAttribute><FieldID>188743731</FieldID><Value>Acme &amp; Co</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743767</FieldID><Value>42</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743945</FieldID><Value>2026-05-01T17:00:00</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743735</FieldID><Value>2026-06-01T08:00:00</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743971</FieldID><Value>soon</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743944</FieldID><Value>1250.50</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743752</FieldID><Value>1</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743743</FieldID><Value>undeclared Text5</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743746</FieldID><Value>undeclared Text6, name taken by an alias</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743996</FieldID><Value> ١٢.٥ </Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743995</FieldID><Value>12,5</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743994</FieldID><Value>1e3</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743954</FieldID><Value></Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743953</FieldID></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743731</FieldID><Value>second value wins</Value></ExtendedAttribute>
+      <ExtendedAttribute><Value>no id</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>999</FieldID><Value>unknown id</Value></ExtendedAttribute>
+    </Task>
+    <Task><UID>2</UID><ID>2</ID><Name>B</Name><WBS>B</WBS><OutlineLevel>1</OutlineLevel><Duration>PT8H0M0S</Duration>
+      <ExtendedAttribute><FieldID>188743767</FieldID><Value>-7</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743767</FieldID><Value>nope</Value></ExtendedAttribute>
+      <ExtendedAttribute><FieldID>188743740</FieldID><Value>aliased Text6</Value></ExtendedAttribute>
+      <PredecessorLink><PredecessorUID>1</PredecessorUID></PredecessorLink></Task>
+    <Task><UID>3</UID><ID>3</ID><Name>Summary</Name><OutlineLevel>1</OutlineLevel><Summary>1</Summary>
+      <ExtendedAttribute><FieldID>188743731</FieldID><Value>on a summary</Value></ExtendedAttribute></Task>
+    <Task><UID>4</UID><ID>4</ID><Name>C</Name><WBS>C</WBS><OutlineLevel>2</OutlineLevel><Duration>PT8H0M0S</Duration></Task>
+  </Tasks>
+</Project>
+"""
+
+BAD_XML = ["", " ", "not xml","﻿", "<a>", "<a></b>", "<a/><b/>", "<a/>junk", "<a>&foo;</a>", "<a>&#0;</a>",
            "<a>x<![CDATA[<z>]]>y</a>", " <?xml version='1.0'?><a/>", "<p:a/>", "<a x='1' x='2'/>", "<a xmlns:p=''/>",
            "<a><!-- a -- b --></a>", "<?xml?><a/>", "<?xml version='1.0' standalone='maybe'?><a/>", "<a><![CDATA[x",
            "<a></a", "\n\n<a>", "<a>\n  é<b>\n</c>", "<!DOCTYPE a [<!ENTITY e '<b>'>]><a>&e;</b></a>", "<a>]]></a>",
@@ -417,6 +497,10 @@ def build_cases() -> list[tuple[str, dict]]:
     cases.append(("pmxml-lag-calendar-unknown", {"kind": "pmxml", "text": p6_24.replace("24 Hour Calendar", "Lunar Calendar")}))
     cases.append(("pmxml-lag-calendar-empty", {"kind": "pmxml", "text": p6_24.replace("<RelationshipLagCalendar>24 Hour Calendar</RelationshipLagCalendar>", "<RelationshipLagCalendar/>")}))
     cases.append(("pmxml-lag-calendar-prefix", {"kind": "pmxml", "text": _p6(_scheduled({**links_and_lags(), "lag_calendar": "successor"}).model_dump(mode="json"), ns="prefix")}))
+    cases.append(("mspdi-fields", {"kind": "mspdi", "text": MSPDI_FIELDS}))
+    cases.append(("mspdi-fields-dispatch", {"kind": "xml", "text": MSPDI_FIELDS}))
+    cases.append(("mspdi-fields-no-namespace", {"kind": "mspdi", "text": MSPDI_FIELDS.replace(f' xmlns="{MSP_NS}"', "")}))
+    cases.append(("mspdi-fields-no-declarations", {"kind": "mspdi", "text": re.sub(r"<ExtendedAttributes>.*</ExtendedAttributes>", "", MSPDI_FIELDS, flags=re.S)}))
     cases.append(("mspdi-hand", {"kind": "mspdi", "text": MSPDI_HAND}))
     cases.append(("mspdi-hand-no-namespace", {"kind": "mspdi", "text": MSPDI_HAND.replace(f' xmlns="{MSP_NS}"', "")}))
     cases.append(("mspdi-wrong-root", {"kind": "mspdi", "text": "<Schedule><Name>Odd one</Name><StartDate>2026-01-05T08:00:00</StartDate></Schedule>"}))
@@ -537,3 +621,23 @@ def test_cases_exercise_the_readers():
     assert sum(1 for r in ok if r["project"]["relationships"]) >= 40
     assert any(a["status"] == "in_progress" for r in ok for a in r["project"]["activities"])
     assert any(a.get("baseline_start") for r in ok for a in r["project"]["activities"])
+    assert sum(1 for r in ok if r["project"].get("user_fields")) >= 12          # the custom-field corpus reaches both writers
+    assert sum(1 for r in ok for a in r["project"]["activities"] if a.get("fields")) >= 60
+
+
+def test_hand_written_fields_read_as_intended():
+    """The hand-written custom-field file reads as MS Project would show it (the JS reader is held to this by parity)."""
+    p = read_mspdi(MSPDI_FIELDS)
+    assert p.user_fields == [{"name": "Number1", "type": "number"}, {"name": "Supplier", "type": "text"}, {"name": "Date1", "type": "date"},
+                             {"name": "Kick-off", "type": "date"}, {"name": "Wrap", "type": "date"}, {"name": "Budget", "type": "number"},
+                             {"name": "Text6", "type": "text"}, {"name": "Text5", "type": "text"}, {"name": "Number20", "type": "number"},
+                             {"name": "Number19", "type": "number"}, {"name": "Number18", "type": "number"}, {"name": "Date10", "type": "date"},
+                             {"name": "Date9", "type": "date"}]
+    a, b, c = p.activities
+    assert a.fields == {"Supplier": "second value wins", "Number1": 42.0, "Date1": "2026-05-01", "Kick-off": "2026-06-01", "Wrap": "soon",
+                        "Budget": 1250.5, "Text5": "undeclared Text5", "Number20": 12.5, "Number18": 1000.0}
+    assert b.fields == {"Number1": -7.0, "Text6": "aliased Text6"} and c.fields is None
+    q = read_mspdi(MSPDI_FIELDS, code_types=["Supplier", "Number1", "Nowhere"])
+    assert q.user_fields == [d for d in p.user_fields if d["name"] != "Supplier"]
+    assert q.activities[0].codes == {"Supplier": "second value wins"} and "Supplier" not in q.activities[0].fields
+    assert q.code_types == {"Supplier": {"Acme & Co": "#7a8aa6", "second value wins": "#7a8aa6"}}
