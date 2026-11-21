@@ -1594,11 +1594,12 @@ function contextMenu(x, y) {
   m.hidden = false; m.style.left = Math.min(x, innerWidth - 240) + 'px'; m.style.top = Math.min(y, innerHeight - m.offsetHeight - 10) + 'px';
 }
 document.addEventListener('mousedown', e => { if (!e.target.closest('#ctx')) $('#ctx').hidden = true; });
+const LAG_CALS = [['', 'Predecessor calendar (P6 default)'], ['successor', 'Successor calendar'], ['project', 'Project calendar'], ['24h', '24-hour (elapsed time)']];
 function linkDialog(pid, sid) {
   const r = S.project.relationships.find(r => r.predecessor_id === pid && r.successor_id === sid); if (!r) return;
   const a = byId(pid);
-  modal(`Link ${pid} → ${sid}`, `<div class="grid"><label>Type<select name="t">${['FS', 'SS', 'FF', 'SF'].map(t => `<option ${r.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label><label>Lag (days)<input name="lag" type="number" step="0.5" value="${fmt1(daysOf(a, r.lag_hours))}"></label></div><p class="hint">${esc(a.name)} → ${esc(byId(sid).name)}. Delete removes the link.</p><button type="button" id="lDel">Delete link</button>`, m => {
-    mutate(p => { r.type = m.querySelector('[name=t]').value; r.lag_hours = (+m.querySelector('[name=lag]').value || 0) * hpd(a); }, 'Link updated');
+  modal(`Link ${pid} → ${sid}`, `<div class="grid"><label>Type<select name="t">${['FS', 'SS', 'FF', 'SF'].map(t => `<option ${r.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label><label>Lag (days)<input name="lag" type="number" step="0.5" value="${fmt1(daysOf(a, r.lag_hours))}"></label><label>Lag runs on<select name="lc"><option value="">Programme setting (${esc((LAG_CALS.find(x => x[0] === (S.project.lag_calendar || '')) || LAG_CALS[0])[1])})</option>${LAG_CALS.filter(x => x[0]).map(([k, l]) => `<option value="${k}" ${r.lag_calendar === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div><p class="hint">${esc(a.name)} → ${esc(byId(sid).name)}. Delete removes the link.</p><button type="button" id="lDel">Delete link</button>`, m => {
+    mutate(p => { r.type = m.querySelector('[name=t]').value; r.lag_hours = (+m.querySelector('[name=lag]').value || 0) * hpd(a); const lc = m.querySelector('[name=lc]').value; if (lc) r.lag_calendar = lc; else delete r.lag_calendar; }, 'Link updated');
   }, 'Save');
   $('#lDel').onclick = () => { $('#mCancel').click(); mutate(p => { p.relationships = p.relationships.filter(x => x !== r); S.selLink = null; }, 'Link removed'); };
 }
@@ -1625,6 +1626,7 @@ function calendarsDialog() {
     return `<div class="bar-row"><label class="row">Calendar <select name="which">${Object.values(p.calendars).map(x => `<option value="${esc(x.id)}" ${x.id === cur ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label><button type="button" id="calNew">New</button><button type="button" id="calDel">Delete</button><label class="row"><input type="radio" name="def" ${p.default_calendar_id === cur ? 'checked' : ''}> project default</label></div>
     <div class="grid"><label>Name<input name="name" value="${esc(c.name)}"></label><label>Hours per day<input name="hpd" type="number" step="0.5" value="${c.hours_per_day}"></label><label>Day starts<input name="ds" type="time" value="${String(c.day_start).slice(0, 5)}"></label></div>
     <p class="hint">Working days</p><div class="days">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d, i) => `<label class="row"><input type="checkbox" name="wd${i}" ${c.working_days.includes(i) ? 'checked' : ''}>${d}</label>`).join('')}</div>
+    <div class="insp-sec">Link lags</div><label>Lag runs on<select name="lagcal">${LAG_CALS.map(([k, l]) => `<option value="${k}" ${(p.lag_calendar || '') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label><p class="hint" style="margin:4px 0 0">P6 and Asta count a link's lag on the predecessor's calendar unless told otherwise; a 24-hour lag is elapsed time (concrete curing). Any link can override this in its own dialog. Carried in XER and MS Project XML.</p>
     <p class="hint">Exceptions (0 hours = non-working)</p><table><tr><th>Date</th><th>Hours</th><th></th></tr>${Object.entries(c.exceptions).sort().map(([d, h]) => `<tr><td>${d}</td><td>${h}</td><td><button type="button" data-ex="${d}">×</button></td></tr>`).join('')}<tr><td><input type="date" name="exd"></td><td><input type="number" name="exh" value="0" step="0.5" style="width:70px"></td><td><button type="button" id="exAdd">Add</button></td></tr></table>
     <p class="hint">Changing hours per day keeps each activity's duration in days.</p>`;
   };
@@ -1636,6 +1638,7 @@ function calendarsDialog() {
     body.querySelector('[name=hpd]').onchange = e => { const nh = +e.target.value || 8; p.activities.forEach(a => { if ((a.calendar_id || p.default_calendar_id) === cur) { const days = a.duration_hours / c.hours_per_day; a.duration_hours = days * nh; } }); c.hours_per_day = nh; };
     body.querySelector('[name=ds]').onchange = e => { c.day_start = e.target.value + ':00'; };
     body.querySelector('[name=def]').onchange = () => { p.default_calendar_id = cur; };
+    body.querySelector('[name=lagcal]').onchange = e => { if (e.target.value) p.lag_calendar = e.target.value; else delete p.lag_calendar; };
     for (let i = 0; i < 7; i++) body.querySelector(`[name=wd${i}]`).onchange = e => { c.working_days = c.working_days.filter(d => d !== i); if (e.target.checked) c.working_days.push(i); c.working_days.sort(); };
     body.querySelectorAll('[data-ex]').forEach(b => b.onclick = () => { delete c.exceptions[b.dataset.ex]; body.innerHTML = draw(); wire(); });
     body.querySelector('#exAdd').onclick = () => { const d = body.querySelector('[name=exd]').value; if (!d) return; c.exceptions[d] = +body.querySelector('[name=exh]').value || 0; body.innerHTML = draw(); wire(); };
