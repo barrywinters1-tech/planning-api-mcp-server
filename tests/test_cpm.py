@@ -4,6 +4,7 @@ import pytest
 
 from planner import (Activity, ActivityType, Calendar, Constraint, LinkType, Project,
                      Relationship, Status, schedule, ScheduleError, health_check)
+from planner.cpm import float_paths
 
 
 def proj(**kw):
@@ -275,3 +276,179 @@ def test_driving_link_follows_the_lag_calendar():
     assert {r.predecessor_id: r.driving for r in p.relationships} == {"A": True, "B": False}
     assert [x for x in "ABD" if a[x].critical] == ["A", "D"]
     assert a["B"].total_float_hours == 8
+
+
+# ---- scheduling options ---------------------------------------------------------------------
+def _oos_project(mode=None):
+    """A (40h, not started) -> B (in progress since Tue 6 Jan, 16h left) -> C, and A -FF+8h-> F (in progress, 4h left);
+    data date Thu 8 Jan. B and F both started out of sequence: A has not started."""
+    p = proj(data_date=datetime(2026, 1, 8, 8), progress_logic=mode)
+    p.activities = [Activity(id="A", name="A", duration_hours=40),
+                    Activity(id="B", name="B", duration_hours=24, status=Status.IN_PROGRESS, actual_start=datetime(2026, 1, 6, 8), remaining_hours=16),
+                    Activity(id="C", name="C", duration_hours=8),
+                    Activity(id="F", name="F", duration_hours=8, status=Status.IN_PROGRESS, actual_start=datetime(2026, 1, 7, 8), remaining_hours=4)]
+    p.relationships = [Relationship(predecessor_id="A", successor_id="B"), Relationship(predecessor_id="B", successor_id="C"),
+                       Relationship(predecessor_id="A", successor_id="F", type=LinkType.FF, lag_hours=8)]
+    schedule(p)
+    return p, p.activity_map(), {(r.predecessor_id, r.successor_id): r.driving for r in p.relationships}
+
+
+@pytest.mark.parametrize("mode", [None, "retained", "bogus"])
+def test_progress_logic_retained_is_the_default(mode):
+    """Remaining work runs from the data date; the finish-side link from A still holds F, the start-side link into B
+    cannot move B's start but pulls A's late finish back to B's actual start (negative float)."""
+    p, a, drv = _oos_project(mode)
+    assert a["A"].early_finish == datetime(2026, 1, 14, 16)
+    assert a["B"].early_finish == datetime(2026, 1, 9, 16) and a["C"].early_start == datetime(2026, 1, 12, 8)
+    assert a["F"].early_finish == datetime(2026, 1, 15, 16) and a["F"].critical and a["F"].total_float_hours == 0
+    assert a["A"].late_finish == datetime(2026, 1, 5, 16) and a["A"].total_float_hours == -56 and not a["A"].critical
+    assert a["B"].total_float_hours == 24 and a["C"].total_float_hours == 24
+    assert drv == {("A", "B"): False, ("B", "C"): True, ("A", "F"): False}
+    assert p.finish == datetime(2026, 1, 15, 16)
+
+
+def test_progress_logic_override_ignores_unfinished_predecessors():
+    """Both passes drop the links from A (not complete) into the started B and F: F finishes its 4h at once, A is
+    no longer pulled back by B and becomes the longest path to the (earlier) finish."""
+    p, a, drv = _oos_project("override")
+    assert a["B"].early_finish == datetime(2026, 1, 9, 16) and a["C"].early_start == datetime(2026, 1, 12, 8)
+    assert a["F"].early_finish == datetime(2026, 1, 8, 12) and a["F"].total_float_hours == 36 and a["F"].free_float_hours == 36
+    assert a["A"].late_finish == datetime(2026, 1, 14, 16) and a["A"].total_float_hours == 0 and a["A"].critical
+    assert a["B"].total_float_hours == 16 and a["B"].free_float_hours == 0 and a["C"].total_float_hours == 16
+    assert drv == {("A", "B"): False, ("B", "C"): True, ("A", "F"): False}
+    assert p.finish == datetime(2026, 1, 14, 16)
+
+
+def test_progress_logic_actual_dates_schedules_remaining_work_by_logic():
+    """B's 16 remaining hours wait for A (Wed 14 Jan 16:00) and run Thu-Fri; its actual start never moves; the links
+    that hold the remaining work are driving, so A-B-C is the longest path and A carries no float."""
+    p, a, drv = _oos_project("actual_dates")
+    assert a["B"].early_start == datetime(2026, 1, 6, 8) and a["B"].early_finish == datetime(2026, 1, 16, 16)
+    assert a["C"].early_start == datetime(2026, 1, 19, 8) and p.finish == datetime(2026, 1, 19, 16)
+    assert a["F"].early_finish == datetime(2026, 1, 15, 16) and a["F"].total_float_hours == 16 and not a["F"].critical
+    assert a["A"].late_finish == datetime(2026, 1, 14, 16) and a["A"].total_float_hours == 0 and a["A"].free_float_hours == 0
+    assert [x for x in "ABCF" if a[x].critical] == ["A", "B", "C"]
+    assert a["B"].late_start == datetime(2026, 1, 6, 8) and a["B"].total_float_hours == 0
+    assert drv == {("A", "B"): True, ("B", "C"): True, ("A", "F"): True}
+
+
+def test_progress_logic_modes_agree_without_out_of_sequence_progress():
+    """With the logic intact the three modes give the same dates (actual_dates may add driving flags)."""
+    dates = {}
+    for mode in (None, "override", "actual_dates"):
+        p = proj(data_date=datetime(2026, 1, 8, 8), progress_logic=mode)
+        p.activities = [Activity(id="A", name="A", duration_hours=16, status=Status.COMPLETE,
+                                 actual_start=datetime(2026, 1, 5, 8), actual_finish=datetime(2026, 1, 6, 16)),
+                        Activity(id="B", name="B", duration_hours=24, status=Status.IN_PROGRESS,
+                                 actual_start=datetime(2026, 1, 7, 8), remaining_hours=8),
+                        Activity(id="C", name="C", duration_hours=8)]
+        p.relationships = [Relationship(predecessor_id="A", successor_id="B"), Relationship(predecessor_id="B", successor_id="C")]
+        schedule(p)
+        dates[mode] = [(x.early_start, x.early_finish, x.late_start, x.late_finish, x.total_float_hours, x.critical) for x in p.activities]
+    assert dates[None] == dates["override"] == dates["actual_dates"]
+    assert dates[None][1][1] == datetime(2026, 1, 8, 16)
+
+
+def _two_chains(**kw):
+    """S -> A1 -> A2 -> Z (the longest path), S -> B1 -> B2 -> Z (3 days of float) and S -> C1 -> Z (9 days)."""
+    p = proj(**kw)
+    p.activities = [Activity(id="S", name="S", type=ActivityType.START_MILESTONE),
+                    Activity(id="A1", name="A1", duration_hours=40), Activity(id="A2", name="A2", duration_hours=40),
+                    Activity(id="B1", name="B1", duration_hours=24), Activity(id="B2", name="B2", duration_hours=32),
+                    Activity(id="C1", name="C1", duration_hours=8),
+                    Activity(id="Z", name="Z", type=ActivityType.FINISH_MILESTONE)]
+    p.relationships = [Relationship(predecessor_id=x, successor_id=y) for x, y in
+                       (("S", "A1"), ("A1", "A2"), ("A2", "Z"), ("S", "B1"), ("B1", "B2"), ("B2", "Z"), ("S", "C1"), ("C1", "Z"))]
+    schedule(p)
+    return p, p.activity_map()
+
+
+def test_float_paths():
+    p, a = _two_chains(float_paths=3)
+    assert {x: a[x].float_path for x in a} == {"S": 1, "A1": 1, "A2": 1, "Z": 1, "B1": 2, "B2": 2, "C1": 3}
+    assert [x for x in a if a[x].critical] == ["S", "A1", "A2", "Z"]
+    assert [a[x].total_float_hours for x in ("B1", "B2", "C1")] == [24, 24, 72]
+    # the pure function on the scheduled project, with fewer paths and with the option off
+    assert float_paths(p, 2) == {"S": 1, "A1": 1, "A2": 1, "Z": 1, "B1": 2, "B2": 2}
+    assert float_paths(p, 1) == {"S": 1, "A1": 1, "A2": 1, "Z": 1}
+    assert float_paths(p, None) == {} and float_paths(p, 0) == {}
+    assert float_paths(p, 99) == float_paths(p, 10) == float_paths(p, 3)   # no fourth chain, capped at ten
+    p.float_paths = None
+    schedule(p)
+    assert all(x.float_path is None for x in p.activities)
+
+
+def test_float_paths_skip_complete_work_and_hammocks():
+    p, a = _two_chains(float_paths=5, data_date=datetime(2026, 1, 8, 8))
+    for x in ("S", "B1"):
+        a[x].status, a[x].actual_start = Status.COMPLETE, datetime(2026, 1, 5, 8)
+        a[x].actual_finish = datetime(2026, 1, 5, 8) if x == "S" else datetime(2026, 1, 7, 16)
+    p.activities.append(Activity(id="H", name="Hammock", type=ActivityType.LOE))
+    p.relationships += [Relationship(predecessor_id="B2", successor_id="H", type=LinkType.SS),
+                        Relationship(predecessor_id="C1", successor_id="H", type=LinkType.FF)]
+    schedule(p)
+    a = p.activity_map()
+    assert {x: a[x].float_path for x in a} == {"S": None, "A1": 1, "A2": 1, "Z": 1, "B1": None, "B2": 2, "C1": 3, "H": None}
+
+
+def test_start_on_new_day():
+    """A (Mon-Fri) feeds B through a 4h lag and C (4h) feeds D: both would start at 12:00 on Mon 12 Jan; with the
+    option they start Tue 08:00. The start milestone M moves too; E's start, set back from its FF link, does not."""
+    def build(flag):
+        p = proj(start_on_new_day=flag)
+        p.activities = [Activity(id="A", name="A", duration_hours=40), Activity(id="B", name="B", duration_hours=16),
+                        Activity(id="C", name="C", duration_hours=4), Activity(id="D", name="D", duration_hours=8),
+                        Activity(id="M", name="M", type=ActivityType.START_MILESTONE), Activity(id="E", name="E", duration_hours=8)]
+        p.relationships = [Relationship(predecessor_id="A", successor_id="B", lag_hours=4), Relationship(predecessor_id="A", successor_id="C"),
+                           Relationship(predecessor_id="C", successor_id="D"), Relationship(predecessor_id="A", successor_id="M", lag_hours=4),
+                           Relationship(predecessor_id="A", successor_id="E", type=LinkType.FF, lag_hours=4)]
+        schedule(p)
+        return p, p.activity_map()
+    p, a = build(None)
+    assert a["B"].early_start == datetime(2026, 1, 12, 12) and a["B"].early_finish == datetime(2026, 1, 14, 12)
+    assert a["D"].early_start == datetime(2026, 1, 12, 12) and a["M"].early_start == datetime(2026, 1, 12, 12)
+    assert p.finish == datetime(2026, 1, 14, 12)
+    p, a = build(True)
+    assert a["B"].early_start == datetime(2026, 1, 13, 8) and a["B"].early_finish == datetime(2026, 1, 14, 16)
+    assert a["C"].early_finish == datetime(2026, 1, 12, 12) and a["D"].early_start == datetime(2026, 1, 13, 8)
+    assert a["M"].early_start == datetime(2026, 1, 13, 8)
+    assert a["E"].early_start == datetime(2026, 1, 9, 12) and a["E"].early_finish == datetime(2026, 1, 12, 12)
+    assert p.finish == datetime(2026, 1, 14, 16)
+    assert a["A"].critical and a["B"].critical and p.relationships[0].driving
+    assert a["A"].total_float_hours == 4          # late dates are not rounded: A may finish 4h later and B still starts Tuesday
+    assert a["B"].total_float_hours == 0 and a["D"].total_float_hours == 8
+
+
+def test_start_on_new_day_leaves_started_work_alone():
+    p = proj(start_on_new_day=True, data_date=datetime(2026, 1, 5, 12))
+    p.activities = [Activity(id="G", name="G", duration_hours=8, status=Status.IN_PROGRESS, actual_start=datetime(2026, 1, 5, 8), remaining_hours=4),
+                    Activity(id="N", name="N", duration_hours=8)]
+    schedule(p)
+    g, n = p.activities
+    assert g.early_finish == datetime(2026, 1, 5, 16)      # remaining work resumes at the data date, mid-day
+    assert n.early_start == datetime(2026, 1, 6, 8)        # not started: the data date is mid-day, so the next day
+
+
+def test_near_critical_threshold():
+    p, a = _two_chains()                                   # default: 10 working days
+    assert {x: a[x].near_critical for x in a} == {"S": False, "A1": False, "A2": False, "Z": False, "B1": True, "B2": True, "C1": True}
+    p, a = _two_chains(near_critical_days=3)               # B1/B2 carry exactly 3 days (24h), C1 nine
+    assert [x for x in a if a[x].near_critical] == ["B1", "B2"]
+    p, a = _two_chains(near_critical_days=2.5)
+    assert not any(a[x].near_critical for x in a)
+    p, a = _two_chains(near_critical_days=0)
+    assert not any(a[x].near_critical for x in a)
+    # the threshold is in the activity's own working days, has no effect on dates, and complete work is never flagged
+    p7, a7 = _two_chains(near_critical_days=3)
+    assert [(a7[x].early_start, a7[x].total_float_hours) for x in a7] == [(a[x].early_start, a[x].total_float_hours) for x in a]
+    p7.calendars["long"] = Calendar(id="long", hours_per_day=12)
+    a7["C1"].calendar_id = "long"
+    schedule(p7)
+    assert a7["C1"].total_float_hours == 108 and not a7["C1"].near_critical    # 9 days of 12h: 3 days is not near
+    p7.near_critical_days = 9
+    schedule(p7)
+    assert a7["C1"].near_critical
+    a7["B1"].status, a7["B1"].actual_start, a7["B1"].actual_finish = Status.COMPLETE, datetime(2026, 1, 5, 8), datetime(2026, 1, 7, 16)
+    schedule(p7)
+    assert a7["B1"].near_critical is False
+    assert Activity(id="x", name="x").near_critical is None   # unscheduled

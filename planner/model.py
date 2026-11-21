@@ -221,6 +221,8 @@ class Activity(BaseModel):
     total_float_hours: Optional[float] = None
     free_float_hours: Optional[float] = None
     critical: bool = False
+    near_critical: Optional[bool] = None  # open, off the longest path, total float <= Project.near_critical_days (10 when unset); None until scheduled
+    float_path: Optional[int] = None      # P6 multiple float paths: 1 = longest path, 2.. the next most critical chains; None when not computed / not on a path
     notes: str = ""
     # classification and levelling
     codes: dict[str, str] = Field(default_factory=dict)   # code type -> value, e.g. {"Trade": "Bricklayers"}
@@ -251,6 +253,12 @@ class Project(BaseModel):
     # calendar the lag of a relationship is measured on: "predecessor" (P6 default, also when None),
     # "successor", "project" (the default calendar) or "24h" (elapsed wall-clock hours)
     lag_calendar: Optional[str] = None
+    # how an in-progress activity's remaining work is scheduled (P6 "when scheduling progressed activities use"):
+    # "retained" (also when None), "override" or "actual_dates"; see cpm.schedule for the exact semantics
+    progress_logic: Optional[str] = None
+    float_paths: Optional[int] = None          # number of P6-style float paths (1-10) to compute after scheduling; None = none
+    start_on_new_day: Optional[bool] = None    # Asta "start on new day": a not-started activity never starts part-way through a working day
+    near_critical_days: Optional[float] = None  # working days of total float at or below which an open activity is near-critical (10 when None)
     calendars: dict[str, Calendar] = Field(default_factory=dict)
     wbs: list[WBSNode] = Field(default_factory=list)
     activities: list[Activity] = Field(default_factory=list)

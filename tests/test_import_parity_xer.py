@@ -277,6 +277,19 @@ def build_cases() -> list[tuple[str, dict]]:
     raw.append(("crafted-schedoptions-no-lag-column", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id", "%R\t1\t7")).encode(), None))
     raw.append(("crafted-schedoptions-no-rows", _minimal(extra=so()).encode(), None))
     raw.append(("crafted-schedoptions-short-row", _minimal(extra=so("%R\t1")).encode(), None))
+    # progress logic: SCHEDOPTIONS.sched_retained_logic / sched_progress_override written for every option, then crafted rows
+    for mode in (None, "retained", "override", "actual_dates", "bogus"):
+        raw.append((f"written-progress_logic-{mode or 'default'}", _xer({**progress(), "progress_logic": mode}), None))
+    pl = lambda *rows: ("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id\tsched_retained_logic\tsched_progress_override", *rows)  # noqa: E731
+    for name, flags in (("retained", "Y\tN"), ("override", "N\tY"), ("actual-dates", "N\tN"), ("both-y", "Y\tY"), ("blank", "\t"),
+                        ("retained-n-only", "N\t"), ("override-n-only", "\tN"), ("lowercase", "n\ty"), ("garbage", "maybe\t1")):
+        raw.append((f"crafted-progress_logic-{name}", _minimal(extra=pl(f"%R\t1\t7\t{flags}")).encode(), None))
+    raw.append(("crafted-progress_logic-other-project-first", _minimal(extra=pl("%R\t1\t8\tN\tY", "%R\t2\t7\tN\tN", "%R\t3\t7\tN\tY")).encode(), None))
+    raw.append(("crafted-progress_logic-no-proj-id-column", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tsched_retained_logic\tsched_progress_override", "%R\t1\tN\tY")).encode(), None))
+    raw.append(("crafted-progress_logic-override-column-only", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id\tsched_progress_override", "%R\t1\t7\tY")).encode(), None))
+    raw.append(("crafted-progress_logic-retained-column-only", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id\tsched_retained_logic", "%R\t1\t7\tN")).encode(), None))
+    raw.append(("crafted-progress_logic-use-actual-dates-column", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id\tsched_retained_logic\tsched_progress_override\tsched_use_actual_dates", "%R\t1\t7\tY\tN\tY")).encode(), None))
+    raw.append(("crafted-progress_logic-with-lag-calendar", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id\tsched_retained_logic\tsched_calendar_on_relationship_lag\tsched_progress_override", "%R\t1\t7\tN\trcal_24Hour\tN")).encode(), None))
     raw.append(("written-constraints-unscheduled", _xer(constraints(), scheduled=False), None))
     raw.append(("written-logic_loop", _xer(logic_loop(), scheduled=False), None))
     raw.append(("non-ascii-cp1252", _xer(_non_ascii(), encoding="cp1252"), None))
@@ -377,4 +390,16 @@ def test_corpus_reaches_the_reader():
     assert errors["malformed-table-without-name"] == "list index out of range"
     assert errors["malformed-project-without-proj_id"] == "'proj_id'"
     assert errors["malformed-calendar-hour-25"] == "hour must be in 0..23"
+    # the progress-logic flags round-trip through Python's writer and read as P6 encodes them
+    logic = {n: r["read"].get("progress_logic") for n, r in res.items() if "progress_logic" in n}
+    assert logic["written-progress_logic-default"] is None and logic["written-progress_logic-retained"] is None
+    assert logic["written-progress_logic-bogus"] is None
+    assert logic["written-progress_logic-override"] == "override" and logic["written-progress_logic-actual_dates"] == "actual_dates"
+    assert logic["crafted-progress_logic-retained"] is None and logic["crafted-progress_logic-override"] == "override"
+    assert logic["crafted-progress_logic-actual-dates"] == "actual_dates" and logic["crafted-progress_logic-both-y"] == "override"
+    assert logic["crafted-progress_logic-blank"] is None and logic["crafted-progress_logic-retained-n-only"] is None
+    assert logic["crafted-progress_logic-lowercase"] is None and logic["crafted-progress_logic-other-project-first"] == "actual_dates"
+    assert logic["crafted-progress_logic-no-proj-id-column"] == "override" and logic["crafted-progress_logic-override-column-only"] == "override"
+    assert logic["crafted-progress_logic-retained-column-only"] is None and logic["crafted-progress_logic-use-actual-dates-column"] == "actual_dates"
+    assert logic["crafted-progress_logic-with-lag-calendar"] == "actual_dates" and res["crafted-progress_logic-with-lag-calendar"]["read"]["lag_calendar"] == "24h"
     assert not any(n.startswith(("fixture-", "written-", "non-ascii-", "crafted-")) for n in errors), errors
