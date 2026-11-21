@@ -185,3 +185,93 @@ def test_longest_path_across_calendars():
     assert [x for x in "ABCD" if a[x].critical] == ["A", "C", "D"]
     drv = {(r.predecessor_id, r.successor_id): r.driving for r in p.relationships}
     assert drv == {("A", "C"): True, ("C", "D"): True, ("B", "D"): False}
+
+
+# ---- lag calendars ------------------------------------------------------------------------
+def _lag_project(mode=None, link_mode=None, lag=16.0, typ=LinkType.FS):
+    """A (five-day) -> B (seven-day) with a +2d lag (16h on A's 8h days); the project default calendar works six days,
+    so each lag-calendar option lands B on a different day."""
+    p = Project(id="P", name="Lag", start=datetime(2026, 1, 5, 8), default_calendar_id="six", lag_calendar=mode)
+    p.calendars = {"five": Calendar(id="five"), "six": Calendar(id="six", working_days=[0, 1, 2, 3, 4, 5]),
+                   "seven": Calendar(id="seven", working_days=list(range(7)))}
+    p.activities = [Activity(id="A", name="A", duration_hours=40, calendar_id="five"),
+                    Activity(id="B", name="B", duration_hours=16, calendar_id="seven")]
+    p.relationships = [Relationship(predecessor_id="A", successor_id="B", type=typ, lag_hours=lag, lag_calendar=link_mode)]
+    return p
+
+
+@pytest.mark.parametrize("mode, b_start", [
+    (None, datetime(2026, 1, 14, 8)),           # unset = P6 default: A's five-day calendar; Fri 16:00 + 16h -> Tue 16:00
+    ("predecessor", datetime(2026, 1, 14, 8)),
+    ("successor", datetime(2026, 1, 12, 8)),    # B's seven-day calendar: Sat and Sun carry the lag
+    ("project", datetime(2026, 1, 13, 8)),      # the six-day default calendar: Sat and Mon
+    ("24h", datetime(2026, 1, 10, 8)),          # 16 wall-clock hours from Fri 16:00 is Sat 08:00, a working time for B
+    ("bogus", datetime(2026, 1, 14, 8)),        # an unknown value behaves as the default
+])
+def test_lag_calendar_options(mode, b_start):
+    p = _lag_project(mode)
+    schedule(p)
+    a, b = p.activities
+    assert a.early_finish == datetime(2026, 1, 9, 16)
+    assert b.early_start == b_start
+    assert b.early_finish == p.calendars["seven"].add_hours(b_start, 16)
+    assert p.relationships[0].driving and a.critical and b.critical
+    # the backward pass measures the lag on the same calendar, so A has no float whatever the option
+    assert a.late_finish == a.early_finish and a.total_float_hours == 0 and a.free_float_hours == 0
+    assert b.late_start == b.early_start
+
+
+def test_relationship_lag_calendar_overrides_the_project_setting():
+    p = _lag_project("successor", link_mode="24h")
+    schedule(p)
+    assert p.activities[1].early_start == datetime(2026, 1, 10, 8)
+    p = _lag_project("24h", link_mode="predecessor")
+    schedule(p)
+    assert p.activities[1].early_start == datetime(2026, 1, 14, 8)
+
+
+def test_24h_lag_lands_on_the_successors_next_working_time():
+    """48 elapsed hours from Fri 16:00 is Sun 16:00; a five-day successor starts Monday morning."""
+    p = _lag_project("24h", lag=48)
+    p.activities[1].calendar_id = "five"
+    schedule(p)
+    assert p.activities[1].early_start == datetime(2026, 1, 12, 8)
+    assert p.relationships[0].driving
+
+
+def test_24h_lag_on_finish_links_and_leads():
+    # FF +16h elapsed: B's finish is pinned 16 wall-clock hours after A's, exactly as a working-calendar FF floor would be
+    p = _lag_project("24h", lag=16, typ=LinkType.FF)
+    schedule(p)
+    b = p.activities[1]
+    assert b.early_finish == datetime(2026, 1, 10, 8)
+    assert b.early_start == datetime(2026, 1, 8, 8)      # 16h of B's own seven-day calendar back from the finish
+    assert p.relationships[0].driving
+    # a lead (negative lag) runs backwards in elapsed time: Fri 16:00 - 8h = Fri 08:00
+    p = _lag_project("24h", lag=-8)
+    schedule(p)
+    assert p.activities[1].early_start == datetime(2026, 1, 9, 8)
+
+
+def test_driving_link_follows_the_lag_calendar():
+    """Which predecessor drives D depends on the calendar its lag is measured on; the longest path follows it."""
+    def build(mode):
+        p = proj(lag_calendar=mode)
+        p.activities = [Activity(id="A", name="A", duration_hours=40), Activity(id="B", name="B", duration_hours=48),
+                        Activity(id="D", name="D", duration_hours=8)]
+        p.relationships = [Relationship(predecessor_id="A", successor_id="D", lag_hours=16),
+                           Relationship(predecessor_id="B", successor_id="D")]
+        schedule(p)
+        return p
+    p = build("24h")                                      # A + 16 elapsed hours = Sat 08:00, so B (Mon 16:00) sets D
+    a = p.activity_map()
+    assert a["D"].early_start == datetime(2026, 1, 13, 8)
+    assert {r.predecessor_id: r.driving for r in p.relationships} == {"A": False, "B": True}
+    assert [x for x in "ABD" if a[x].critical] == ["B", "D"]
+    assert a["A"].total_float_hours == 8                  # late finish Mon 16:00: D's late start less 16 elapsed hours
+    p = build("predecessor")                              # A + 16 working hours = Tue 16:00, so A sets D
+    a = p.activity_map()
+    assert a["D"].early_start == datetime(2026, 1, 14, 8)
+    assert {r.predecessor_id: r.driving for r in p.relationships} == {"A": True, "B": False}
+    assert [x for x in "ABD" if a[x].critical] == ["A", "D"]
+    assert a["B"].total_float_hours == 8

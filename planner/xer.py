@@ -34,6 +34,9 @@ CSTR_IN = {
 CSTR_OUT = {v: k for k, v in CSTR_IN.items()}
 LINK_IN = {"PR_FS": LinkType.FS, "PR_SS": LinkType.SS, "PR_FF": LinkType.FF, "PR_SF": LinkType.SF}
 LINK_OUT = {v: k for k, v in LINK_IN.items()}
+# SCHEDOPTIONS.sched_calendar_on_relationship_lag: P6's "calendar for scheduling relationship lag"
+LAG_CAL_IN = {"rcal_Predecessor": "predecessor", "rcal_Successor": "successor", "rcal_Project": "project", "rcal_24Hour": "24h"}
+LAG_CAL_OUT = {v: k for k, v in LAG_CAL_IN.items()}
 RSRC_IN = {"RT_Labor": "labour", "RT_Mat": "material", "RT_Equip": "equipment"}
 # user-defined field types: P6 logical data type <-> ours (text, number, date)
 UDF_IN = {"FT_TEXT": "text", "FT_STATICTYPE": "text", "FT_INT": "number", "FT_FLOAT_2_DECIMALS": "number", "FT_MONEY": "number",
@@ -325,6 +328,13 @@ def read_xer(text: str, project_index: int = 0) -> Project:
             rels.append(Relationship(predecessor_id=id_by_task[r["pred_task_id"]], successor_id=id_by_task[r["task_id"]],
                                      type=LINK_IN.get(r.get("pred_type", ""), LinkType.FS), lag_hours=_f(r.get("lag_hr_cnt"))))
 
+    # schedule options: the calendar relationship lag is measured on (rows without a proj_id apply to every project)
+    lag_calendar = None
+    for r in t.get("SCHEDOPTIONS", []):
+        if r.get("proj_id", pid) == pid:
+            lag_calendar = LAG_CAL_IN.get(r.get("sched_calendar_on_relationship_lag", ""))
+            break
+
     res = {r["rsrc_id"]: Resource(id=r.get("rsrc_short_name") or r["rsrc_id"], name=r.get("rsrc_name", ""),
                                   type=RSRC_IN.get(r.get("rsrc_type", ""), "labour"))
            for r in t.get("RSRC", [])}
@@ -384,7 +394,7 @@ def read_xer(text: str, project_index: int = 0) -> Project:
         data_date=_dt(pr.get("last_recalc_date", "")),
         must_finish_by=_dt(pr.get("plan_end_date", "")),
         default_calendar_id=default_cal, calendars=cals, wbs=wbs, activities=acts, relationships=rels,
-        user_fields=user_fields,
+        lag_calendar=lag_calendar, user_fields=user_fields,
         resources=[res[k] for k in res if k in used] or list(res.values()), assignments=assigns, code_types=code_lib,
     )
     proj.ensure_default_calendar()
@@ -487,6 +497,27 @@ def write_xer(project: Project, currency: str = "GBP") -> str:
                       "task_code_prefix_flag": "Y", "def_rollup_dates_flag": "Y", "use_project_baseline_flag": "Y",
                       "rem_target_link_flag": "Y", "reset_planned_flag": "N", "sum_assign_level": "SL_Taskrsrc",
                       "export_flag": "Y", "loaded_scope_level": 7, "close_period_flag": "N", "trsrcsum_loaded": "N"}])
+
+    schedoptions = _table("SCHEDOPTIONS", ["schedoptions_id", "proj_id", "sched_outer_depend_type", "sched_open_critical_flag",
+                                           "sched_lag_early_start_flag", "sched_retained_logic", "sched_setplantoforecast",
+                                           "sched_float_type", "sched_calendar_on_relationship_lag", "sched_use_expect_end_flag",
+                                           "sched_progress_override", "level_float_thrs_cnt", "level_outer_assign_flag",
+                                           "level_outer_assign_priority", "level_over_alloc_pct", "level_within_float_flag",
+                                           "level_keep_sched_date_flag", "level_all_rsrc_flag", "sched_use_project_end_date_for_float",
+                                           "enable_multiple_longest_path_calc", "limit_multiple_longest_path_calc",
+                                           "max_multiple_longest_path", "use_total_float_multiple_longest_paths",
+                                           "key_activity_for_multiple_longest_paths", "LevelPriorityList"],
+                          [{"schedoptions_id": 1, "proj_id": pid, "sched_outer_depend_type": "SD_Both", "sched_open_critical_flag": "N",
+                            "sched_lag_early_start_flag": "Y", "sched_retained_logic": "Y", "sched_setplantoforecast": "N",
+                            "sched_float_type": "FT_FF",
+                            "sched_calendar_on_relationship_lag": LAG_CAL_OUT.get(project.lag_calendar or "", "rcal_Predecessor"),
+                            "sched_use_expect_end_flag": "Y", "sched_progress_override": "N", "level_float_thrs_cnt": 0,
+                            "level_outer_assign_flag": "N", "level_outer_assign_priority": 5, "level_over_alloc_pct": 25,
+                            "level_within_float_flag": "N", "level_keep_sched_date_flag": "Y", "level_all_rsrc_flag": "Y",
+                            "sched_use_project_end_date_for_float": "Y", "enable_multiple_longest_path_calc": "N",
+                            "limit_multiple_longest_path_calc": "Y", "max_multiple_longest_path": 10,
+                            "use_total_float_multiple_longest_paths": "Y", "key_activity_for_multiple_longest_paths": "",
+                            "LevelPriorityList": "priority_type,ASC"}])
 
     wbs_rows = [{"wbs_id": 1, "proj_id": pid, "obs_id": "", "seq_num": 0, "proj_node_flag": "Y", "sum_data_flag": "Y",
                  "status_code": "WS_Open", "wbs_short_name": project.id[:20], "wbs_name": project.name,
@@ -634,7 +665,7 @@ def write_xer(project: Project, currency: str = "GBP") -> str:
             if row:
                 udfrows.append({"udf_type_id": udf_ids[k], "fk_id": task_ids[a.id], "proj_id": pid, **row})
     udfvalue = _table("UDFVALUE", ["udf_type_id", "fk_id", "proj_id", "udf_date", "udf_number", "udf_text", "udf_code_id"], udfrows)
-    tables = [header, currtype, memotype, calendar, proj_t, projwbs, rsrc, actvtype, actvcode] + ([udftype] if defs else []) + \
+    tables = [header, currtype, memotype, calendar, proj_t, schedoptions, projwbs, rsrc, actvtype, actvcode] + ([udftype] if defs else []) + \
         [task, taskpred, taskrsrc, taskactv, taskmemo] + ([udfvalue] if defs else []) + ["%E", ""]
     return "\n".join(tables)
 

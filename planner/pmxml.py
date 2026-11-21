@@ -26,6 +26,21 @@ DAYS = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4, "
 RES_TYPE = {"Labor": "labour", "Nonlabor": "equipment", "Material": "material"}
 
 
+def _lag_calendar(s: str) -> str | None:
+    """Project/RelationshipLagCalendar: "Predecessor Activity Calendar", "Successor Activity Calendar",
+    "24 Hour Calendar" or "Project Default Calendar" (matched by keyword; anything else is left unset)."""
+    s = (s or "").lower()
+    if "successor" in s:
+        return "successor"
+    if "24" in s:
+        return "24h"
+    if "project" in s:
+        return "project"
+    if "predecessor" in s:
+        return "predecessor"
+    return None
+
+
 def _local(tag: str) -> str:
     return tag.split("}", 1)[-1]
 
@@ -129,7 +144,8 @@ def read_pmxml(text: str, project_index: int = 0) -> Project:
     start = _dt(_text(pe, "PlannedStartDate")) or _dt(_text(pe, "DataDate")) or datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
     project = Project(id=(_text(pe, "Id") or "PROJ")[:20], name=_text(pe, "Name") or _text(pe, "Id") or "Project",
                       start=start, data_date=_dt(_text(pe, "DataDate")), must_finish_by=_dt(_text(pe, "MustFinishByDate")),
-                      default_calendar_id=default_cal, calendars=cals, description=_text(pe, "Description"))
+                      default_calendar_id=default_cal, calendars=cals, description=_text(pe, "Description"),
+                      lag_calendar=_lag_calendar(_text(pe, "RelationshipLagCalendar")))
 
     root_wbs = _text(pe, "WBSObjectId")
     wbs_by_obj: dict[str, str] = {}

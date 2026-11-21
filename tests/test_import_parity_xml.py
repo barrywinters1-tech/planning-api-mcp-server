@@ -93,6 +93,25 @@ P6_CSTR = {"start_on_or_after": "Start On or After", "start_on_or_before": "Star
            "as_late_as_possible": "As Late As Possible"}
 P6_LINK = {"FS": "Finish to Start", "SS": "Start to Start", "FF": "Finish to Finish", "SF": "Start to Finish"}
 P6_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+P6_LAG_CAL = {"predecessor": "Predecessor Activity Calendar", "successor": "Successor Activity Calendar",
+              "project": "Project Default Calendar", "24h": "24 Hour Calendar"}
+# every MSPDI LagFormat: working (3 m, 5 h, 7 d, 9 w, 11 mo), elapsed (4, 6, 8, 10, 12), percent (19, 20), the estimated
+# "?" variants (35-44, 51-52), null (53), plus a missing element, an empty one and two values that are not codes
+MSPDI_LAG_FORMATS = ["3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "19", "20", "35", "36", "37", "38", "39", "40",
+                     "41", "42", "43", "44", "51", "52", "53", None, "", " 8", "8.0"]
+
+
+def _mspdi_lag_formats() -> str:
+    """One link per LagFormat value, each with a different lag, off a predecessor that finishes Tuesday 16:00: elapsed
+    formats set the link's lag_calendar to 24h and schedule in wall-clock hours."""
+    tasks = ['<Task><UID>1</UID><ID>1</ID><Name>Start</Name><OutlineLevel>1</OutlineLevel><Duration>PT16H0M0S</Duration></Task>']
+    for i, f in enumerate(MSPDI_LAG_FORMATS):
+        uid = i + 2
+        lf = "" if f is None else f"<LagFormat>{f}</LagFormat>"
+        tasks.append(f'<Task><UID>{uid}</UID><ID>{uid}</ID><Name>Link {i}</Name><OutlineLevel>1</OutlineLevel><Duration>PT8H0M0S</Duration>'
+                     f'<PredecessorLink><PredecessorUID>1</PredecessorUID><Type>{i % 4}</Type><LinkLag>{600 * (i + 1)}</LinkLag>{lf}</PredecessorLink></Task>')
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n<Project xmlns="{MSP_NS}"><Name>Lag formats</Name><StartDate>2026-03-02T08:00:00</StartDate>'
+            f'<Tasks>{"".join(tasks)}</Tasks></Project>\n')
 
 
 def _e(tag: str, val) -> str:
@@ -129,6 +148,8 @@ def _p6(data: dict, *, ns: str = "default", pct_types=("Duration", "Physical", "
     pr = [_e("ActivityDefaultCalendarObjectId", cal_oid[p["default_calendar_id"]]), _e("DataDate", p.get("data_date") or p["start"]),
           _e("Description", "Imported &amp; checked"), _e("Id", p["id"]), _e("MustFinishByDate", p.get("must_finish_by")),
           _e("Name", p["name"]), _e("ObjectId", 1), _e("PlannedStartDate", p["start"]), _e("WBSObjectId", 999)]
+    if p.get("lag_calendar"):
+        pr.append(_e("RelationshipLagCalendar", P6_LAG_CAL[p["lag_calendar"]]))
     pr.append(f"<WBS>{_e('Code', p['id'])}{_e('Name', p['name'])}{_e('ObjectId', 999)}<ParentObjectId xsi:nil='true'/></WBS>")
     for w in p["wbs"]:
         pr.append(f"<WBS>{_e('Code', w.get('code') or w['id'])}{_e('Name', w['name'])}{_e('ObjectId', wbs_oid[w['id']])}"
@@ -368,6 +389,29 @@ def build_cases() -> list[tuple[str, dict]]:
             cases.append((f"js-writer-{name}", {"kind": "mspdi", "text": w["text"]}))
         cases.append(("js-writer-gen0-no-namespace", {"kind": "mspdi", "text": _mspdi_variants(written[0]["text"])[0][1]}))
 
+    # lag calendars: MSPDI elapsed lags (LagFormat) by hand, written by both writers for a 24-hour project and for
+    # per-link overrides; P6 XML RelationshipLagCalendar for every option and an unknown one
+    cases.append(("mspdi-lag-formats", {"kind": "mspdi", "text": _mspdi_lag_formats()}))
+    cases.append(("mspdi-lag-formats-dispatch", {"kind": "xml", "text": _mspdi_lag_formats()}))
+    cases.append(("mspdi-hand-elapsed-lag", {"kind": "mspdi", "text": MSPDI_HAND.replace("<LagFormat>7</LagFormat>", "<LagFormat>40</LagFormat>")}))
+    lag24 = {**links_and_lags(), "lag_calendar": "24h"}
+    overrides = {**links_and_lags(), "lag_calendar": "successor"}
+    overrides["relationships"] = [{**r, "lag_calendar": ("24h" if i % 3 == 1 else "predecessor" if i % 3 == 2 else None)}
+                                  for i, r in enumerate(overrides["relationships"])]
+    for name, data in (("lag-calendar-24h", lag24), ("lag-link-overrides", overrides), ("lag-calendar-project", {**links_and_lags(), "lag_calendar": "project"})):
+        cases.append((f"py-writer-{name}", {"kind": "mspdi", "text": write_mspdi(_scheduled(data))}))
+    if NODE is not None:
+        written = _node([{"kind": "write", "project": copy.deepcopy(d)} for d in (lag24, overrides)])
+        for (name, w) in zip(("lag-calendar-24h", "lag-link-overrides"), written):
+            assert "text" in w, (name, w)
+            assert "<LagFormat>8</LagFormat>" in w["text"], name
+            cases.append((f"js-writer-{name}", {"kind": "mspdi", "text": w["text"]}))
+    for mode in P6_LAG_CAL:
+        cases.append((f"pmxml-lag-calendar-{mode}", {"kind": "pmxml", "text": _p6(_scheduled({**links_and_lags(), "lag_calendar": mode}).model_dump(mode="json"))}))
+    p6_24 = _p6(_scheduled(lag24).model_dump(mode="json"))
+    cases.append(("pmxml-lag-calendar-unknown", {"kind": "pmxml", "text": p6_24.replace("24 Hour Calendar", "Lunar Calendar")}))
+    cases.append(("pmxml-lag-calendar-empty", {"kind": "pmxml", "text": p6_24.replace("<RelationshipLagCalendar>24 Hour Calendar</RelationshipLagCalendar>", "<RelationshipLagCalendar/>")}))
+    cases.append(("pmxml-lag-calendar-prefix", {"kind": "pmxml", "text": _p6(_scheduled({**links_and_lags(), "lag_calendar": "successor"}).model_dump(mode="json"), ns="prefix")}))
     cases.append(("mspdi-hand", {"kind": "mspdi", "text": MSPDI_HAND}))
     cases.append(("mspdi-hand-no-namespace", {"kind": "mspdi", "text": MSPDI_HAND.replace(f' xmlns="{MSP_NS}"', "")}))
     cases.append(("mspdi-wrong-root", {"kind": "mspdi", "text": "<Schedule><Name>Odd one</Name><StartDate>2026-01-05T08:00:00</StartDate></Schedule>"}))

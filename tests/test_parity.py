@@ -144,6 +144,23 @@ def logic_loop():
     return _project("LOOP", "2026-03-02T08:00:00", [STD], acts, [_ln("A", "B"), _ln("B", "C"), _ln("C", "A")])
 
 
+LAG_CALENDARS = (None, "predecessor", "successor", "project", "24h")
+
+
+def lag_calendars(mode, link_modes=()):
+    """Every link type with lags and a lead across four calendars (incl. a midnight-starting seven-day one), the lag
+    measured on `mode`'s calendar; `link_modes` gives (link index, lag_calendar) overrides for some links."""
+    acts = [_act("A", typ="start_milestone"), _act("B", 40), _act("C", 24, "six_day"), _act("D", 40, "ten_hour"),
+            _act("E", 16, "early"), _act("F", 30, "ten_hour"), _act("G", 12.5), _act("H", 64, "early"),
+            _act("I", 20, "six_day"), _act("Z", typ="finish_milestone")]
+    links = [_ln("A", "B"), _ln("B", "C", "SS", 16), _ln("B", "D", "FF", 8), _ln("C", "E", "SF", 12), _ln("D", "F", "FS", -10),
+             _ln("A", "G"), _ln("G", "H", "FS", 20), _ln("E", "Z", "FS", 3.5), _ln("F", "Z"), _ln("H", "Z", "FF", 4),
+             _ln("H", "I", "FS", 30), _ln("D", "I", "SS", 100), _ln("I", "Z")]
+    for i, m in link_modes:
+        links[i]["lag_calendar"] = m
+    return _project(f"LAGCAL-{mode or 'default'}", "2026-03-23T08:00:00", [STD, SIX, TEN, EARLY], acts, links, lag_calendar=mode)
+
+
 BRIEFS = [
     "Two-storey detached house, 180 m2, timber frame on strip foundations, brick and block, start 2 March 2026, finish by end of 2026",
     "24-unit four-storey apartment block, RC frame on piles, brick facade, contaminated ground, start 6 April 2026, finish before Christmas 2027",
@@ -211,6 +228,17 @@ def build_cases() -> list[tuple[str, dict]]:
         cases.append((f"schedule-{fn.__name__}", {"kind": "schedule", "project": fn()}))
     demo = json.loads((ROOT / "examples" / "demo_house.json").read_text())
     cases.append(("schedule-demo_house", {"kind": "schedule", "project": Project.model_validate(demo).model_dump(mode="json")}))
+    # lag calendars: each project-level option, per-link overrides, and 24-hour lags across a year of DST changes
+    for mode in LAG_CALENDARS:
+        cases.append((f"schedule-lag_calendar-{mode or 'default'}", {"kind": "schedule", "project": lag_calendars(mode)}))
+    cases.append(("schedule-lag_calendar-link-overrides", {"kind": "schedule", "project": lag_calendars(
+        "successor", [(1, "24h"), (2, "project"), (4, "predecessor"), (6, "24h"), (9, "24h"), (11, "project")])}))
+    cases.append(("schedule-lag_calendar-overrides-on-default", {"kind": "schedule", "project": lag_calendars(
+        None, [(3, "successor"), (7, "24h"), (10, "24h"), (11, "successor")])}))
+    for mode in ("successor", "24h"):
+        cases.append((f"schedule-dst_year-lag-{mode}", {"kind": "schedule", "project": {**dst_year(), "lag_calendar": mode}}))
+    cases.append(("level-lag_calendar-24h", {"kind": "level", "project": lag_calendars("24h")}))
+    cases.append(("repair-lag_calendar-successor", {"kind": "repair", "project": {**lag_calendars("successor"), "must_finish_by": "2026-04-10T16:00:00"}}))
     for i, b in enumerate(BRIEFS):
         cases.append((f"generate-{i}", {"kind": "generate", "brief": b}))
         proj = _generated(b)

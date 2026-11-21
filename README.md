@@ -130,17 +130,18 @@ Reviewed against Asta's own documentation and release notes, ranked by how often
 
 **Backlog, in order**
 
-1. Lag calendar option (predecessor, successor, 24-hour, project default). Imported P6 and Asta jobs that use successor or 24-hour lag calendars schedule differently here today, so this is a correctness item.
-2. Several tasks on one bar line. Asta's signature presentation, used for zone-by-zone and repetitive work. Needs a "line" concept above activities, plus import/export mapping.
-3. Annotations: arrows and boxes (text notes pinned to a date and row are done).
-4. PDF: company logo in the title block, and period lines on the print (title block, revision, legend, date range and fit to pages are done).
-5. Progress: dragging the progress line to record progress (periods, per-period lines and the site update sheet are done).
-6. Bar styles per code or field in saved views (views with the project, multi-condition filters and columns are done).
-7. Custom fields in MS Project XML (ExtendedAttribute) and P6 XML; a shared organisation-wide library once there is a hosted service (fields, the library file and XER UDFs are done).
-8. Subprojects and multi-project (expanded tasks, master programmes).
-9. Cash flow with payment terms; cost centres.
-10. Split tasks and buffer tasks.
-11. Site progress companion app (phase 2, agreed separately).
+1. Several tasks on one bar line. Asta's signature presentation, used for zone-by-zone and repetitive work. Needs a "line" concept above activities, plus import/export mapping.
+2. Annotations: arrows and boxes (text notes pinned to a date and row are done).
+3. PDF: company logo in the title block, and period lines on the print (title block, revision, legend, date range and fit to pages are done).
+4. Progress: dragging the progress line to record progress (periods, per-period lines and the site update sheet are done).
+5. Bar styles per code or field in saved views (views with the project, multi-condition filters and columns are done).
+6. Custom fields in MS Project XML (ExtendedAttribute) and P6 XML; a shared organisation-wide library once there is a hosted service (fields, the library file and XER UDFs are done).
+7. Subprojects and multi-project (expanded tasks, master programmes).
+8. Cash flow with payment terms; cost centres.
+9. Split tasks and buffer tasks.
+10. Site progress companion app (phase 2, agreed separately).
+
+Done from this list: the lag calendar option. `Project.lag_calendar` is `predecessor` (P6's default, also when unset), `successor`, `project` (the default calendar) or `24h` (elapsed hours), and a relationship can override it with its own `lag_calendar`. XER reads and writes it as `SCHEDOPTIONS.sched_calendar_on_relationship_lag` (`rcal_Predecessor`, `rcal_Successor`, `rcal_Project`, `rcal_24Hour`), P6 XML reads `RelationshipLagCalendar`, and MS Project XML maps elapsed lags (`LagFormat` 4, 6, 8, 10, 12, 20 and their estimated variants) to a per-link `24h` override, writing `LagFormat` 8 (elapsed days) for links whose effective lag calendar is 24-hour.
 
 ## Tests
 
@@ -158,7 +159,7 @@ Engine against hand-worked examples; XER, P6 XML and MSPDI round trips and real 
 - Schedule times are kept to the whole second.
 - Levelling is the serial method with day-level demand; no resource curves or smoothing. Risk analysis does not re-level inside its runs.
 - Progress uses retained logic only.
-- Lags use the predecessor's calendar (P6's default); there is no per-link or project lag-calendar option yet.
+- Lag calendars: the scheduler honours the project setting (predecessor, successor, project, 24-hour) and per-link overrides, but resource levelling still measures lag on the predecessor's calendar. A 24-hour lag on an FF or SF link pins the successor's finish to the elapsed time, which can fall outside its shift, just as a finish-to-finish link from a seven-day predecessor into a five-day successor does today.
 - `must_finish_by` has no MSPDI field, so it does not survive an XML round trip.
 - In the browser, calendars with number-like IDs (P6 ObjectIds such as `178`) are held in numeric rather than file order. Dates and the default calendar are unaffected; calendar numbering on re-export can differ from the Python app.
 - The brief parser is keyword-based. If it misreads something, correct the form before generating.

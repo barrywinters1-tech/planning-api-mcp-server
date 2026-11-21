@@ -1,16 +1,20 @@
 """Critical Path Method scheduler.
 
 Forward and backward pass over a Project with per-activity calendars, all four
-relationship types with lags (lag measured on the predecessor's calendar, as P6
-does by default), date constraints, and progress against a data date.
+relationship types with lags, date constraints, and progress against a data date.
+
+Lag is measured on the calendar Project.lag_calendar names (P6's "calendar for scheduling
+relationship lag"): the predecessor's (the P6 default, used when None), the successor's, the
+project default calendar, or "24h" (elapsed wall-clock hours). A relationship may override the
+project setting with its own lag_calendar. Durations and floats always use the activity's own calendar.
 """
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
-from .model import Activity, ActivityType, Constraint, LinkType, Project, Status
+from .model import Activity, ActivityType, Calendar, Constraint, LinkType, Project, Relationship, Status
 
 EPS = 1e-6
 
@@ -63,6 +67,32 @@ def _resume_from(a: Activity, data_date: datetime) -> datetime:
     return max(data_date, a.resume_date) if a.resume_date else data_date
 
 
+LAG_CALENDARS = ("predecessor", "successor", "project", "24h")
+
+
+def _lag_calendar(project: Project, r: Relationship, pred: Activity, succ: Activity) -> Optional[Calendar]:
+    """The calendar this relationship's lag is measured on; None means elapsed (24-hour) time.
+    An unknown value falls back to the predecessor's calendar, the P6 default."""
+    mode = r.lag_calendar or project.lag_calendar or "predecessor"
+    if mode == "successor":
+        return project.calendar_for(succ)
+    if mode == "project":
+        return project.calendars[project.default_calendar_id]
+    if mode == "24h":
+        return None
+    return project.calendar_for(pred)
+
+
+def _add_lag(cal: Optional[Calendar], dt: datetime, hours: float) -> datetime:
+    """dt plus a lag: working hours on cal, or wall-clock hours when cal is None (24-hour lag).
+    Elapsed lag lands on whole seconds, as Calendar.add_hours does, so both engines agree."""
+    if cal is not None:
+        return cal.add_hours(dt, hours)
+    if hours == 0:
+        return dt
+    return dt + timedelta(seconds=round(hours * 3600))
+
+
 def schedule(project: Project) -> Project:
     """Compute early/late dates, floats and the critical path in place."""
     project.ensure_default_calendar()
@@ -97,18 +127,18 @@ def schedule(project: Project) -> Project:
         finish_links: list = []  # ... and for FF/SF
         for r in preds[a.id]:
             p = amap[r.predecessor_id]
-            pcal = project.calendar_for(p)
+            lcal = _lag_calendar(project, r, p, a)
             if r.type == LinkType.FS:
-                t = pcal.add_hours(p.early_finish, r.lag_hours)
+                t = _add_lag(lcal, p.early_finish, r.lag_hours)
                 es_floor = max(es_floor, t); start_links.append((r, t))
             elif r.type == LinkType.SS:
-                t = pcal.add_hours(p.early_start, r.lag_hours)
+                t = _add_lag(lcal, p.early_start, r.lag_hours)
                 es_floor = max(es_floor, t); start_links.append((r, t))
             elif r.type == LinkType.FF:
-                t = pcal.add_hours(p.early_finish, r.lag_hours)
+                t = _add_lag(lcal, p.early_finish, r.lag_hours)
                 ef_floor = t if ef_floor is None else max(ef_floor, t); finish_links.append((r, t))
             elif r.type == LinkType.SF:
-                t = pcal.add_hours(p.early_start, r.lag_hours)
+                t = _add_lag(lcal, p.early_start, r.lag_hours)
                 ef_floor = t if ef_floor is None else max(ef_floor, t); finish_links.append((r, t))
 
         cd = a.constraint_date
@@ -172,17 +202,18 @@ def schedule(project: Project) -> Project:
             s = amap[r.successor_id]
             if s.status == Status.COMPLETE:
                 continue
+            lcal = _lag_calendar(project, r, a, s)
             if r.type == LinkType.FS:
-                t = cal.add_hours(s.late_start, -r.lag_hours)
+                t = _add_lag(lcal, s.late_start, -r.lag_hours)
                 lf_ceil = min(lf_ceil, t)
             elif r.type == LinkType.SS:
-                t = cal.add_hours(s.late_start, -r.lag_hours)
+                t = _add_lag(lcal, s.late_start, -r.lag_hours)
                 ls_ceil = t if ls_ceil is None else min(ls_ceil, t)
             elif r.type == LinkType.FF:
-                t = cal.add_hours(s.late_finish, -r.lag_hours)
+                t = _add_lag(lcal, s.late_finish, -r.lag_hours)
                 lf_ceil = min(lf_ceil, t)
             elif r.type == LinkType.SF:
-                t = cal.add_hours(s.late_finish, -r.lag_hours)
+                t = _add_lag(lcal, s.late_finish, -r.lag_hours)
                 ls_ceil = t if ls_ceil is None else min(ls_ceil, t)
 
         cd = a.constraint_date
@@ -206,14 +237,15 @@ def schedule(project: Project) -> Project:
         ff: Optional[float] = None
         for r in succs[a.id]:
             s = amap[r.successor_id]
+            lcal = _lag_calendar(project, r, a, s)
             if r.type == LinkType.FS:
-                slack = cal.hours_between(cal.add_hours(a.early_finish, r.lag_hours), s.early_start)
+                slack = cal.hours_between(_add_lag(lcal, a.early_finish, r.lag_hours), s.early_start)
             elif r.type == LinkType.SS:
-                slack = cal.hours_between(cal.add_hours(a.early_start, r.lag_hours), s.early_start)
+                slack = cal.hours_between(_add_lag(lcal, a.early_start, r.lag_hours), s.early_start)
             elif r.type == LinkType.FF:
-                slack = cal.hours_between(cal.add_hours(a.early_finish, r.lag_hours), s.early_finish)
+                slack = cal.hours_between(_add_lag(lcal, a.early_finish, r.lag_hours), s.early_finish)
             else:
-                slack = cal.hours_between(cal.add_hours(a.early_start, r.lag_hours), s.early_finish)
+                slack = cal.hours_between(_add_lag(lcal, a.early_start, r.lag_hours), s.early_finish)
             ff = slack if ff is None else min(ff, slack)
         a.free_float_hours = round(a.total_float_hours if ff is None else max(0.0, ff), 4)
 
