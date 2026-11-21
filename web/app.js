@@ -18,7 +18,7 @@ const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 const S = {
   screen: 'projects', pid: null, project: null, report: null, history: { undo: 0, redo: 0 },
   sel: new Set(), active: null, activeCol: 'name', collapsed: new Set(), selLink: null,
-  view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '', show: 'all', level: 0, barText: 'name', periods: 'none' },
+  view: { mode: 'gantt', tlSource: 'WBS', pxDay: 8, links: true, float: true, baseline: false, progress: false, critical: false, colour: 'critical', group: '', sort: '', filter: '', show: 'all', level: 0, barText: 'name', periods: 'none', snap: 'day' },
   trace: null,
   cols: ['id', 'name', 'dur', 'start', 'finish', 'tf', 'preds', 'pct'],
   panel: null, histRes: '', hist: null, costs: null, editing: null, drag: null, rowsCache: [],
@@ -182,7 +182,8 @@ function mutate(fn, label) {
   if (!S.project) return; if (readOnly()) return roBlocked();
   const p = S.project, before = MS_SNAP(p), actuals = {}; p.activities.forEach(a => { actuals[a.id] = { s: a.actual_start, f: a.actual_finish }; });
   const r = fn(p); if (r === false) return;
-  if (label !== 'Reason recorded') { const e = logChange(p, before, label); if (e && (e.moved.length || e.finish_days)) label = (label || 'Edit') + (e.finish_days ? ` · finish ${e.finish_days > 0 ? '+' : ''}${e.finish_days}d` : '') + (e.moved.length ? ` · ${e.moved.length} milestone${e.moved.length === 1 ? '' : 's'} moved` : ''); }
+  if (typeof label === 'function') { const e = logChange(p, before, null); label = label(e); if (e) e.label = label; }   // caller words the message after the change, e.g. a drag
+  else if (label !== 'Reason recorded') { const e = logChange(p, before, label); if (e && (e.moved.length || e.finish_days)) label = (label || 'Edit') + (e.finish_days ? ` · finish ${e.finish_days > 0 ? '+' : ''}${e.finish_days}d` : '') + (e.moved.length ? ` · ${e.moved.length} milestone${e.moved.length === 1 ? '' : 's'} moved` : ''); }
   const warn = asBuiltGuard(p, actuals); if (warn) { label = warn; S.lastChange = null; }
   save(label);
 }
@@ -468,6 +469,7 @@ function syncViewControls() {
   const vlm = $('#vLinkMode'); if (vlm) vlm.value = S.view.linkMode || (S.view.links ? 'all' : 'none');
   ['flags', 'notes', 'grid'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); if (el) el.checked = S.view[k] !== false; });
   const vp = $('#vPeriods'); if (vp) vp.value = S.view.periods || 'none';
+  const vsn = $('#vSnap'); if (vsn) vsn.value = S.view.snap || 'day';
   $('#vSort').value = S.view.sort; if (document.activeElement !== $('#vFilter')) $('#vFilter').value = S.view.filter;
 }
 function barLabel(a) {
@@ -687,8 +689,10 @@ function render() {
       html.push(`<div class="row ${r.wbs ? 'wbs' : 'group'} ${sel ? 'sel' : ''}" data-key="${esc(key)}" data-i="${i}"><div class="cells" style="width:${gw}px">${cells}</div></div>`);
     }
   });
-  const H = rs.length * RH; S.chartH = H;
-  html.push(`<svg class="chart" style="left:${gw}px" width="${W}" height="${H}">${chart(rs, t0, t1, W, H, 0)}</svg>`);
+  const blank = !readOnly() && !TOUCH;   // Asta's empty row: press and drag on the chart to draw a new activity
+  if (blank) html.push(`<div class="row blank" data-blank="1"><div class="cells" style="width:${gw}px"><div class="c" style="flex:1;padding-left:8px">Draw a bar here, or press Insert</div></div></div>`);
+  const H = (rs.length + (blank ? 1 : 0)) * RH; S.chartH = H;
+  html.push(`<svg class="chart" style="left:${gw}px" width="${W}" height="${H}">${chart(rs, t0, t1, W, H, 0)}${blank ? `<rect class="hit rowbg blank" data-key="__new" x="0" y="${rs.length * RH}" width="${W}" height="${RH}" fill="transparent"/>` : ''}</svg>`);
   const band = (S.panel === 'histogram' || S.panel === 'cost');
   if (band) html.push(`<div class="bandrow"><div class="cells" style="width:${gw}px" id="bandLabel"></div><svg id="bandSvg" width="${W}" height="150"></svg></div>`);
   $('#rows').innerHTML = html.join('');
@@ -922,9 +926,46 @@ function renderInspector() {
   if (S.sideTab === 'progress') { const body = shell.querySelector('#inspBody'); body.innerHTML = progressVisuals(S.project, S.report, true); drawViz(body); return; }
   renderActivityPanel();
 }
+// Several rows selected: one form that applies to all of them (Asta's Object Edit, P6's Global Change, without the dialog).
+function renderMultiPanel(el, acts) {
+  const p = S.project, n = acts.length, tasks = acts.filter(a => a.type === 'task' && a.status !== 'complete');
+  const cals = Object.values(p.calendars).map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  const codes = Object.keys(p.code_types).map(t => `<label>${esc(t)}<select data-mcode="${esc(t)}"><option value="">Leave as is</option><option value="__none">Clear</option>${Object.keys(p.code_types[t]).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}</select></label>`).join('');
+  const fields = fieldDefs(p).map(d => `<label>${esc(d.name)}<input data-mfield="${esc(d.name)}" ${d.type === 'date' ? 'type="date"' : d.type === 'number' ? 'type="number" step="any"' : ''} placeholder="Leave as is"></label>`).join('');
+  el.innerHTML = `
+    <div class="insp-head"><div style="min-width:0;flex:1"><div class="id">${n} selected</div><h3>Edit all ${n} together</h3>
+      <div class="multi-ids">${acts.slice(0, 12).map(a => `<button type="button" class="linkchip" data-goto="${esc(a.id)}" title="${esc(a.name)}">${esc(a.id)}</button>`).join('')}${n > 12 ? `<span class="hint">+${n - 12} more</span>` : ''}</div></div></div>
+    <div class="form">
+      <div class="insp-sec">Duration · ${tasks.length} task${tasks.length === 1 ? '' : 's'} not complete</div>
+      <div class="row2"><label>Set to, days<input id="mDur" type="number" step=".5" min=".5" placeholder="e.g. 5"></label><label>Change by, days<input id="mDelta" type="number" step=".5" placeholder="+2 or -1"></label></div>
+      <label>Calendar<select id="mCal"><option value="">Leave as is</option>${cals}</select></label>
+      <div class="insp-sec">Codes and resources</div>
+      ${codes || '<p class="hint" style="font-size:12px">No code types yet (More → Codes).</p>'}
+      <div class="row2"><label>Resources<input id="mRes" placeholder="Bricklayers, Scaffolders"></label><label>How<select id="mResMode"><option value="add">Add to each</option><option value="replace">Replace on each</option></select></label></div>
+      ${fields ? `<div class="insp-sec">Custom fields</div>${fields}` : ''}
+      <div class="insp-sec">Dates, progress and logic</div>
+      <div class="bar-row"><button type="button" class="btn" id="mProg">Progress…</button><button type="button" class="btn" id="mCon">Constraint…</button><button type="button" class="btn" id="mLink">Link in order</button></div>
+      <label>Deadline<input type="date" id="mDead"></label>
+      <label>Append to notes<textarea id="mNotes" rows="2" placeholder="Added to every selected activity"></textarea></label>
+      <p class="hint" style="font-size:12px">Each change applies to every selected activity as one undo step.</p>
+    </div>`;
+  const q = s => el.querySelector(s), who = `${n} activities`;
+  el.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => goToActivity(b.dataset.goto));
+  q('#mDur').onchange = e => { const v = +e.target.value; if (!(v > 0)) return; mutate(() => tasks.forEach(a => { a.duration_hours = v * hpd(a); if (a.status === 'in_progress') a.remaining_hours = a.duration_hours * (1 - (a.percent_complete || 0) / 100); }), `${tasks.length} activities set to ${fmt1(v)} days`); };
+  q('#mDelta').onchange = e => { const v = +e.target.value; if (!v) return; mutate(() => tasks.forEach(a => { a.duration_hours = Math.max(hpd(a) / 2, a.duration_hours + v * hpd(a)); if (a.status === 'in_progress') a.remaining_hours = Math.max(0, (a.remaining_hours == null ? a.duration_hours : a.remaining_hours) + v * hpd(a)); }), `${tasks.length} activities ${v > 0 ? '+' : ''}${fmt1(v)} days`); };
+  q('#mCal').onchange = e => { const v = e.target.value; if (!v) return; mutate(() => acts.forEach(a => { const old = hpd(a); a.calendar_id = v; a.duration_hours = a.duration_hours / old * hpd(a); }), `${who} moved to the ${(p.calendars[v] || {}).name || v} calendar`); };
+  el.querySelectorAll('[data-mcode]').forEach(sel => sel.onchange = () => { const t = sel.dataset.mcode, v = sel.value; if (!v) return; mutate(() => acts.forEach(a => { a.codes = a.codes || {}; if (v === '__none') delete a.codes[t]; else a.codes[t] = v; }), `${who}: ${t} ${v === '__none' ? 'cleared' : '= ' + v}`); });
+  q('#mRes').onchange = e => { const v = e.target.value.trim(); if (!v) return; const add = q('#mResMode').value === 'add'; mutate(() => acts.forEach(a => setResources(a, add ? [ALL_COLS.res.get(a), v].filter(Boolean).join(', ') : v)), `${who}: resources ${add ? 'added' : 'replaced'}`); };
+  el.querySelectorAll('[data-mfield]').forEach(inp => inp.onchange = () => { const d = fieldDefs(p).find(x => x.name === inp.dataset.mfield); if (!d || !inp.value) return; const v = parseField(d, inp.value); if (v === undefined) return toast(`${d.name} needs a ${d.type}`); mutate(() => acts.forEach(a => { a.fields = a.fields || {}; a.fields[d.name] = v; }), `${who}: ${d.name} set`); });
+  q('#mProg').onclick = progressDialog; q('#mCon').onclick = constraintDialog; q('#mLink').onclick = linkSelected;
+  q('#mDead').onchange = e => { const v = e.target.value; mutate(() => acts.forEach(a => { a.deadline = v ? v + 'T16:00:00' : null; }), v ? `${who}: deadline ${fmtD(v)}` : `${who}: deadlines cleared`); };
+  q('#mNotes').onchange = e => { const v = e.target.value.trim(); if (!v) return; mutate(() => acts.forEach(a => { a.notes = (a.notes ? a.notes + '\n' : '') + v; }), `${who}: note added`); };
+}
 function renderActivityPanel() {
   const el = $('#inspBody');
   const focusId = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
+  el.querySelectorAll('input,textarea,select').forEach(x => { x.onchange = null; x.oninput = null; });   // Chrome fires a stray change on a focused field when innerHTML replaces it
+  const multi = selectedActs(); if (multi.length > 1) return renderMultiPanel(el, multi);
   const a = S.active && byId(S.active);
   if (!a) { el.innerHTML = `<div class="empty"><b>Select an activity</b>Click a bar or a row to see its dates, logic and progress here. The Progress tab shows the S-curve, phases and milestones.</div>`; return; }
   const p = S.project; const pct = a.status === 'complete' ? 100 : Math.round(a.percent_complete);
@@ -1371,7 +1412,7 @@ function selectRow(key, e, col) {
   if (e && e.shiftKey && S.active) { const a = keys.indexOf(S.active), b = keys.indexOf(key); S.sel = new Set(keys.slice(Math.min(a, b), Math.max(a, b) + 1)); }
   else if (e && (e.ctrlKey || e.metaKey)) { if (S.sel.has(key)) S.sel.delete(key); else S.sel.add(key); S.active = key; }
   else { S.sel = new Set([key]); S.active = key; }
-  if (col) S.activeCol = col; S.selLink = null;
+  if (col) S.activeCol = col; S.selLink = null; if (byId(key)) S.linkFrom = key;
   paintSelection(); if (S.inspector) renderInspector();
 }
 function paintSelection() {
@@ -1420,7 +1461,7 @@ function scrollToRow(i) { const sheet = $('#sheet'); const y = HDR + i * RH; if 
 // ---------- chart wiring: drag move / resize / link ----------
 function wireChart() {
   const svg = $('svg.chart'); if (!svg) return;
-  svg.querySelectorAll('.rowbg').forEach(r => { r.onmousedown = e => { if (e.button === 0) selectRow(r.dataset.key, e); }; r.oncontextmenu = e => { e.preventDefault(); if (!S.sel.has(r.dataset.key)) selectRow(r.dataset.key, e); const pt = svgPoint(svg, e); S.ctxAt = { date: iso(new Date(+S.t0 + (pt.x - GX) / S.view.pxDay * DAY)), key: r.dataset.key }; contextMenu(e.clientX, e.clientY); S.ctxAt = null; }; });
+  svg.querySelectorAll('.rowbg').forEach(r => { r.onpointerdown = e => { if (e.button !== 0) return; const key = r.dataset.key; if (e.pointerType !== 'mouse' || readOnly() || e.shiftKey || e.ctrlKey || e.metaKey) { if (key !== '__new') selectRow(key, e); return; } startDraw(e, key, r); }; r.oncontextmenu = e => { e.preventDefault(); if (r.dataset.key === '__new') return; if (!S.sel.has(r.dataset.key)) selectRow(r.dataset.key, e); const pt = svgPoint(svg, e); S.ctxAt = { date: iso(new Date(+S.t0 + (pt.x - GX) / S.view.pxDay * DAY)), key: r.dataset.key }; contextMenu(e.clientX, e.clientY); S.ctxAt = null; }; });
   svg.querySelectorAll('.shade[data-shade]').forEach(n => { n.ondblclick = e => { e.stopPropagation(); const b = (S.project.shading || []).find(x => x.id === n.dataset.shade); if (b) shadeDialog(b); }; });
   svg.querySelectorAll('.note[data-note]').forEach(n => { n.onmousedown = e => e.stopPropagation(); n.onclick = e => { e.stopPropagation(); const a = (S.project.annotations || []).find(x => x.id === n.dataset.note); if (a) noteDialog(a); }; });
   svg.querySelectorAll('.bar[data-id]').forEach(b => {
@@ -1484,7 +1525,7 @@ function applyDrag(act, d, days) {
     act.constraint = b.con === 'must_start_on' ? 'must_start_on' : 'start_on_or_after'; act.constraint_date = iso(T); return { T, pulled: false };
   };
   if (d.kind === 'move') {
-    const t = new Date(b.st); t.setDate(t.getDate() + days); const r = holdStart(workStartOn(act, t));
+    const t = new Date(b.st); t.setDate(t.getDate() + days); snapToMonday(t); const r = holdStart(workStartOn(act, t));
     return r.pulled ? { pulled: true } : { start: iso(r.T) };
   }
   if (d.end === 'F') {
@@ -1554,7 +1595,7 @@ function startDrag(e, kind, id, el) {
       } else tipText(ev, `Drop on another bar: left half links to its start, right half to its finish`);
       return;
     }
-    const days = Math.round(dx / S.view.pxDay);
+    const days = snapDays(dx);
     if (last === days) return; last = days;
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => {
@@ -1575,20 +1616,26 @@ function startDrag(e, kind, id, el) {
       if (!d.target) { const t = document.elementFromPoint(ev.clientX, ev.clientY), key = t && t.dataset && t.dataset.key; if (key && byId(key) && key !== id) addLink(id, key, d.end + 'S', 0); return; }
       addLink(id, d.target.id, d.target.type, 0); return;
     }
-    const dx = ev.clientX - d.x0 + (sheet.scrollLeft - d.sl0), days = Math.round(dx / S.view.pxDay);
+    const dx = ev.clientX - d.x0 + (sheet.scrollLeft - d.sl0), days = snapDays(dx);
     if (!d.moved) { d.el.classList.remove('dragging'); return; }   // a click: leave the DOM alone so double-click and right-click work
     if (!days) { render(); return; }
     let info = null;
-    mutate(p => { const act = p.activities.find(x => x.id === id); info = applyDrag(act, d, days); }, null);
     const c = d.preview && d.preview.days === days ? d.preview.c : null;
     const fin = c ? workingDaysBetween(calOf(a), new Date(S.project.finish), new Date(c.finish)) : null;
     const tail = fin == null ? '' : fin === 0 ? ' Finish unchanged.' : ` Finish ${fin > 0 ? '+' : ''}${fin} working days.`;
-    if (d.kind === 'move') toast(info.pulled ? `${id} pulled back to its earliest start${d.by.length ? ': ' + d.by.join(', ') + ' holds it' : ''}. Constraint removed.${tail}` : `${id} now starts on or after ${fmtD(info.start)} (constraint added).${tail}`, { undo: true });
-    else if (d.end === 'F') toast(`${id} is now ${fmt1(daysOf(a, info.dur))} days.${tail}`, { undo: true });
-    else toast(`${id} ${info.pulled ? 'starts at its earliest' : 'starts ' + fmtD(info.start)}, now ${fmt1(daysOf(a, info.dur))} days.${tail}`, { undo: true });
+    const words = e => {   // the save toast carries this (with Undo and "Why?"), so the drag's own message is not overwritten by the change log's
+      let m; if (d.kind === 'move') m = info.pulled ? `${id} pulled back to its earliest start${d.by.length ? ': ' + d.by.join(', ') + ' holds it' : ''}. Constraint removed.${tail}` : `${id} now starts on or after ${fmtD(info.start)} (constraint added).${tail}`;
+      else if (d.end === 'F') m = `${id} is now ${fmt1(daysOf(a, info.dur))} days.${tail}`;
+      else m = `${id} ${info.pulled ? 'starts at its earliest' : 'starts ' + fmtD(info.start)}, now ${fmt1(daysOf(a, info.dur))} days.${tail}`;
+      return m + (e && e.moved.length ? ` · ${e.moved.length} milestone${e.moved.length === 1 ? '' : 's'} moved` : '');
+    };
+    mutate(p => { const act = p.activities.find(x => x.id === id); info = applyDrag(act, d, days); }, words);
   };
   document.addEventListener('pointermove', onMove); document.addEventListener('pointerup', onUp); document.addEventListener('pointercancel', onUp);
 }
+// Snapping unit (View → Snap drags to): days, or whole weeks with starts on a Monday, as in Asta.
+function snapDays(dx) { const d = dx / S.view.pxDay; return S.view.snap === 'week' ? Math.round(d / 7) * 7 : Math.round(d); }
+function snapToMonday(t) { if (S.view.snap !== 'week') return t; const wd = (t.getDay() + 6) % 7; t.setDate(t.getDate() - wd + (wd >= 4 ? 7 : 0)); return t; }
 function svgPoint(svg, ev) { const r = svg.getBoundingClientRect(); return { x: ev.clientX - r.left, y: ev.clientY - r.top }; }
 function addLink(p, s, type, lagDays) {
   if (p === s) return;
@@ -1598,6 +1645,70 @@ function reaches(p, from, to) { const seen = new Set(), st = [from]; while (st.l
 function tipText(e, html) { const t = $('#tip'); t.innerHTML = html; t.style.display = 'block'; t.style.left = (e.clientX + 14) + 'px'; t.style.top = (e.clientY + 14) + 'px'; }
 function hideTip() { $('#tip').style.display = 'none'; }
 
+// ---------- draw a task (Asta: press and drag on empty chart space) ----------
+// A click selects the row as before. A sideways drag of more than 6px draws a bar: the new activity spans the days
+// dragged (whole weeks with week snapping), goes into that row's summary just below it, and its name is ready to type.
+function startDraw(e, key, rowEl) {
+  const svg = $('svg.chart'), sheet = $('#sheet'), px = S.view.pxDay; if (!svg) return;
+  const y = +rowEl.getAttribute('y'), x0 = svgPoint(svg, e).x, sl0 = sheet.scrollLeft; let ghost = null, span = null;
+  const dayAt = x => Math.floor((x - GX) / px);
+  const dateOf = n => { const d = new Date(S.t0); d.setDate(d.getDate() + n); d.setHours(0, 0, 0, 0); return d; };
+  const stub = { calendar_id: null }, cal = calOf(stub);
+  const compute = x1 => {
+    let a = Math.min(dayAt(x0), dayAt(x1)), b = Math.max(dayAt(x0), dayAt(x1)) + 1;   // [a, b) in days from t0
+    if (S.view.snap === 'week') { const da = dateOf(a), wd = (da.getDay() + 6) % 7; a -= wd; const db = dateOf(b), wb = (db.getDay() + 6) % 7; if (wb) b += 7 - wb; if (b - a < 7) b = a + 7; }
+    const st = workStartOn(stub, dateOf(a)); const last = dateOf(b - 1);
+    const wd = Math.max(1, last < st ? 1 : workingDaysBetween(cal, st, last) + 1);
+    return { a, b, st, last, wd };
+  };
+  rowEl.classList.add('draw');
+  const mv = ev => {
+    const x1 = svgPoint(svg, ev).x + (sheet.scrollLeft - sl0);
+    if (!ghost) { if (Math.abs(x1 - x0) < 6) return; ghost = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); ghost.setAttribute('class', 'ghost'); ghost.setAttribute('y', y + 7); ghost.setAttribute('height', RH - 14); svg.appendChild(ghost); }
+    span = compute(x1); ghost.setAttribute('x', GX + span.a * px); ghost.setAttribute('width', Math.max(2, (span.b - span.a) * px));
+    tipText(ev, `<b>${span.wd} working day${span.wd === 1 ? '' : 's'}</b> · ${fmtD(span.st)} → ${fmtD(span.last)}<br><span class="hint">${S.linkTasks && S.linkFrom ? 'Links from ' + esc(S.linkFrom) + ' · ' : ''}release to add the activity</span>`);
+  };
+  const up = ev => {
+    document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', up); hideTip(); rowEl.classList.remove('draw');
+    if (ghost) ghost.remove();
+    if (!span) { if (key !== '__new') selectRow(key, ev); else { S.sel = new Set(); S.selLink = null; paintSelection(); } return; }
+    createDrawn(key, span.st, span.wd);
+  };
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up); document.addEventListener('pointercancel', up);
+}
+function createDrawn(key, st, wd) {
+  const r = key === '__new' ? null : S.rowsCache.find(r => rowKey(r) === key); const id = nextId(); const from = S.linkTasks && S.linkFrom && S.linkFrom !== id ? byId(S.linkFrom) : null;
+  mutate(p => {
+    const wbs = r ? (r.act ? r.act.wbs_id : r.wbs ? r.wbs.id : null) : ((p.wbs[0] && p.wbs[0].id) || null);
+    const a = { id, name: 'New activity', wbs_id: wbs, calendar_id: null, type: 'task', duration_hours: 8, constraint: 'none', constraint_date: null, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, notes: '', codes: {}, priority: 500, level_delay_hours: 0, critical: false };
+    a.duration_hours = wd * hpd(a);
+    let idx = p.activities.length;
+    if (r && r.act) idx = p.activities.indexOf(r.act) + 1;
+    else if (r && r.wbs) { const last = p.activities.map((x, i) => x.wbs_id === r.wbs.id ? i : -1).filter(i => i >= 0).pop(); if (last != null) idx = last + 1; }
+    p.activities.splice(idx, 0, a);
+    const linked = from && !reaches(p, id, from.id) && from.type !== 'finish_milestone';
+    if (linked) p.relationships.push({ predecessor_id: from.id, successor_id: id, type: 'FS', lag_hours: 0 });
+    const pf = linked ? (from.actual_finish || from.early_finish) : null;
+    if (!linked || !pf || new Date(pf) < st) { a.constraint = 'start_on_or_after'; a.constraint_date = iso(st); }   // it starts where it was drawn; logic may push it later
+    S.sel = new Set([id]); S.active = id; S.activeCol = 'name'; S.pendingEdit = { key: id, col: 'name' }; S.linkFrom = id;
+  }, `${id} drawn: ${wd} days from ${fmtD(st)}${from ? ', linked from ' + from.id : ''}`);
+}
+// Link Tasks mode (Asta planbar toggle): each inserted or drawn activity links FS from the one selected before it.
+function toggleLinkTasks(on) {
+  S.linkTasks = on == null ? !S.linkTasks : !!on; const b = $('#btnLinkTasks'); if (b) { b.setAttribute('aria-pressed', String(S.linkTasks)); b.classList.toggle('on', S.linkTasks); }
+  toast(S.linkTasks ? 'Link Tasks on: new and drawn activities link from the one selected before them' : 'Link Tasks off');
+}
+// Outline: collapse all, expand all, collapse only summaries whose activities are all complete (Asta since 2021).
+function wbsActs(id) { const ids = new Set([id]); let grew = true; while (grew) { grew = false; S.project.wbs.forEach(w => { if (w.parent_id && ids.has(w.parent_id) && !ids.has(w.id)) { ids.add(w.id); grew = true; } }); } return S.project.activities.filter(a => ids.has(a.wbs_id)); }
+function collapseAll(on) {
+  const groups = S.rowsCache.filter(r => r.group).map(rowKey);
+  S.collapsed = new Set(); if (on) { S.project.wbs.forEach(w => S.collapsed.add(w.id)); groups.forEach(k => S.collapsed.add(k)); }
+  render(); toast(on ? 'All summaries collapsed' : 'All summaries expanded');
+}
+function collapseComplete() {
+  let n = 0; S.project.wbs.forEach(w => { const acts = wbsActs(w.id); if (acts.length && acts.every(a => a.status === 'complete') && !S.collapsed.has(w.id)) { S.collapsed.add(w.id); n++; } });
+  render(); toast(n ? `${n} completed summar${n === 1 ? 'y' : 'ies'} collapsed` : 'No summary is fully complete yet');
+}
 // ---------- structural edits ----------
 function selectedActs() { return [...S.sel].map(byId).filter(Boolean); }
 function selectedRowsInOrder() { return S.rowsCache.filter(r => S.sel.has(rowKey(r))); }
@@ -1610,7 +1721,7 @@ function insertActivity(above) {
     p.activities.splice(idx, 0, a);
     if (above && r && r.act && r.act.type !== 'start_milestone') { const preds = p.relationships.filter(x => x.successor_id === r.act.id && x.type === 'FS'); preds.forEach(x => { x.successor_id = id; }); p.relationships.push({ predecessor_id: id, successor_id: r.act.id, type: 'FS', lag_hours: 0 }); }
     else if (!above && r && r.act && r.act.type !== 'finish_milestone') { const succ = p.relationships.filter(x => x.predecessor_id === r.act.id && x.type === 'FS'); p.relationships.push({ predecessor_id: r.act.id, successor_id: id, type: 'FS', lag_hours: 0 }); succ.forEach(x => { x.predecessor_id = id; }); }
-    S.sel = new Set([id]); S.active = id; S.activeCol = 'name';
+    S.sel = new Set([id]); S.active = id; S.activeCol = 'name'; S.linkFrom = id;
     S.pendingEdit = { key: id, col: 'name' };
   }, 'Activity inserted');
 }
@@ -2039,6 +2150,7 @@ function onKey(e) {
   else if (k === '?' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); shortcutsSheet(); }
   else if (k === 'Tab') { e.preventDefault(); indent(e.shiftKey ? -1 : 1); }
   else if (k === ' ' && wbsById(S.active)) { e.preventDefault(); toggleCollapse(S.active); }
+  else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === '[' || k === '{')) { e.preventDefault(); collapseAll(true); } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === ']' || k === '}')) { e.preventDefault(); collapseAll(false); }
   else if (e.altKey && k === 'ArrowUp') { e.preventDefault(); moveRow(-1); } else if (e.altKey && k === 'ArrowDown') { e.preventDefault(); moveRow(1); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'l') { e.preventDefault(); linkSelected(); } else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'u') { e.preventDefault(); unlinkSelected(); }
   else if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'x') { e.preventDefault(); cutSelected(); }
@@ -2068,7 +2180,7 @@ function helpSheet(stage) {
 }
 function shortcutsSheet() {
   const rows = [['Plan', [['Enter / F2', 'Edit the cell'], ['Insert', 'Insert activity below'], ['Shift+Insert', 'Insert activity above'], ['Delete', 'Delete selected'], ['Tab / Shift+Tab', 'Indent / outdent'], ['Alt+↑ / Alt+↓', 'Move row up / down'], ['Space', 'Collapse or expand a summary'], ['Ctrl+L / Ctrl+U', 'Link / unlink selected'], ['Ctrl+C / Ctrl+V', 'Copy / paste activities'], ['Ctrl+A', 'Select all'], ['+ / −', 'Zoom the timescale'], ['I', 'Inspector'], ['Esc', 'Clear selection, stop tracing']]],
-    ['Chart', [['Drag a bar', 'Move it (successors follow)'], ['Drag a bar end', 'Change start or finish'], ['Drag a link dot onto a bar', 'Link (left half SS/FS, right half FF/SF)'], ['Drag the progress point', 'Record % complete'], ['Double-click a bar', 'Inspector'], ['Right-click', 'Menu, notes on the chart'], ['Hover', 'Why it starts, what it holds up']]],
+    ['Chart', [['Drag on empty chart space', 'Draw a new activity across those days'], ['Drag a bar', 'Move it (successors follow)'], ['Drag a bar end', 'Change start or finish'], ['Drag a link dot onto a bar', 'Link (left half SS/FS, right half FF/SF)'], ['Drag the progress point', 'Record % complete'], ['Double-click a bar', 'Inspector'], ['Right-click', 'Menu, notes on the chart'], ['Hover', 'Why it starts, what it holds up']]],
     ['Everywhere', [['Ctrl+K / ⌘K', 'Ask or type a command'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['?', 'This sheet']]]];
   modal('Keyboard and mouse', rows.map(([h, items]) => `<div class="insp-sec">${h}</div><table class="ov-table"><tbody>${items.map(([k, d]) => `<tr><td style="width:46%"><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</tbody></table>`).join(''), null);
 }
@@ -2622,6 +2734,11 @@ function palActions() {
     S.project && ['Baselines: manage, accept, compare', 'Plan', baselineManager],
     S.project && ['Change log and reasons', 'Go to', () => go('monitor')],
     S.project && ['Insert activity above', 'Plan', () => insertActivity(true)],
+    S.project && [S.linkTasks ? 'Link Tasks mode: turn off' : 'Link Tasks mode: new activities link from the previous one', 'Plan', () => toggleLinkTasks()],
+    S.project && ['Collapse all summaries', 'View', () => collapseAll(true)],
+    S.project && ['Expand all summaries', 'View', () => collapseAll(false)],
+    S.project && ['Collapse completed summaries only', 'View', collapseComplete],
+    S.project && ['Snap drags to weeks', 'View', () => { S.view.snap = S.view.snap === 'week' ? 'day' : 'week'; toast(S.view.snap === 'week' ? 'Drags snap to whole weeks' : 'Drags snap to days'); }],
     S.project && ['Progress the selection as planned to the data date', 'Progress', () => { const acts = selectedActs().length ? selectedActs() : S.project.activities; let n = 0; mutate(p => { n = progressAsPlanned(acts, (p.data_date || p.start).slice(0, 10) + 'T16:00:00'); if (!n) return false; }, null); toast(n ? `${n} activit${n === 1 ? 'y' : 'ies'} progressed as planned` : 'Nothing to progress'); }],
     S.project && ['Coding sheet (CSV) export and import', 'Set-up', libraryDialog],
     S.project && ['Share and export', 'File', shareSheet],
@@ -3102,6 +3219,9 @@ function wireToolbar() {
   $('#vBarPos').onchange = e => { S.view.barTextPos = e.target.value; render(); };
   $('#vLinkMode').onchange = e => { S.view.linkMode = e.target.value; S.view.links = e.target.value !== 'none'; render(); };
   ['flags', 'notes', 'grid'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); el.onchange = () => { S.view[k] = el.checked; render(); }; });
+  $('#vSnap').onchange = e => { S.view.snap = e.target.value; toast(e.target.value === 'week' ? 'Drags snap to whole weeks, starts on Mondays' : 'Drags snap to days'); };
+  $('#vCollapseAll').onclick = () => collapseAll(true); $('#vExpandAll').onclick = () => collapseAll(false); $('#vCollapseDone').onclick = collapseComplete;
+  $('#btnLinkTasks').onclick = () => toggleLinkTasks();
   $('#vPeriods').onchange = e => { S.view.periods = e.target.value; render(); if (e.target.value !== 'none' && !periodsOf(S.project).length) toast('No progress periods closed yet. Close one from More or Monitor.'); };
   $('#btnColumns').onclick = () => { closePops(); columnsDialog(); }; $('#btnViews').onclick = () => { closePops(); viewsDialog(); }; $('#btnFilter').onclick = () => { closePops(); filterDialog(); };
   $$('#modeSeg [data-mode]').forEach(b => b.onclick = () => { S.view.mode = b.dataset.mode; render(); });

@@ -55,6 +55,7 @@
           <button class="tb only-ic" id="btnDown" title="Move down (Alt+Down)" aria-label="Move down"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M5.5 11.5L10 16l4.5-4.5"/></svg></button>
           <span class="tdiv"></span>
           <button class="tb only-ic" id="btnLink" title="Link selected in order, finish-to-start (Ctrl+L)" aria-label="Link selected"><svg viewBox="0 0 20 20" class="ic"><path d="M8.5 11.5l3-3M7 9.5L5.5 11a2.5 2.5 0 003.5 3.5l1.5-1.5M13 10.5l1.5-1.5A2.5 2.5 0 0011 5.5L9.5 7"/></svg></button>
+          <button class="tb only-ic" id="btnLinkTasks" aria-pressed="false" title="Link Tasks mode: every new or drawn activity links finish-to-start from the one selected before it" aria-label="Link Tasks mode"><svg viewBox="0 0 20 20" class="ic"><path d="M7 9.5L5.5 11a2.5 2.5 0 003.5 3.5l1.5-1.5M13 10.5l1.5-1.5A2.5 2.5 0 0011 5.5L9.5 7M8.5 11.5l3-3"/><path d="M15.5 13v4M13.5 15h4"/></svg></button>
           <button class="tb only-ic" id="btnUnlink" title="Remove links between selected (Ctrl+U)" aria-label="Unlink"><svg viewBox="0 0 20 20" class="ic"><path d="M7 9.5L5.5 11a2.5 2.5 0 003.5 3.5l1.5-1.5M13 10.5l1.5-1.5A2.5 2.5 0 0011 5.5L9.5 7M4 4l12 12"/></svg></button>
           <button class="tb only-ic" id="btnMilestone" title="Toggle milestone" aria-label="Toggle milestone"><svg viewBox="0 0 20 20" class="ic"><path d="M10 3.5l6.5 6.5-6.5 6.5L3.5 10z"/></svg></button>
         </div>
@@ -137,11 +138,13 @@
   <label class="sw"><span>Constraint flags</span><input type="checkbox" id="vFlags" checked><i></i></label>
   <label class="sw"><span>Chart notes</span><input type="checkbox" id="vNotes" checked><i></i></label>
   <label class="sw"><span>Grid lines</span><input type="checkbox" id="vGrid" checked><i></i></label>
+  <label class="fld"><span>Snap drags to</span><select id="vSnap"><option value="day">Days</option><option value="week">Weeks (Monday to Monday)</option></select></label>
   <label class="fld"><span>Bar text</span><select id="vBarText"><option value="name">Name</option><option value="id">ID and name</option><option value="dates">Dates</option><option value="float">Duration and float</option><option value="res">Resources</option><option value="none">None</option></select></label>
   <label class="fld"><span>Text position</span><select id="vBarPos"><option value="right">Right of bar</option><option value="on">On the bar</option><option value="left">Left of bar</option></select></label>
   <div class="pop-sec">Show</div>
   <label class="fld"><span>Activities</span><select id="vShow"></select></label>
   <label class="fld"><span>Outline</span><select id="vLevel"><option value="0">All levels</option></select></label>
+  <div class="pop-row"><button id="vCollapseAll">Collapse all</button><button id="vExpandAll">Expand all</button><button id="vCollapseDone" title="Collapse only the summaries whose activities are all complete">Collapse completed</button></div>
   <div class="pop-sec">Arrange</div>
   <label class="fld"><span>Colour</span><select id="vColour"><option value="critical">Critical path</option></select></label>
   <label class="fld"><span>Group</span><select id="vGroup"><option value="">WBS</option></select></label>
