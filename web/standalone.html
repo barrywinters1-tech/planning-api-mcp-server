@@ -896,6 +896,7 @@ svg.chart .rowbg.draw { cursor: crosshair; }
   <div class="pop-sec">Arrange</div>
   <label class="fld"><span>Colour</span><select id="vColour"><option value="critical">Critical path</option></select></label>
   <label class="fld"><span>Group</span><select id="vGroup"><option value="">WBS</option></select></label>
+  <label class="fld" id="vGroup2Row" hidden><span>then by</span><select id="vGroup2"><option value="">Nothing</option></select></label>
   <label class="fld"><span>Sort</span><select id="vSort"><option value="">Sequence</option><option value="start">Start</option><option value="finish">Finish</option><option value="float">Float</option><option value="id">ID</option><option value="name">Name</option></select></label>
   <div class="pop-row"><button id="btnFilter">Filter…</button><button id="btnColumns">Columns…</button><button id="btnViews">Saved views…</button></div>
 </div>
@@ -8234,13 +8235,23 @@ function rows() {
   const sortFn = { start: (a, b) => (a.early_start || '').localeCompare(b.early_start || ''), finish: (a, b) => (a.early_finish || '').localeCompare(b.early_finish || ''), float: (a, b) => (a.total_float_hours ?? 1e9) - (b.total_float_hours ?? 1e9), id: (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }), name: (a, b) => a.name.localeCompare(b.name) }[S.view.sort];
   const order = list => sortFn ? [...list].sort(sortFn) : list;
   if (S.view.group) {
-    const g = S.view.group; const groups = {}, gorder = {};
-    const bucket = a => { const st = a.actual_start || a.early_start; if (!st) return ['(no dates)', '9999']; const d = new Date(st); if (g === '@week') { const m = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)); return ['Week of ' + fmtD(m), iso(m).slice(0, 10)]; } if (g === '@month') { return [d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }), `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`]; } return [(a.codes || {})[g] || '(none)', null]; };
+    const g = S.view.group, g2 = S.view.group2 && S.view.group2 !== g ? S.view.group2 : ''; const groups = {}, gorder = {};
+    const bucketBy = g => a => { const st = a.actual_start || a.early_start; if (!st) return ['(no dates)', '9999']; const d = new Date(st); if (g === '@week') { const m = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)); return ['Week of ' + fmtD(m), iso(m).slice(0, 10)]; } if (g === '@month') { return [d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }), `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`]; } return [(a.codes || {})[g] || '(none)', null]; };
+    const bucket = bucketBy(g), bucket2 = g2 ? bucketBy(g2) : null;
     p.activities.filter(pass).forEach(a => { const [k, o] = bucket(a); (groups[k] = groups[k] || []).push(a); if (o != null) gorder[k] = o; });
-    Object.keys(groups).sort((a, b) => g.startsWith('@') ? (gorder[a] || "").localeCompare(gorder[b] || "") : a.localeCompare(b)).forEach(k => {
+    const sortKeys = (keys, gg, ord) => keys.sort((a, b) => gg.startsWith('@') ? (ord[a] || "").localeCompare(ord[b] || "") : a.localeCompare(b));
+    const span = acts => ({ start: acts.map(a => a.actual_start || a.early_start).filter(Boolean).sort()[0], finish: acts.map(a => a.actual_finish || a.early_finish).filter(Boolean).sort().slice(-1)[0] });
+    sortKeys(Object.keys(groups), g, gorder).forEach(k => {
       const acts = groups[k];
-      out.push({ group: k, depth: 0, start: acts.map(a => a.actual_start || a.early_start).filter(Boolean).sort()[0], finish: acts.map(a => a.actual_finish || a.early_finish).filter(Boolean).sort().slice(-1)[0], colour: ((p.code_types[g] || {})[k]) });
-      if (!S.collapsed.has('G:' + k)) order(acts).forEach(a => out.push({ act: a, depth: 1 }));
+      out.push(Object.assign({ group: k, key: 'G:' + k, depth: 0, colour: ((p.code_types[g] || {})[k]) }, span(acts)));
+      if (S.collapsed.has('G:' + k)) return;
+      if (!bucket2) { order(acts).forEach(a => out.push({ act: a, depth: 1 })); return; }
+      const sub = {}, sorder = {}; acts.forEach(a => { const [k2, o2] = bucket2(a); (sub[k2] = sub[k2] || []).push(a); if (o2 != null) sorder[k2] = o2; });
+      sortKeys(Object.keys(sub), g2, sorder).forEach(k2 => {   // second level: a sub-group row per value, its own collapse state
+        const key = 'G:' + k + '/' + k2;
+        out.push(Object.assign({ group: k2, key, depth: 1, colour: ((p.code_types[g2] || {})[k2]) }, span(sub[k2])));
+        if (!S.collapsed.has(key)) order(sub[k2]).forEach(a => out.push({ act: a, depth: 2 }));
+      });
     });
     return out;
   }
@@ -8263,7 +8274,7 @@ function rows() {
   order((byW[''] || []).filter(pass)).forEach(a => out.push({ act: a, depth: 0 }));
   return out;
 }
-const rowKey = r => r.act ? r.act.id : r.wbs ? r.wbs.id : 'G:' + r.group;
+const rowKey = r => r.act ? r.act.id : r.wbs ? r.wbs.id : (r.key || 'G:' + r.group);
 
 // ---------- quick filters, outline levels, logic tracing (Asta-style view tools) ----------
 const nearDays = () => (S.project && S.project.near_critical_days) || 10;
@@ -8348,7 +8359,7 @@ function goToActivity(id) {
   if (visible() < 0) {
     // reveal it: open its summaries and drop any filter hiding it
     let w = a.wbs_id && wbsById(a.wbs_id); while (w) { S.collapsed.delete(w.id); w = w.parent_id && wbsById(w.parent_id); }
-    if (S.view.group) S.collapsed.delete('G:' + ((a.codes || {})[S.view.group] || '(none)'));
+    if (S.view.group) { const k = 'G:' + ((a.codes || {})[S.view.group] || '(none)'); S.collapsed.delete(k); [...S.collapsed].filter(x => x.startsWith(k + '/')).forEach(x => S.collapsed.delete(x)); }
     S.view.level = 0; render();
     if (visible() < 0) { S.view.filter = ''; S.view.show = 'all'; S.view.critical = false; render(); }
   }
@@ -8761,6 +8772,7 @@ function renderToolbarState() {
   vc.value = [...vc.options].some(o => o.value === S.view.colour) ? S.view.colour : 'critical'; S.view.colour = vc.value;
   const vg = $('#vGroup'); vg.innerHTML = '<option value="">WBS</option><option value="@week">Week of start (look-ahead)</option><option value="@month">Month of start</option>' + types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
   vg.value = [...vg.options].some(o => o.value === S.view.group) ? S.view.group : ''; S.view.group = vg.value;
+  const vg2 = $('#vGroup2'), vg2r = $('#vGroup2Row'); if (vg2) { vg2.innerHTML = '<option value="">Nothing</option><option value="@week">Week of start</option><option value="@month">Month of start</option>' + types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join(''); vg2.value = [...vg2.options].some(o => o.value === (S.view.group2 || '')) ? (S.view.group2 || '') : ''; S.view.group2 = vg2.value; vg2r.hidden = !S.view.group; }
   $$('[data-panel]').forEach(b => b.classList.toggle('on', b.dataset.panel === S.panel));
   const vt = $('#vTl'); vt.innerHTML = '<option value="WBS">Locations: WBS</option>' + types.map(t => `<option value="${esc(t)}">Locations: ${esc(t)}</option>`).join('');
   vt.value = [...vt.options].some(o => o.value === S.view.tlSource) ? S.view.tlSource : 'WBS'; S.view.tlSource = vt.value; vt.hidden = S.view.mode !== 'tl';
@@ -11329,7 +11341,7 @@ function wireToolbar() {
   $('#btnMore').onclick = e => openPop($('#popMore'), e.currentTarget);
   $$('#popMore button').forEach(b => b.addEventListener('click', () => closePop($('#popMore'))));
   ['links', 'float', 'baseline', 'progress'].forEach(k => { const el = $('#v' + k[0].toUpperCase() + k.slice(1)); el.onchange = () => { S.view[k] = el.checked; render(); }; });
-  $('#vColour').onchange = e => { S.view.colour = e.target.value; render(); }; $('#vGroup').onchange = e => { S.view.group = e.target.value; render(); }; $('#vSort').onchange = e => { S.view.sort = e.target.value; render(); };
+  $('#vColour').onchange = e => { S.view.colour = e.target.value; render(); }; $('#vGroup').onchange = e => { S.view.group = e.target.value; render(); }; $('#vGroup2').onchange = e => { S.view.group2 = e.target.value; render(); }; $('#vSort').onchange = e => { S.view.sort = e.target.value; render(); };
   $('#vFilter').oninput = e => { S.view.filter = e.target.value; render(); };
   $('#vShow').onchange = e => { S.view.show = e.target.value; render(); };
   $('#vLevel').onchange = e => { S.view.level = +e.target.value; render(); };
