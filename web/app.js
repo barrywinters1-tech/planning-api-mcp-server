@@ -1024,13 +1024,19 @@ function coverFor(o) {
     milestones: (b.milestones || []).filter(m => m.date).sort((x, y) => x.date.localeCompare(y.date)).map(m => Object.assign({}, m, { status: m.status === 'not_started' ? '' : String(m.status || '').replace('_', ' ') })), watch: (b.watch || []).map(w => ({ name: w.name, text: w.text })),
     footer: [o.prepared_by ? 'Prepared by ' + o.prepared_by : '', 'Printed ' + new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })].filter(Boolean).join(' · ') };
 }
+// the chart's colour-by key (code type or resource) as legend swatches
+function legendItems() {
+  const c = S.view.colour, p = S.project; if (c.startsWith('code:')) { const t = c.slice(5); return Object.entries(p.code_types[t] || {}).map(([label, colour]) => ({ label, colour })); }
+  if (c === 'resource') return p.resources.map(r => ({ label: r.name, colour: r.colour || hashColour(r.id) }));
+  return [];
+}
 function pdfDoc(o) {
   const p = S.project, rs = S.rowsCache, cols = S.cols.filter(k => k !== 'preds' && k !== 'succs' && k !== 'notes' && k !== 'res').slice(0, 7);
   const columns = cols.map(k => ({ title: ALL_COLS[k].t, width_mm: Math.max(9, Math.round(ALL_COLS[k].w * .2)), align: ALL_COLS[k].num || ['start', 'finish', 'astart', 'afinish', 'bstart', 'bfinish', 'ls', 'lf'].includes(k) ? 'right' : 'left', indent: k === 'name' }));
   const clean = v => String(v == null ? '' : v).replace(/◆/g, '');
   const idx = {}; rs.forEach((r, i) => { if (r.act) idx[r.act.id] = i; });
   const rows = rs.map(r => {
-    if (r.act) { const a = r.act, ms = a.type !== 'task' || a.duration_hours === 0; return { kind: ms ? 'milestone' : 'task', depth: r.depth, cells: cols.map(k => clean(ALL_COLS[k].get(a))), start: a.actual_start || a.early_start, finish: a.actual_finish || a.early_finish, critical: !!a.critical, pct: a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0), baseline_start: a.baseline_start || null, baseline_finish: a.baseline_finish || null, late_finish: a.total_float_hours > 0 ? a.late_finish : null, label: barLabel(a) }; }
+    if (r.act) { const a = r.act, ms = a.type !== 'task' || a.duration_hours === 0; return { kind: ms ? 'milestone' : 'task', depth: r.depth, cells: cols.map(k => clean(ALL_COLS[k].get(a))), start: a.actual_start || a.early_start, finish: a.actual_finish || a.early_finish, critical: !!a.critical, pct: a.status === 'complete' ? 100 : Math.round(a.percent_complete || 0), baseline_start: a.baseline_start || null, baseline_finish: a.baseline_finish || null, selected: S.sel.has(a.id), colour: (o.colourBy && colourOf(a)) || null, late_finish: a.total_float_hours > 0 ? a.late_finish : null, label: barLabel(a) }; }
     const name = r.wbs ? r.wbs.name : r.group;
     return { kind: 'summary', depth: r.depth, cells: cols.map(k => k === 'name' ? name : k === 'id' ? (r.wbs ? r.wbs.code || '' : '') : k === 'start' ? fmtD(r.start) : k === 'finish' ? fmtD(r.finish) : k === 'pct' && r.pct != null ? Math.round(r.pct) + '%' : ''), start: r.start, finish: r.finish, critical: !!r.crit, pct: r.pct || 0, baseline_start: null, baseline_finish: null, late_finish: null, label: '' };
   });
@@ -1038,12 +1044,13 @@ function pdfDoc(o) {
   const annotations = (p.annotations || []).map(n => ({ date: n.date, row: n.activity_id ? (idx[n.activity_id] ?? null) : null, text: n.text })).filter(n => !(n.row === null && false));
   const lastRev = (p.revisions || []).slice(-1)[0];
   return {
-    meta: { project_name: p.name, project_id: p.id, client: o.client, revision: o.revision || (lastRev ? lastRev.name : ''), prepared_by: o.prepared_by, title: o.title || 'Construction programme', data_date: p.data_date || p.start, forecast_finish: p.finish, deadline: p.must_finish_by || null, printed_at: iso(new Date()), notes: o.notes || '' },
+    meta: { logo: o.logo || null, title_layout: o.layout || 'standard', project_name: p.name, project_id: p.id, client: o.client, revision: o.revision || (lastRev ? lastRev.name : ''), prepared_by: o.prepared_by, title: o.title || 'Construction programme', data_date: p.data_date || p.start, forecast_finish: p.finish, deadline: p.must_finish_by || null, printed_at: iso(new Date()), notes: o.notes || '' },
     page: { size: o.size, orientation: o.orientation, margins_mm: 10 },
     columns, rows, links, annotations,
     range: { t0: o.t0 || iso(S.t0), t1: o.t1 || iso(S.t1) },
     cover: o.cover ? coverFor(o) : null,
-    options: { show_links: S.view.links, show_float: S.view.float, show_baseline: S.view.baseline, show_progress_line: S.view.progress, legend: true, rows_per_page: o.rows || null, fit_to_pages_wide: o.wide || 1, colour: o.colour },
+    period_lines: o.periods ? periodsShown(p).map(pp => ({ label: pp.name, date: pp.data_date, points: rs.map((r, i) => { if (!r.act) return null; const v = pp.acts[r.act.id]; if (!v) return null; const [st, fi, pc, k] = v; const xd = k === 'c' ? pp.data_date : k === 'p' ? iso(new Date(+new Date(st) + (new Date(fi) - new Date(st)) * pc / 100)) : (st < pp.data_date ? st : pp.data_date); return { row: i, x_date: xd }; }).filter(Boolean) })) : [],
+    options: { legend_items: o.colourBy ? legendItems() : [], fit_to_pages_tall: o.tall || null, page_break_before_groups: !!o.breaks, selected_only: !!o.selectedOnly, show_links: S.view.links && (S.view.linkMode || 'all') !== 'none', show_float: S.view.float, show_baseline: S.view.baseline, show_progress_line: S.view.progress, legend: true, rows_per_page: o.rows || null, fit_to_pages_wide: o.wide || 1, colour: o.colour },
   };
 }
 function printSheet() {
@@ -1057,22 +1064,32 @@ function printSheet() {
       <label>Orientation${sel('pOri', [['landscape', 'Landscape'], ['portrait', 'Portrait']], saved.orientation || 'landscape')}</label>
       <label>Timescale across${sel('pWide', [[1, '1 page'], [2, '2 pages'], [3, '3 pages'], [4, '4 pages']], saved.wide || 1)}</label>
       <label>Rows per page${sel('pRows', [['', 'Fit to page'], [30, '30'], [45, '45'], [60, '60'], [100, '100']], saved.rows || '')}</label>
+      <label>Fit tall${sel('pTall', [['', 'As many pages as needed'], [1, '1 page tall'], [2, '2 pages tall'], [3, '3 pages tall'], [4, '4 pages tall']], saved.tall || '')}</label>
+      <label>Title block${sel('pLayout', [['standard', 'Standard'], ['compact', 'Compact strip'], ['wide', 'Wide, legend below']], saved.layout || 'standard')}</label>
       <label>From<input type="date" id="pT0" value="${iso(S.t0).slice(0, 10)}"></label><label>To<input type="date" id="pT1" value="${iso(S.t1).slice(0, 10)}"></label>
       <label>Colour${sel('pCol', [['1', 'Colour'], ['0', 'Black and white']], saved.colour === false ? '0' : '1')}</label>
     </div>
     <h3>Title block</h3>
     <div class="risk-set"><label>Title<input id="pTitle" value="${esc(saved.title || 'Construction programme')}"></label><label>Client<input id="pClient" value="${esc(saved.client || '')}"></label><label>Prepared by<input id="pBy" value="${esc(saved.prepared_by || '')}"></label><label>Revision<input id="pRev" value="${esc(((S.project.revisions || []).slice(-1)[0] || {}).name || '')}"></label></div>
     <label class="sw" style="margin:8px 0"><span>Cover page: the briefing (status, what changed, watch list, milestones)</span><input type="checkbox" id="pCover" ${saved.cover === false ? '' : 'checked'}><i></i></label>
+    <label class="sw" style="margin:0 0 8px"><span>New page before each top-level summary</span><input type="checkbox" id="pBreaks" ${saved.breaks ? 'checked' : ''}><i></i></label>
+    <label class="sw" style="margin:0 0 8px"><span>Selected rows only (${S.sel.size} selected, with their summaries)</span><input type="checkbox" id="pSel" ${S.sel.size ? '' : 'disabled'}><i></i></label>
+    <label class="sw" style="margin:0 0 8px"><span>Legend for the colour-by key (${S.view.colour.startsWith('code:') ? esc(S.view.colour.slice(5)) : S.view.colour === 'resource' ? 'resources' : 'critical path'})</span><input type="checkbox" id="pColourBy" ${S.view.colour !== 'critical' ? 'checked' : 'disabled'}><i></i></label>
+    <label class="sw" style="margin:0 0 8px"><span>Progress period lines as shown on the chart (${periodsShown(S.project).length})</span><input type="checkbox" id="pPeriods" ${periodsShown(S.project).length ? 'checked' : 'disabled'}><i></i></label>
+    <div class="row2"><label>Company logo (JPEG or PNG)<input type="file" id="pLogo" accept="image/jpeg,image/png"></label><label>&nbsp;<span class="hint" id="pLogoNote">${saved.logo ? 'Logo kept from last time' : 'Optional; shown in the title block'}</span> ${saved.logo ? '<button type="button" class="chipbtn" id="pLogoClear">Remove</button>' : ''}</label></div>
     <label>Notes in the title block<input id="pNotes" value="${esc((() => { try { return getBriefing().headline || ''; } catch { return ''; } })())}" placeholder="e.g. Programme for acceptance; durations in working days"></label>
     <p class="hint" id="pPlan"></p>`, async mm => {
-      const o = readOpts(mm); try { localStorage.setItem('pdfOpts', JSON.stringify({ size: o.size, orientation: o.orientation, wide: o.wide, rows: o.rows, colour: o.colour, title: o.title, client: o.client, prepared_by: o.prepared_by, cover: o.cover })); } catch { }
+      const o = readOpts(mm); try { localStorage.setItem('pdfOpts', JSON.stringify({ size: o.size, orientation: o.orientation, wide: o.wide, rows: o.rows, colour: o.colour, title: o.title, client: o.client, prepared_by: o.prepared_by, cover: o.cover, tall: o.tall, layout: o.layout, breaks: o.breaks, logo: o.logo })); } catch { }
       let bytes; try { bytes = P.render(pdfDoc(o)); } catch (e) { toast('PDF failed: ' + (e.message || e)); return false; }
       const name = `${S.project.id}${o.revision ? '-' + o.revision.replace(/\s+/g, '') : ''}.pdf`;
       if (await saveBlob(name, new Blob([bytes], { type: 'application/pdf' }))) toast(`${name} saved`);
     }, 'Create PDF', { wide: true });
-  const readOpts = mm => ({ size: mm.querySelector('#pSize').value, orientation: mm.querySelector('#pOri').value, wide: +mm.querySelector('#pWide').value, rows: +mm.querySelector('#pRows').value || null, colour: mm.querySelector('#pCol').value === '1', t0: mm.querySelector('#pT0').value ? mm.querySelector('#pT0').value + 'T00:00:00' : null, t1: mm.querySelector('#pT1').value ? mm.querySelector('#pT1').value + 'T23:59:00' : null, title: mm.querySelector('#pTitle').value, client: mm.querySelector('#pClient').value, prepared_by: mm.querySelector('#pBy').value, revision: mm.querySelector('#pRev').value, notes: mm.querySelector('#pNotes').value, cover: mm.querySelector('#pCover').checked });
-  const plan = () => { try { const L = P.layout(pdfDoc(readOpts(m))); m.querySelector('#pPlan').textContent = `${L.pages || L.page_count} page${(L.pages || L.page_count) === 1 ? '' : 's'}: ${L.rows_per_page} rows a page${L.pages_wide > 1 ? `, ${L.pages_wide} pages across` : ''}.`; } catch (e) { m.querySelector('#pPlan').textContent = ''; } };
+  const readOpts = mm => ({ size: mm.querySelector('#pSize').value, orientation: mm.querySelector('#pOri').value, wide: +mm.querySelector('#pWide').value, rows: +mm.querySelector('#pRows').value || null, colour: mm.querySelector('#pCol').value === '1', t0: mm.querySelector('#pT0').value ? mm.querySelector('#pT0').value + 'T00:00:00' : null, t1: mm.querySelector('#pT1').value ? mm.querySelector('#pT1').value + 'T23:59:00' : null, title: mm.querySelector('#pTitle').value, client: mm.querySelector('#pClient').value, prepared_by: mm.querySelector('#pBy').value, revision: mm.querySelector('#pRev').value, notes: mm.querySelector('#pNotes').value, cover: mm.querySelector('#pCover').checked, tall: +mm.querySelector('#pTall').value || null, layout: mm.querySelector('#pLayout').value, breaks: mm.querySelector('#pBreaks').checked, selectedOnly: mm.querySelector('#pSel').checked, colourBy: mm.querySelector('#pColourBy').checked, periods: mm.querySelector('#pPeriods').checked, logo: S.pdfLogo === undefined ? (saved.logo || null) : S.pdfLogo });
+  const plan = () => { try { const L = P.layout(pdfDoc(readOpts(m))); m.querySelector('#pPlan').textContent = `${L.pages || L.page_count} page${(L.pages || L.page_count) === 1 ? '' : 's'}: ${L.rows_per_page} rows a page${L.row_height_mm && L.row_height_mm < 4.9 ? ` at ${L.row_height_mm.toFixed(1)} mm` : ''}${L.pages_wide > 1 ? `, ${L.pages_wide} pages across` : ''}${L.fits === false ? '. Too many rows to fit that tall even at the smallest row height; the minimum is used.' : '.'}`; } catch (e) { m.querySelector('#pPlan').textContent = ''; } };
   m.querySelectorAll('select, input').forEach(el => el.addEventListener('change', plan)); plan();
+  S.pdfLogo = undefined;
+  m.querySelector('#pLogo').onchange = async e => { const f = e.target.files[0]; if (!f) return; if (f.size > 400 * 1024) { toast('Keep the logo under 400 KB'); e.target.value = ''; return; } const buf = new Uint8Array(await f.arrayBuffer()); let b64 = ''; for (let i = 0; i < buf.length; i += 0x8000) b64 += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000)); S.pdfLogo = { data: btoa(b64), type: /png/i.test(f.type) ? 'png' : 'jpeg', height_mm: 12 }; m.querySelector('#pLogoNote').textContent = f.name; plan(); };
+  const lc = m.querySelector('#pLogoClear'); if (lc) lc.onclick = () => { S.pdfLogo = null; m.querySelector('#pLogoNote').textContent = 'Removed'; lc.remove(); plan(); };
 }
 // ---------- progress periods: close a period, keep its record, draw its progress line ----------
 // A period record is compact: for each activity [start, finish, % complete, status] as it stood at
