@@ -127,12 +127,17 @@
 </div>
 <div class="pop pop-view" id="popView" role="dialog" aria-label="View options" hidden>
   <div class="pop-sec">Show on bars</div>
-  <label class="sw"><span>Links</span><input type="checkbox" id="vLinks" checked><i></i></label>
+  <label class="fld"><span>Links</span><select id="vLinkMode"><option value="all">All</option><option value="driving">Driving only</option><option value="none">None</option></select></label>
+  <input type="checkbox" id="vLinks" checked hidden>
   <label class="sw"><span>Float</span><input type="checkbox" id="vFloat" checked><i></i></label>
   <label class="sw"><span>Baseline</span><input type="checkbox" id="vBaseline"><i></i></label>
   <label class="sw"><span>Progress line</span><input type="checkbox" id="vProgress"><i></i></label>
   <label class="fld"><span>Period lines</span><select id="vPeriods"><option value="none">None</option><option value="last">Last period</option><option value="last3">Last 3 periods</option><option value="all">All periods</option></select></label>
+  <label class="sw"><span>Constraint flags</span><input type="checkbox" id="vFlags" checked><i></i></label>
+  <label class="sw"><span>Chart notes</span><input type="checkbox" id="vNotes" checked><i></i></label>
+  <label class="sw"><span>Grid lines</span><input type="checkbox" id="vGrid" checked><i></i></label>
   <label class="fld"><span>Bar text</span><select id="vBarText"><option value="name">Name</option><option value="id">ID and name</option><option value="dates">Dates</option><option value="float">Duration and float</option><option value="res">Resources</option><option value="none">None</option></select></label>
+  <label class="fld"><span>Text position</span><select id="vBarPos"><option value="right">Right of bar</option><option value="on">On the bar</option><option value="left">Left of bar</option></select></label>
   <div class="pop-sec">Show</div>
   <label class="fld"><span>Activities</span><select id="vShow"></select></label>
   <label class="fld"><span>Outline</span><select id="vLevel"><option value="0">All levels</option></select></label>
