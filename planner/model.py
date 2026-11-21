@@ -268,6 +268,8 @@ class Project(BaseModel):
     views: Optional[list[dict]] = None                    # saved views stored with the programme: {name, cols, widths, view, panel}
     filters: Optional[list[dict]] = None                  # saved filters: {name, text} in the table-filter grammar
     shading: Optional[list[dict]] = None                  # chart date-range bands: {id, from, to, label, colour}
+    changes: Optional[list[dict]] = None                  # change log: {id, at, label, reason, finish_days, moved: [{id, name, days, from, to}]}
+    accepted_baseline: Optional[str] = None               # the baseline the client accepted (name), shown in the briefing and on issue
     levelled: bool = False
     # computed
     finish: Optional[datetime] = None

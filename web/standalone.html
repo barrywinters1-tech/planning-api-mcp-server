@@ -738,6 +738,8 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 #hdr .c.dropleft { box-shadow: inset 3px 0 0 var(--accent); }
 #hdr .c[draggable] { cursor: grab; }
 
+.spine .sp-h .linkish { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
+
 </style>
 
 <div class="app" id="app">
@@ -833,6 +835,7 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 <div class="pop" id="popMore" role="menu" hidden>
   <div class="pop-sec">Baseline</div>
   <button id="btnBaseline" role="menuitem">Set baseline…</button>
+  <button id="btnBaselineMgr" role="menuitem">Baselines: manage, accept…</button>
   <button id="btnBaselineClear" role="menuitem">Clear baseline bars</button>
   <div class="pop-sec">Resources</div>
   <button id="btnLevel" role="menuitem">Level to crew limits</button>
@@ -7458,10 +7461,35 @@ async function save(label) {
   setStatus('saving', 'Saving');
   try {
     const v = await api(pidPath(), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: S.project }) });
-    show(v); setStatus('ok', 'Saved'); if (label) toast(label, { ms: 3200, undo: true });
+    show(v); setStatus('ok', 'Saved'); const lc = S.lastChange; S.lastChange = null; if (label) toast(label, { ms: label.startsWith("As-built") ? 7000 : lc && (lc.moved.length || lc.finish_days) ? 6000 : 3200, undo: true, action: lc && (lc.moved.length || lc.finish_days) ? { label: 'Why?', fn: () => reasonDialog(lc.id) } : null });
   } catch (e) { setStatus('error', 'Not saved'); toast('Not saved: ' + e.message, { ms: 6000 }); await openProject(S.pid, S.screen); }
 }
-function mutate(fn, label) { if (!S.project) return; if (readOnly()) return roBlocked(); const r = fn(S.project); if (r === false) return; save(label); }
+// Every edit leaves a record: what moved (milestones and the finish) and, if the planner adds one, why.
+// Also the as-built guard: an actual date recorded in a closed period that changes afterwards is called out.
+const MS_SNAP = p => { const o = {}; p.activities.forEach(a => { if (a.type !== 'task') o[a.id] = (a.actual_finish || a.early_finish || a.actual_start || a.early_start || '').slice(0, 10); }); o.__finish = (p.finish || '').slice(0, 10); return o; };
+function logChange(p, before, label) {
+  if (!ENGINE() || p.activities.length > LIVE_LIMIT) return;
+  const c = cloneProject(); if (!runSchedule(c)) return; const after = MS_SNAP(c);
+  const moved = []; Object.keys(after).forEach(id => { if (id === '__finish' || !before[id] || !after[id] || before[id] === after[id]) return; const a = c.activities.find(x => x.id === id); const d = Math.round((new Date(after[id]) - new Date(before[id])) / DAY); if (d) moved.push({ id, name: a ? a.name : id, days: d, from: before[id], to: after[id] }); });
+  const fd = before.__finish && after.__finish ? Math.round((new Date(after.__finish) - new Date(before.__finish)) / DAY) : 0;
+  const e = { id: 'C' + Date.now().toString(36), at: iso(new Date()), label: label || 'Edit', reason: '', finish_days: fd, moved: moved.slice(0, 12) };
+  p.changes = (p.changes || []).concat([e]).slice(-500); S.lastChange = e;
+  return e;
+}
+function asBuiltGuard(p, before) {
+  const per = periodsOf(p).slice(-1)[0]; if (!per) return;
+  const hit = []; p.activities.forEach(a => { const rec = per.acts[a.id], was = before[a.id]; if (!rec || !was || rec[3] === 'n') return; if ((was.s || '') !== (a.actual_start || '') || (rec[3] === 'c' && (was.f || '') !== (a.actual_finish || ''))) hit.push(a.id); });
+  if (hit.length) return `As-built changed: ${hit.slice(0, 3).join(', ')}${hit.length > 3 ? ' and ' + (hit.length - 3) + ' more' : ''} had actual dates recorded in ${per.name}. Undo if that was not intended.`;
+  return null;
+}
+function mutate(fn, label) {
+  if (!S.project) return; if (readOnly()) return roBlocked();
+  const p = S.project, before = MS_SNAP(p), actuals = {}; p.activities.forEach(a => { actuals[a.id] = { s: a.actual_start, f: a.actual_finish }; });
+  const r = fn(p); if (r === false) return;
+  if (label !== 'Reason recorded') { const e = logChange(p, before, label); if (e && (e.moved.length || e.finish_days)) label = (label || 'Edit') + (e.finish_days ? ` · finish ${e.finish_days > 0 ? '+' : ''}${e.finish_days}d` : '') + (e.moved.length ? ` · ${e.moved.length} milestone${e.moved.length === 1 ? '' : 's'} moved` : ''); }
+  const warn = asBuiltGuard(p, actuals); if (warn) { label = warn; S.lastChange = null; }
+  save(label);
+}
 async function act(path, body, method = 'POST') {
   if (readOnly()) return roBlocked();
   setStatus('saving', 'Working');
@@ -8388,6 +8416,48 @@ function periodLines(p, rs, x, RH, H) {      // dashed line per closed period, d
   });
   return s;
 }
+function reasonDialog(id) {
+  const e = (S.project.changes || []).find(c => c.id === id); if (!e) return;
+  modal('Why this change', `<p class="hint" style="margin-top:-4px">${esc(e.label)} · ${fmtD(e.at)}${e.finish_days ? ` · finish ${e.finish_days > 0 ? '+' : ''}${e.finish_days} days` : ''}</p>${e.moved.length ? `<div class="list">${e.moved.map(m => `<div class="li"><div><div class="t">${esc(m.name)}</div><div class="s">${esc(m.id)} · ${fmtD(m.from)} → ${fmtD(m.to)}</div></div><span class="chip ${m.days > 0 ? 'bad' : 'ok'}">${m.days > 0 ? '+' : ''}${m.days}d</span></div>`).join('')}</div>` : ''}<label style="margin-top:10px">Reason<textarea name="r" rows="3" placeholder="e.g. Client instruction CE-014: additional drainage run">${esc(e.reason || '')}</textarea></label>`,
+    m => mutate(p => { const x = (p.changes || []).find(c => c.id === id); if (x) x.reason = m.querySelector('[name=r]').value.trim(); }, 'Reason recorded'), 'Save');
+}
+// as-built integrity: live actual dates against what the last closed period recorded
+function asBuiltHtml(p) {
+  const per = periodsOf(p).slice(-1)[0]; if (!per) return '';
+  const diffs = []; p.activities.forEach(a => { const rec = per.acts[a.id]; if (!rec || rec[3] === 'n') return; const st = (a.actual_start || '').slice(0, 16), fi = (a.actual_finish || '').slice(0, 16); if (!a.actual_start) diffs.push({ a, t: `was started in ${per.name}, now has no actual start` }); else if (st !== rec[0]) diffs.push({ a, t: `actual start moved from ${fmtD(rec[0])} to ${fmtD(st)}` }); else if (rec[3] === 'c' && fi && fi !== rec[1]) diffs.push({ a, t: `actual finish moved from ${fmtD(rec[1])} to ${fmtD(fi)}` }); });
+  return `<h3 style="font-size:14px;margin:16px 0 6px">As-built integrity</h3>${diffs.length ? `<p class="hint crit" style="margin:0 0 6px">${diffs.length} actual date${diffs.length === 1 ? '' : 's'} differ from what ${per.name} recorded:</p><div class="list">${diffs.slice(0, 12).map(d => `<div class="li click" data-goto="${esc(d.a.id)}" role="button" tabindex="0"><div><div class="t">${esc(d.a.name)}</div><div class="s">${esc(d.t)}</div></div></div>`).join('')}</div>` : `<p class="hint" style="margin:0">Every actual date still matches ${per.name}. Changing one after a period is closed is called out when it happens.</p>`}`;
+}
+function changesPanel(p) {
+  const ch = (p.changes || []).slice().reverse().slice(0, 40);
+  return `<section class="panel" aria-labelledby="hChg"><div class="panel-head"><h2 id="hChg">Change log</h2><span style="display:flex;gap:8px"><button type="button" class="btn" id="chgCsv" ${(p.changes || []).length ? '' : 'disabled'}>CSV</button></span></div>
+    ${ch.length ? `<div class="list">${ch.map(e => `<div class="li"><div style="min-width:0"><div class="t">${esc(e.label)}${e.finish_days ? ` <span class="chip ${e.finish_days > 0 ? 'bad' : 'ok'}">finish ${e.finish_days > 0 ? '+' : ''}${e.finish_days}d</span>` : ''}</div><div class="s">${fmtD(e.at)}${e.moved.length ? ' · ' + e.moved.slice(0, 3).map(m => `${esc(m.name)} ${m.days > 0 ? '+' : ''}${m.days}d`).join(', ') + (e.moved.length > 3 ? ` and ${e.moved.length - 3} more` : '') : ''}${e.reason ? `<br><b>Why:</b> ${esc(e.reason)}` : ''}</div></div><button type="button" class="btn" data-why="${esc(e.id)}">${e.reason ? 'Edit reason' : 'Add reason'}</button></div>`).join('')}</div>${(p.changes || []).length > 40 ? `<p class="hint">Showing the last 40 of ${p.changes.length}.</p>` : ''}` : '<p class="hint" style="margin:0">Every edit from now on is recorded here with what it moved. Add a reason to the ones that matter: they travel with each issued revision.</p>'}</section>`;
+}
+function changesCsv(p) {
+  const lines = [['When', 'Change', 'Finish moved (days)', 'Milestones moved', 'Reason'].map(csvCell).join(',')];
+  (p.changes || []).forEach(e => lines.push([e.at.replace('T', ' '), e.label, e.finish_days || 0, e.moved.map(m => `${m.name} ${m.days > 0 ? '+' : ''}${m.days}d (${m.from} to ${m.to})`).join('; '), e.reason || ''].map(csvCell).join(',')));
+  return '\ufeff' + lines.join('\r\n') + '\r\n';
+}
+// ---------- baselines: manager with the accepted programme ----------
+function baselineManager() {
+  if (!S.project) return;
+  const body = () => { const p = S.project; const cur = p.baselines.find(b => p.activities.some(a => a.baseline_start) && b.dates && Object.keys(b.dates).some(id => { const a = byId(id); return a && a.baseline_start === b.dates[id].start; }));
+    return `<p class="hint" style="margin-top:-4px">Baselines freeze the dates you measure against. One can be marked <b>Accepted</b>: the programme the client agreed, named on the briefing and the PDF.</p>
+    ${p.baselines.length ? `<div class="list">${p.baselines.slice().reverse().map(b => `<div class="li"><div style="min-width:0"><div class="t">${esc(b.name)}${p.accepted_baseline === b.name ? ' <span class="chip ok">Accepted</span>' : ''}${cur && cur.name === b.name ? ' <span class="chip plain">on the chart</span>' : ''}</div><div class="s">saved ${fmtD(b.saved_at)} · finish ${fmtD(b.finish)}</div></div><span style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn" data-use="${esc(b.name)}">Show</button><button type="button" class="btn" data-cmp="${esc(b.name)}">Compare</button><button type="button" class="btn" data-acc="${esc(b.name)}">${p.accepted_baseline === b.name ? 'Unmark' : 'Accepted'}</button><button type="button" class="icon" data-del="${esc(b.name)}" aria-label="Delete ${esc(b.name)}"><svg viewBox="0 0 20 20" class="ic"><path d="M5 5l10 10M15 5L5 15"/></svg></button></span></div>`).join('')}</div>` : '<p class="hint" style="margin:0">None yet.</p>'}
+    <div class="insp-sec">New baseline</div><div class="row2"><label>From the live programme<input name="bn" value="Baseline ${p.baselines.length + 1}"></label><label>&nbsp;<button type="button" class="btn" id="blNew">Set baseline</button></label></div>
+    ${(p.revisions || []).length ? `<div class="row2"><label>From an issued revision<select name="br">${p.revisions.map(r => `<option value="${esc(r.name)}">${esc(r.name)} · ${fmtD(r.issued_at)}</option>`).join('')}</select></label><label>&nbsp;<button type="button" class="btn" id="blRev">Use its dates</button></label></div>` : ''}
+    ${selectedActs().length ? `<p class="hint">${selectedActs().length} selected: <button type="button" class="chipbtn" id="blMerge">merge their live dates into the current baseline</button></p>` : ''}`; };
+  const { m } = modal('Baselines', body(), null);
+  const wire = () => { const b = m.querySelector('.mbody'), p = S.project;
+    b.querySelectorAll('[data-use]').forEach(x => x.onclick = async () => { await act('/baseline/use', { name: x.dataset.use }); S.view.baseline = true; $('#vBaseline').checked = true; redraw(); });
+    b.querySelectorAll('[data-cmp]').forEach(x => x.onclick = () => { modalClose(); const bl = p.baselines.find(q => q.name === x.dataset.cmp); const old = cloneProject(); old.activities.forEach(a => { const d = bl.dates && bl.dates[a.id]; if (d) { a.early_start = d.start; a.early_finish = d.finish; a.actual_start = null; a.actual_finish = null; a.status = 'not_started'; a.percent_complete = 0; a.duration_hours = d.duration_hours || a.duration_hours; } }); old.finish = bl.finish; if (window.PlannerEngine && window.PlannerEngine.compareProjects) compareSheet(window.PlannerEngine.compareProjects(old, S.project)); });
+    b.querySelectorAll('[data-acc]').forEach(x => x.onclick = () => { mutate(pp => { pp.accepted_baseline = pp.accepted_baseline === x.dataset.acc ? null : x.dataset.acc; }, p.accepted_baseline === x.dataset.acc ? 'Accepted mark removed' : `${x.dataset.acc} marked as the accepted programme`); redraw(); });
+    b.querySelectorAll('[data-del]').forEach(x => x.onclick = () => { mutate(pp => { pp.baselines = pp.baselines.filter(q => q.name !== x.dataset.del); if (pp.accepted_baseline === x.dataset.del) pp.accepted_baseline = null; if (!pp.baselines.length) pp.activities.forEach(a => { a.baseline_start = null; a.baseline_finish = null; }); }, `Baseline ${x.dataset.del} deleted`); redraw(); });
+    b.querySelector('#blNew').onclick = async () => { const n = b.querySelector('[name=bn]').value.trim() || 'Baseline'; await act('/baseline', { name: n }); redraw(); };
+    const br = b.querySelector('#blRev'); if (br) br.onclick = () => { const r = (p.revisions || []).find(q => q.name === b.querySelector('[name=br]').value); if (!r) return; mutate(pp => { const dates = {}; r.project.activities.forEach(a => { const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (st && fi) dates[a.id] = { start: st, finish: fi, duration_hours: a.duration_hours }; }); pp.activities.forEach(a => { const d = dates[a.id]; a.baseline_start = d ? d.start : null; a.baseline_finish = d ? d.finish : null; }); pp.baselines = pp.baselines.filter(q => q.name !== r.name).concat([{ name: r.name, saved_at: iso(new Date()), finish: r.project.finish, dates }]); }, `Baseline set from ${r.name}`); S.view.baseline = true; $('#vBaseline').checked = true; redraw(); };
+    const mg = b.querySelector('#blMerge'); if (mg) mg.onclick = () => { baselineMerge(selectedActs()); redraw(); };
+  };
+  const redraw = () => { m.querySelector('.mbody').innerHTML = body(); wire(); }; wire();
+}
 function periodsPanel(p) {
   const per = periodsOf(p), revs = new Set((p.revisions || []).map(r => r.name));
   const rows = per.map((pp, i) => { const prev = per[i - 1]; const mv = prev && prev.finish && pp.finish ? Math.round((ms(pp.finish.slice(0, 10)) - ms(prev.finish.slice(0, 10))) / DAY) : null;
@@ -9271,6 +9341,18 @@ function baselineMerge(acts) {
   const p = S.project, bl = p.baselines[p.baselines.length - 1]; if (!bl) return toast('Set a baseline first');
   mutate(() => { acts.forEach(a => { const st = a.actual_start || a.early_start, fi = a.actual_finish || a.early_finish; if (!st || !fi) return; a.baseline_start = st; a.baseline_finish = fi; bl.dates = bl.dates || {}; bl.dates[a.id] = { start: st, finish: fi, duration_hours: a.duration_hours }; }); }, `${acts.length} activit${acts.length === 1 ? 'y' : 'ies'} merged into ${bl.name}`);
 }
+const GUIDE = {
+  brief: ['Describe the job in plain English, or answer the six questions: Planner lays out the activities, links them and sizes them from production rates.', 'Import an XER, P6 XML or MS Project XML instead if the programme already exists. The import summary tells you what arrived.', 'Open the plan and read it top to bottom once: every bar explains itself when you hover.'],
+  build: ['Open ends, leads, hard constraints and long tasks fail the health checks. Auto-repair fixes what a planner would without asking and lists what it leaves open.', 'Drag bars to push, drag ends to extend, drag a dot onto a bar to link. Try mode lets you experiment and discard.', 'Ask: "what is driving the finish", "why does X start on the 9th", "what should we accelerate".'],
+  baseline: ['Set a baseline before work starts. Mark the one the client agreed as Accepted: it is named on the briefing and the PDF.', 'Compare shows what moved against any baseline or revision, in plain English.', 'New activities added later: select them and merge their live dates into the baseline.'],
+  update: ['Site update records what happened: started, finished, % or days left. On the chart, drag the progress point along a bar.', 'Close the period after each update. Each period keeps its own progress line and the as-built record builds up.', 'Progress as planned marks a selection up to where the programme said it would be, then correct the exceptions.'],
+  issue: ['PDF for issue prints the programme as shown, with the briefing as a cover page and the accepted baseline named.', 'Issue a revision to freeze what you sent. Later versions compare against it.', 'Every edit is in the change log; add the reason to the ones that matter before you issue.'],
+};
+function helpSheet(stage) {
+  const keys = Object.keys(GUIDE), k = GUIDE[stage] ? stage : keys[0];
+  modal('How it works', `<div class="miniseg" style="margin-bottom:12px">${keys.map(x => `<button type="button" data-hs="${x}" class="${x === k ? 'on' : ''}">${x[0].toUpperCase() + x.slice(1)}</button>`).join('')}</div><ol class="bullets" id="hsBody">${GUIDE[k].map(t => `<li>${esc(t)}</li>`).join('')}</ol><p class="hint" style="margin-top:12px">Press <kbd>?</kbd> for keyboard and mouse shortcuts, <kbd>⌘K</kbd> to ask anything.</p>`, null);
+  $('#modal').querySelectorAll('[data-hs]').forEach(b => b.onclick = () => { $('#modal').querySelectorAll('[data-hs]').forEach(x => x.classList.toggle('on', x === b)); $('#hsBody').innerHTML = GUIDE[b.dataset.hs].map(t => `<li>${esc(t)}</li>`).join(''); });
+}
 function shortcutsSheet() {
   const rows = [['Plan', [['Enter / F2', 'Edit the cell'], ['Insert', 'Insert activity below'], ['Shift+Insert', 'Insert activity above'], ['Delete', 'Delete selected'], ['Tab / Shift+Tab', 'Indent / outdent'], ['Alt+↑ / Alt+↓', 'Move row up / down'], ['Space', 'Collapse or expand a summary'], ['Ctrl+L / Ctrl+U', 'Link / unlink selected'], ['Ctrl+C / Ctrl+V', 'Copy / paste activities'], ['Ctrl+A', 'Select all'], ['+ / −', 'Zoom the timescale'], ['I', 'Inspector'], ['Esc', 'Clear selection, stop tracing']]],
     ['Chart', [['Drag a bar', 'Move it (successors follow)'], ['Drag a bar end', 'Change start or finish'], ['Drag a link dot onto a bar', 'Link (left half SS/FS, right half FF/SF)'], ['Drag the progress point', 'Record % complete'], ['Double-click a bar', 'Inspector'], ['Right-click', 'Menu, notes on the chart'], ['Hover', 'Why it starts, what it holds up']]],
@@ -9551,6 +9633,7 @@ function renderMonitor() {
           <div class="upd-foot"><label class="datefield" style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--ink-2)">As of<input type="date" id="updAsOf" value="${(p.data_date || p.start).slice(0, 10)}"></label><span class="hint" id="updCount">${Object.keys(S.staged).length ? Object.keys(S.staged).length + ' unsaved' : ''}</span><button type="button" class="primary" id="updSave" ${Object.keys(S.staged).length ? '' : 'disabled'}>Save progress</button></div>
         </section>
         ${periodsPanel(p)}
+        ${changesPanel(p)}
         <section class="panel" aria-labelledby="hDrive"><div class="panel-head"><h2 id="hDrive">What is driving the finish</h2><span class="hint">The critical path, in order</span></div>
           <div class="list">${crit.slice(0, 10).map(a => `<div class="li click" data-goto="${esc(a.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s"><span class="mono">${esc(a.id)}</span> · ${fmtD(a.actual_start || a.early_start)} to ${fmtD(a.early_finish)} · ${fmt1(daysOf(a, a.duration_hours))}d</div></div><span class="chip ${a.total_float_hours < 0 ? 'bad' : 'plain'}">${fmt1(daysOf(a, a.total_float_hours || 0))}d float</span></div>`).join('') || '<div class="empty"><b>No critical path</b>Every remaining activity has spare time.</div>'}${crit.length > 10 ? `<div class="li"><span class="hint">and ${crit.length - 10} more</span></div>` : ''}</div>
         </section>
@@ -9562,7 +9645,8 @@ function renderMonitor() {
           ${(p.assumptions || []).length ? `<ul class="bullets">${p.assumptions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : '<p class="hint">No assumptions recorded.</p>'}
           ${questions.length ? `<h3 style="font-size:14px;margin:16px 0 6px">Ask the client</h3><ul class="bullets">${questions.map(q => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
           ${x.still_open && x.still_open.length ? `<h3 style="font-size:14px;margin:16px 0 6px">Left open by the repairer</h3><ul class="bullets">${x.still_open.map(q => `<li>${esc(q)}</li>`).join('')}</ul>` : ''}
-          <h3 style="font-size:14px;margin:16px 0 6px">Baselines</h3>${p.baselines.length ? `<div class="list">${p.baselines.map(b => `<div class="li"><div><div class="t">${esc(b.name)}</div><div class="s">saved ${fmtD(b.saved_at)} · finish ${fmtD(b.finish)}</div></div><button type="button" class="btn" data-bl="${esc(b.name)}">Compare</button></div>`).join('')}</div>` : '<p class="hint" style="margin:0">None yet. Set one from Plan, More, before work starts so slippage shows.</p>'}
+          <h3 style="font-size:14px;margin:16px 0 6px">Baselines <button type="button" class="chipbtn" id="blMgr" style="margin-left:6px">Manage</button></h3>${p.baselines.length ? `<div class="list">${p.baselines.map(b => `<div class="li"><div><div class="t">${esc(b.name)}${p.accepted_baseline === b.name ? ' <span class="chip ok">Accepted</span>' : ''}</div><div class="s">saved ${fmtD(b.saved_at)} · finish ${fmtD(b.finish)}</div></div><button type="button" class="btn" data-bl="${esc(b.name)}">Show</button></div>`).join('')}</div>` : '<p class="hint" style="margin:0">None yet. Set one before work starts so slippage shows.</p>'}
+          ${asBuiltHtml(p)}
         </section>
       </div>
       <aside class="mon-side" aria-label="Progress charts">${progressVisuals(p, r, false)}</aside>
@@ -9575,6 +9659,8 @@ function renderMonitor() {
   el.querySelectorAll('[data-pcmp]').forEach(b => b.onclick = () => { const r = (p.revisions || []).find(x => x.name === b.dataset.pcmp); if (r && window.PlannerEngine) compareSheet(window.PlannerEngine.compareProjects(r.project, S.project)); });
   const fix = el.querySelector('#mFix'); if (fix) fix.onclick = () => act('/repair');
   el.querySelectorAll('[data-goto]').forEach(n => { const goTo = () => { const id = n.dataset.goto; if (!byId(id)) return; go('plan'); S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(q => rowKey(q) === id); if (i >= 0) scrollToRow(i); if (S.inspector) renderInspector(); }; n.onclick = goTo; n.onkeydown = e => { if (e.key === 'Enter') goTo(); }; });
+  el.querySelector('#blMgr').onclick = baselineManager; const cc = el.querySelector('#chgCsv'); if (cc) cc.onclick = async () => { if (await saveBlob(`${p.id}-changes.csv`, new Blob([changesCsv(p)], { type: 'text/csv;charset=utf-8' }))) toast('Change log saved'); };
+  el.querySelectorAll('[data-why]').forEach(b => b.onclick = () => reasonDialog(b.dataset.why));
   el.querySelectorAll('[data-bl]').forEach(b => b.onclick = () => { act('/baseline/use', { name: b.dataset.bl }); S.view.baseline = true; $('#vBaseline').checked = true; });
   el.querySelectorAll('.upd input[type=range]').forEach(inp => {
     const row = inp.closest('.upd'), id = row.dataset.id, a = byId(id); const orig = a.status === 'complete' ? 100 : Math.round(a.percent_complete);
@@ -9819,6 +9905,9 @@ function palActions() {
     S.project && ['Saved views', 'View', viewsDialog],
     S.project && ['Filter builder and saved filters', 'Filter', filterDialog],
     ['Keyboard and mouse shortcuts', 'Help', shortcutsSheet],
+    ['How it works: brief, build, baseline, update, issue', 'Help', () => helpSheet('brief')],
+    S.project && ['Baselines: manage, accept, compare', 'Plan', baselineManager],
+    S.project && ['Change log and reasons', 'Go to', () => go('monitor')],
     S.project && ['Insert activity above', 'Plan', () => insertActivity(true)],
     S.project && ['Progress the selection as planned to the data date', 'Progress', () => { const acts = selectedActs().length ? selectedActs() : S.project.activities; let n = 0; mutate(p => { n = progressAsPlanned(acts, (p.data_date || p.start).slice(0, 10) + 'T16:00:00'); if (!n) return false; }, null); toast(n ? `${n} activit${n === 1 ? 'y' : 'ies'} progressed as planned` : 'Nothing to progress'); }],
     S.project && ['Coding sheet (CSV) export and import', 'Set-up', libraryDialog],
@@ -10169,7 +10258,7 @@ function stageState(p, r) {
   return [
     { k: 'brief', t: 'Brief', done: true, s: `${p.activities.length} activities, ${p.relationships.length} links`, action: ['Open the plan', () => go('plan')] },
     { k: 'build', t: 'Build', done: openEnds <= 2 && !!r && r.score >= 70, s: r ? `health ${r.score}/100${openEnds > 2 ? `, ${openEnds} unlinked` : ''}` : 'not checked yet', action: r && r.score < 70 ? ['Fix the checks', () => act('/repair')] : ['Health checks', () => go('monitor')] },
-    { k: 'baseline', t: 'Baseline', done: !!lastBl, s: lastBl ? `${lastBl.name}, ${fmtD(lastBl.saved_at)}` : 'none yet', action: lastBl ? ['Compare', () => compareSheet()] : ['Set baseline', () => $('#btnBaseline').click()] },
+    { k: 'baseline', t: 'Baseline', done: !!lastBl, s: p.accepted_baseline ? `${p.accepted_baseline} accepted` : lastBl ? `${lastBl.name}, ${fmtD(lastBl.saved_at)}` : 'none yet', action: lastBl ? ['Compare', () => compareSheet()] : ['Set baseline', () => $('#btnBaseline').click()] },
     { k: 'update', t: 'Update', done: started, s: lastPer ? `${lastPer.name}, ${fmtD(lastPer.data_date)}` : started ? 'progress recorded, no period closed' : 'nothing started', action: ['Site update', siteUpdateSheet] },
     { k: 'issue', t: 'Issue', done: !!lastRev, s: lastRev ? `${lastRev.name}, ${fmtD(lastRev.issued_at)}` : 'not issued yet', action: ['PDF for issue', printSheet] },
   ];
@@ -10212,7 +10301,7 @@ function renderOverview() {
   const stages = stageState(p, r); const cur = stages.find(s => !s.done) || stages[stages.length - 1];
   const li = (x, extra) => `<div class="li click" data-goto="${esc(x.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t">${esc(x.name)}</div><div class="s"><span class="mono">${esc(x.id)}</span>${extra ? ' · ' + extra : ''}</div></div>${x.date ? `<span class="chip plain">${fmtD(x.date)}</span>` : ''}</div>`;
   const primary = mode === 'site' ? '<button type="button" class="primary" id="ovSite">Site update</button>' : mode === 'client' ? '<button type="button" class="primary" id="ovPdf">PDF for issue</button>' : '<button type="button" class="primary" id="ovPlan">Open the plan</button>';
-  const spine = mode === 'build' ? `<ol class="spine" aria-label="Where the programme is">${stages.map(s => `<li class="${s.done ? 'done' : ''} ${s === cur ? 'cur' : ''}"><span class="sp-dot" aria-hidden="true">${s.done ? '✓' : ''}</span><div class="sp-b"><b>${s.t}</b><span class="sp-s">${esc(s.s)}</span>${s === cur || !s.done ? `<button type="button" class="chipbtn" data-stage="${s.k}">${esc(s.action[0])}</button>` : ''}</div><span class="sp-h hint">${STAGE_HELP[s.k]}</span></li>`).join('')}</ol>` : '';
+  const spine = mode === 'build' ? `<ol class="spine" aria-label="Where the programme is">${stages.map(s => `<li class="${s.done ? 'done' : ''} ${s === cur ? 'cur' : ''}"><span class="sp-dot" aria-hidden="true">${s.done ? '✓' : ''}</span><div class="sp-b"><b>${s.t}</b><span class="sp-s">${esc(s.s)}</span>${s === cur || !s.done ? `<button type="button" class="chipbtn" data-stage="${s.k}">${esc(s.action[0])}</button>` : ''}</div><span class="sp-h hint">${STAGE_HELP[s.k]} <button type="button" class="linkish" data-help="${s.k}" style="color:var(--accent)">How?</button></span></li>`).join('')}</ol>` : '';
   const kpis = `<div class="ov-kpis">
       <div class="kpi"><div class="k">Forecast finish</div><div class="big" ${k.spare_days != null && k.spare_days < 0 ? 'style="color:var(--crit)"' : ''}>${fmtD(k.finish || p.finish)}</div><div class="note">${k.deadline ? (k.spare_days >= 0 ? `${fmt1(k.spare_days)} working days inside the ${fmtD(k.deadline)} deadline` : `${fmt1(-k.spare_days)} working days past the ${fmtD(k.deadline)} deadline`) : 'No deadline set'}</div></div>
       <div class="kpi"><div class="k">Progress</div><div class="big">${Math.round(k.pct_complete || 0)}%</div><div class="meter"><b style="width:${Math.min(100, k.pct_complete || 0)}%"></b><i style="left:${Math.min(99.5, k.pct_expected || 0)}%"></i></div><div class="note">${Math.round(k.pct_expected || 0)}% expected by ${fmtD(b.as_of)}</div></div>
@@ -10247,6 +10336,7 @@ function renderOverview() {
   const on = (sel, fn) => { const n = el.querySelector(sel); if (n) n.onclick = fn; };
   on('#ovPlan', () => go('plan')); on('#ovSite', siteUpdateSheet); on('#ovPdf', printSheet); on('#ovAsk', () => { openPalette(); $('#cmdIn').placeholder = 'Ask anything about the programme'; }); on('#ovTry', tryStart);
   el.querySelectorAll('[data-stage]').forEach(btn => btn.onclick = () => { const s = stages.find(x => x.k === btn.dataset.stage); if (s) s.action[1](); });
+  el.querySelectorAll('[data-help]').forEach(btn => btn.onclick = () => helpSheet(btn.dataset.help));
   el.querySelectorAll('[data-act]').forEach(btn => btn.onclick = () => ACTION_FN[btn.dataset.act]());
   el.querySelectorAll('[data-goto]').forEach(n => { const goTo = () => { if (byId(n.dataset.goto)) goToActivity(n.dataset.goto); }; n.onclick = goTo; n.onkeydown = e => { if (e.key === 'Enter') goTo(); }; });
   on('#ovCopy', async () => { const t = [b.headline, '', b.prose].join('\n'); try { await navigator.clipboard.writeText(t); toast('Briefing copied'); } catch { toast('Select the text and copy it'); } });
@@ -10307,6 +10397,7 @@ function wireToolbar() {
   $('#dataDate').onchange = e => { if (e.target.value) mutate(p => { p.data_date = e.target.value + 'T08:00:00'; }, `Data date moved to ${fmtD(e.target.value)}`); };
   $('#btnProgress').onclick = progressDialog; $('#btnConstraint').onclick = constraintDialog;
   $('#btnTry').onclick = () => { if (S.sandbox) paintTry(); else tryStart(); };
+  $('#btnBaselineMgr').onclick = baselineManager;
   $('#btnBaseline').onclick = () => modal('Set a baseline', `<p class="hint" style="margin-top:0">A baseline freezes today's dates so you can see slippage later, bar by bar.</p><label>Name<input name="n" id="blName" value="Baseline ${S.project ? S.project.baselines.length + 1 : 1}"></label>`, m => act('/baseline', { name: m.querySelector('[name=n]').value || 'Baseline' }), 'Save baseline');
   $('#btnBaselineClear').onclick = () => act('/baseline', null, 'DELETE');
   $('#btnRisk').onclick = riskSheet; $('#btnDrag').onclick = () => computeDrag();
@@ -10340,7 +10431,7 @@ function wireToolbar() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if ($('#palBack').hidden) openPalette(); else closePalette(); return; }
     if (e.key === 'Escape') {
       const layered = !$('#palBack').hidden || !$('#modalBack').hidden || $$('.pop').some(p => p._open);
-      closePops(); if (!$('#palBack').hidden) closePalette();
+      closePops(); if (!$('#palBack').hidden) closePalette(); else if (!$('#modalBack').hidden && !typing) modalClose();   // Esc closes a sheet even when focus has left it
       if (!layered && !typing && !S.editing && S.trace) clearTrace();   // Esc peels one layer at a time
     }
     if (typing || S.editing) return;
