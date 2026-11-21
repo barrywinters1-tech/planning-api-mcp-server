@@ -17,6 +17,9 @@ NS = "http://schemas.microsoft.com/project"
 ISO = "%Y-%m-%dT%H:%M:%S"
 LINK_IN = {"0": LinkType.FF, "1": LinkType.FS, "2": LinkType.SF, "3": LinkType.SS}
 LINK_OUT = {v: k for k, v in LINK_IN.items()}
+# LagFormat values that mean elapsed time (em, eh, ed, ew, emo, e%, and their estimated "?" variants); an elapsed lag
+# is measured on the 24-hour calendar, so such a link carries the lag_calendar override "24h"
+ELAPSED_LAG_FORMATS = {"4", "6", "8", "10", "12", "20", "36", "38", "40", "42", "44", "52"}
 CSTR_IN = {
     "0": Constraint.NONE, "1": Constraint.AS_LATE_AS_POSSIBLE, "2": Constraint.MUST_START_ON,
     "3": Constraint.MUST_FINISH_ON, "4": Constraint.START_ON_OR_AFTER, "5": Constraint.START_ON_OR_BEFORE,
@@ -199,10 +202,11 @@ def _read(root: ET.Element) -> Project:
         if pred_uid in uid_to_id and succ_uid in uid_to_id:
             lag_raw = float(_text(link, "LinkLag", "0") or 0)
             lag_fmt = _text(link, "LagFormat", "7")
-            lag_hours = lag_raw / 600.0 if lag_fmt not in ("19", "35", "51", "53") else lag_raw / 600.0
+            lag_hours = lag_raw / 600.0   # tenths of a minute, working or elapsed
             project.relationships.append(Relationship(
                 predecessor_id=uid_to_id[pred_uid], successor_id=uid_to_id[succ_uid],
-                type=LINK_IN.get(_text(link, "Type", "1"), LinkType.FS), lag_hours=lag_hours))
+                type=LINK_IN.get(_text(link, "Type", "1"), LinkType.FS), lag_hours=lag_hours,
+                lag_calendar="24h" if lag_fmt in ELAPSED_LAG_FORMATS else None))
 
     res_by_uid: dict[str, Resource] = {}
     for r in root.findall(f"{_q('Resources')}/{_q('Resource')}"):
@@ -392,7 +396,7 @@ def write_mspdi(project: Project) -> str:
             _sub(link, "Type", LINK_OUT[r.type])
             _sub(link, "CrossProject", 0)
             _sub(link, "LinkLag", int(r.lag_hours * 600))
-            _sub(link, "LagFormat", 7)
+            _sub(link, "LagFormat", 8 if (r.lag_calendar or project.lag_calendar) == "24h" else 7)   # 8 = elapsed days
 
     res_uid = {r.id: i + 1 for i, r in enumerate(project.resources)}
     resources = _sub(root, "Resources")

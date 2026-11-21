@@ -266,6 +266,17 @@ def build_cases() -> list[tuple[str, dict]]:
            "%R\t5\t1\t7\t\t\tignored", "%R\t6\t1\t7\t\t9\t", "%R\t8\t1\t7\t\t\tINDICATOR_RED", "%R\t9\t1\t7\t\t\tq",
            "%R\t1\t99\t7\t\t\tno such task", "%R\t3\t1\t7\t\t\t", "%R\t77\t1\t7\t\t\tno such type", "%R\t1\t1\t7\t\t\tAcme twice")
     raw.append(("crafted-user-fields", _minimal(extra=udf).encode(), None))
+    # lag calendars: SCHEDOPTIONS.sched_calendar_on_relationship_lag written for every option, then crafted rows
+    for mode in (None, "predecessor", "successor", "project", "24h"):
+        raw.append((f"written-lag_calendar-{mode or 'default'}", _xer({**links_and_lags(), "lag_calendar": mode}), None))
+    so = lambda *rows: ("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id\tsched_calendar_on_relationship_lag", *rows)  # noqa: E731
+    raw.append(("crafted-schedoptions-other-project-first", _minimal(extra=so("%R\t1\t8\trcal_Successor", "%R\t2\t7\trcal_24Hour", "%R\t3\t7\trcal_Project")).encode(), None))
+    raw.append(("crafted-schedoptions-unknown-value", _minimal(extra=so("%R\t1\t7\trcal_Lunar")).encode(), None))
+    raw.append(("crafted-schedoptions-blank-value", _minimal(extra=so("%R\t1\t7\t")).encode(), None))
+    raw.append(("crafted-schedoptions-no-proj-id-column", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tsched_calendar_on_relationship_lag", "%R\t1\trcal_Project")).encode(), None))
+    raw.append(("crafted-schedoptions-no-lag-column", _minimal(extra=("%T\tSCHEDOPTIONS", "%F\tschedoptions_id\tproj_id", "%R\t1\t7")).encode(), None))
+    raw.append(("crafted-schedoptions-no-rows", _minimal(extra=so()).encode(), None))
+    raw.append(("crafted-schedoptions-short-row", _minimal(extra=so("%R\t1")).encode(), None))
     raw.append(("written-constraints-unscheduled", _xer(constraints(), scheduled=False), None))
     raw.append(("written-logic_loop", _xer(logic_loop(), scheduled=False), None))
     raw.append(("non-ascii-cp1252", _xer(_non_ascii(), encoding="cp1252"), None))

@@ -163,6 +163,7 @@ class Relationship(BaseModel):
     successor_id: str
     type: LinkType = LinkType.FS
     lag_hours: float = 0.0
+    lag_calendar: Optional[str] = None  # per-link override of Project.lag_calendar (same values); None = project setting
     driving: bool = False  # computed by schedule(): this link sets its successor's date
 
 
@@ -246,6 +247,9 @@ class Project(BaseModel):
     data_date: Optional[datetime] = None
     must_finish_by: Optional[datetime] = None
     default_calendar_id: str = "std"
+    # calendar the lag of a relationship is measured on: "predecessor" (P6 default, also when None),
+    # "successor", "project" (the default calendar) or "24h" (elapsed wall-clock hours)
+    lag_calendar: Optional[str] = None
     calendars: dict[str, Calendar] = Field(default_factory=dict)
     wbs: list[WBSNode] = Field(default_factory=list)
     activities: list[Activity] = Field(default_factory=list)

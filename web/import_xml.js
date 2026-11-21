@@ -1092,6 +1092,16 @@ const P6_CSTR = { 'Start On or After': 'start_on_or_after', 'Start On or Before'
 const P6_LINK = { 'Finish to Start': 'FS', 'Start to Start': 'SS', 'Finish to Finish': 'FF', 'Start to Finish': 'SF' };
 const P6_DAYS = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6 };
 const P6_RES_TYPE = { Labor: 'labour', Nonlabor: 'equipment', Material: 'material' };
+// Project/RelationshipLagCalendar (pmxml._lag_calendar): "Predecessor Activity Calendar", "Successor Activity Calendar",
+// "24 Hour Calendar" or "Project Default Calendar", matched by keyword; anything else is left unset
+function p6LagCalendar(s) {
+  s = (s || '').toLowerCase();
+  if (s.includes('successor')) return 'successor';
+  if (s.includes('24')) return '24h';
+  if (s.includes('project')) return 'project';
+  if (s.includes('predecessor')) return 'predecessor';
+  return null;
+}
 
 const kids = (el, name) => el.children.filter(c => localName(c.tag) === name);
 function ptext(el, name, d = '') {
@@ -1151,6 +1161,8 @@ function readPmxml(text, projectIndex = 0) {
   const project = mkProject({ id: pySlice(ptext(pe, 'Id') || 'PROJ', 20), name: ptext(pe, 'Name') || ptext(pe, 'Id') || 'Project', start,
     data_date: pdt(ptext(pe, 'DataDate')), must_finish_by: pdt(ptext(pe, 'MustFinishByDate')), default_calendar_id: defaultCal,
     description: ptext(pe, 'Description') });
+  const lagCalendar = p6LagCalendar(ptext(pe, 'RelationshipLagCalendar'));
+  if (lagCalendar) project.lag_calendar = lagCalendar;
 
   const rootWbs = ptext(pe, 'WBSObjectId'), wbsByObj = new Map();
   for (const w of kids(pe, 'WBS')) {
@@ -1221,6 +1233,8 @@ function readPmxml(text, projectIndex = 0) {
 // =========================================================================================
 const MSP_NS = 'http://schemas.microsoft.com/project';
 const MSP_LINK = { 0: 'FF', 1: 'FS', 2: 'SF', 3: 'SS' };
+// LagFormat values that mean elapsed time (mspxml.ELAPSED_LAG_FORMATS)
+const MSP_ELAPSED_LAG = new Set(['4', '6', '8', '10', '12', '20', '36', '38', '40', '42', '44', '52']);
 const MSP_CSTR = { 0: 'none', 1: 'as_late_as_possible', 2: 'must_start_on', 3: 'must_finish_on', 4: 'start_on_or_after', 5: 'start_on_or_before',
   6: 'finish_on_or_after', 7: 'finish_on_or_before' };
 const MSP_RES = { 0: 'material', 1: 'labour', 2: 'cost' };
@@ -1349,7 +1363,9 @@ function readMsp(root, NS) {
     const predUid = text(link, 'PredecessorUID');
     if (uidToId.has(predUid) && uidToId.has(succUid)) {
       const lagRaw = pyFloat(text(link, 'LinkLag', '0') || '0');
-      project.relationships.push(mkRel(uidToId.get(predUid), uidToId.get(succUid), get(MSP_LINK, text(link, 'Type', '1'), 'FS'), lagRaw / 600));
+      const rel = mkRel(uidToId.get(predUid), uidToId.get(succUid), get(MSP_LINK, text(link, 'Type', '1'), 'FS'), lagRaw / 600);
+      if (MSP_ELAPSED_LAG.has(text(link, 'LagFormat', '7'))) rel.lag_calendar = '24h';   // elapsed lag runs on the 24-hour calendar
+      project.relationships.push(rel);
     }
   }
   const resByUid = new Map();

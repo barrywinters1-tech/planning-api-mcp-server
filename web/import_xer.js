@@ -343,6 +343,13 @@ function readXer(text, projectIndex = 0) {
     }
   }
 
+  // schedule options: the calendar relationship lag is measured on (rows without a proj_id apply to every project)
+  const LAG_CAL_IN = { rcal_Predecessor: 'predecessor', rcal_Successor: 'successor', rcal_Project: 'project', rcal_24Hour: '24h' };
+  let lagCalendar = null;
+  for (const r of tbl('SCHEDOPTIONS')) {
+    if (getd(r, 'proj_id', pid) === pid) { lagCalendar = lookup(LAG_CAL_IN, getd(r, 'sched_calendar_on_relationship_lag', ''), null); break; }
+  }
+
   const res = new Map();
   for (const r of tbl('RSRC')) {
     const key = req(r, 'rsrc_id');
@@ -418,6 +425,7 @@ function readXer(text, projectIndex = 0) {
     description: '', assumptions: [], code_types: codeLib, baselines: [], revisions: [], levelled: false, finish: null, scheduled_at: null,
   };
   if (userFields.length) proj.user_fields = userFields;
+  if (lagCalendar) proj.lag_calendar = lagCalendar;
   if (!own(calendars, defaultCal)) put(calendars, defaultCal, newCalendar(defaultCal));   // Project.ensure_default_calendar()
   return proj;
 }
