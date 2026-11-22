@@ -409,10 +409,12 @@ function readXer(text, projectIndex = 0) {
     if (!ut || !idByTask.has(fk)) continue;
     const [label, typ] = ut, raw = getd(r, typ === 'number' ? 'udf_number' : typ === 'date' ? 'udf_date' : 'udf_text', '');
     if (raw === '') continue;
-    const a = actMap.get(idByTask.get(fk)); if (!a.fields) a.fields = {};
+    const a = actMap.get(idByTask.get(fk));
+    if (label === 'elapsed' && typ === 'text') { if (raw.trim().toUpperCase() === 'Y') a.elapsed = true; continue; }   // the elapsed-duration flag (xer.ELAPSED_UDF)
+    if (!a.fields) a.fields = {};
     put(a.fields, label, typ === 'number' ? _f(raw) : typ === 'date' ? raw.slice(0, 10) : raw);
   }
-  const userFields = [...udfTypes.values()].map(([name, type]) => ({ name, type }));
+  const userFields = [...udfTypes.values()].filter(([n, ty]) => !(n === 'elapsed' && ty === 'text')).map(([name, type]) => ({ name, type }));
 
   const defaultCal = get(pr, 'clndr_id') || (cals.size ? cals.keys().next().value : 'std');
   const calendars = {};

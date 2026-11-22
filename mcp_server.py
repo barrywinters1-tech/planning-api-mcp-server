@@ -17,6 +17,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from planner import Project, schedule, health_check, ScheduleError
+from planner.levelling import level, levelling_report
 from planner import store
 from planner.plan import (Patch, PatchOp, PLANNING_RULES, apply_patch, _ensure_calendars, schedule_digest,
                           draft_to_project, DraftPlan)
@@ -50,13 +51,13 @@ def _load(pid: str) -> Project:
         raise ValueError(f"No project '{pid}'. Call list_projects.")
 
 
-def _calc(project: Project) -> dict:
+def _calc(project: Project, check_set: str = "dcma") -> dict:
     try:
         schedule(project)
     except ScheduleError as e:
         store.save(project)
         return {"error": str(e)}
-    report = health_check(project)
+    report = health_check(project, check_set=check_set)
     store.save(project)
     return {"finish": project.finish.isoformat(), "health_score": report.score, "summary": report.summary,
             "failing": [{"check": c.key, "detail": c.detail, "items": c.items[:30]} for c in report.failing()],
@@ -189,9 +190,32 @@ def apply_patch_ops(project_id: str, patch: Patch) -> dict:
 
 
 @mcp.tool()
-def calculate(project_id: str) -> dict:
-    """Run the critical-path calculation and the DCMA 14-point health check. Returns dates, floats and failures."""
-    return _calc(_load(project_id))
+def calculate(project_id: str, check_set: str = "dcma") -> dict:
+    """Run the critical-path calculation and a health check: check_set "dcma" (the DCMA 14-point assessment, default)
+    or "pp21" (the CIOB Planning Protocol 2021 set: 44-day task cap, no open ends, no negative float, no leads, lags
+    within 20% of the successor, logic density, constraints, milestones linked, progress consistent, critical path,
+    calendars). Thresholds saved on the project (check_thresholds) apply. Returns dates, floats and failures."""
+    return _calc(_load(project_id), check_set if check_set in ("dcma", "pp21") else "dcma")
+
+
+@mcp.tool()
+def level_resources(project_id: str, options: Optional[dict] = None) -> dict:
+    """Resource-level the programme (serial method) against each resource's max_units_per_day. Options, each
+    optional and stored on the project for later re-levels: resources (ids to limit), from / to (ISO dates: only
+    activities starting in the window may move), within_float (never delay past the late start), order
+    (late_start | priority | total_float | early_start), preserve_actuals (always true). Returns the levelling
+    report: one record per activity moved or left over-allocated {id, delay_hours, resource_id, waited_for, reason}."""
+    p = _load(project_id)
+    if options is not None:
+        p.levelling = options or None
+    try:
+        level(p)
+    except ScheduleError as e:
+        return {"error": str(e)}
+    store.save(p)
+    report = health_check(p)
+    return {"finish": p.finish.isoformat(), "levelled": p.levelled, "moved": sum(1 for a in p.activities if a.level_delay_hours > 0),
+            "levelling_report": levelling_report(p), "health_score": report.score}
 
 
 @mcp.tool()

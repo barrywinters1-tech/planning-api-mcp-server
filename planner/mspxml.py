@@ -267,6 +267,7 @@ def _read(root: ET.Element, code_types=None) -> Project:
             remaining_hours=rem if status != Status.NOT_STARTED else None, percent_complete=pct,
             early_start=_dt(_text(t, "Start")), early_finish=_dt(_text(t, "Finish")),
             late_start=_dt(_text(t, "LateStart")), late_finish=_dt(_text(t, "LateFinish")),
+            elapsed=True if _text(t, "DurationFormat") in ELAPSED_LAG_FORMATS else None,   # an elapsed DurationFormat (8 = ed) is an elapsed-duration activity
             baseline_start=_dt(_text(t.find(f"{_q('Baseline')}"), "Start")) if t.find(_q("Baseline")) is not None else None,
             baseline_finish=_dt(_text(t.find(f"{_q('Baseline')}"), "Finish")) if t.find(_q("Baseline")) is not None else None,
             notes=_text(t, "Notes"),
@@ -463,7 +464,7 @@ def write_mspdi(project: Project) -> str:
         _sub(el, "OutlineNumber", outline_no); _sub(el, "OutlineLevel", level)
         _sub(el, "Priority", 500)
         _sub(el, "Start", _fmt(a.start)); _sub(el, "Finish", _fmt(a.finish))
-        _sub(el, "Duration", fmt_duration(a.duration_hours)); _sub(el, "DurationFormat", 7)
+        _sub(el, "Duration", fmt_duration(a.duration_hours)); _sub(el, "DurationFormat", 8 if a.elapsed else 7)   # 8 = elapsed days
         rem = a.remaining_hours if a.remaining_hours is not None else (0 if a.status == Status.COMPLETE else a.duration_hours)
         _sub(el, "RemainingDuration", fmt_duration(rem))
         _sub(el, "ManualStart", _fmt(a.start)); _sub(el, "ManualFinish", _fmt(a.finish))

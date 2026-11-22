@@ -89,6 +89,8 @@ class Calendar(BaseModel):
                     return e
                 if dt > s:
                     return dt
+                if dt == s and self.is_working(d - timedelta(days=1)) and self._shift(d - timedelta(days=1))[1] == s:
+                    return dt   # continuous (24-hour) calendars: the previous day's shift ends exactly here
             d -= timedelta(days=1)
             dt = datetime.combine(d, time(23, 59, 59))
         raise ValueError(f"Calendar {self.id} has no working time in the previous 10 years")
@@ -119,14 +121,24 @@ class Calendar(BaseModel):
                 dt = self.next_working_start(datetime.combine(dt.date() + timedelta(days=1), time.min))
         else:
             dt = self.prev_working_end(dt)
+            d = dt.date()
+            if dt == self._shift(d)[0]:
+                d -= timedelta(days=1)   # midnight on a continuous (24-hour) calendar is the end of the previous day's shift
             remaining = -hours
             while True:
-                s, e = self._shift(dt.date())
+                s, e = self._shift(d)
                 avail = (dt - s).total_seconds() / 3600
                 if remaining <= avail + 1e-9:
                     return dt - timedelta(seconds=round(remaining * 3600))
                 remaining -= avail
-                dt = self.prev_working_end(datetime.combine(dt.date() - timedelta(days=1), time(23, 59, 59)))
+                d -= timedelta(days=1)
+                for _ in range(3660):
+                    if self.is_working(d):
+                        break
+                    d -= timedelta(days=1)
+                else:
+                    raise ValueError(f"Calendar {self.id} has no working time in the previous 10 years")
+                dt = self._shift(d)[1]   # the previous working day's end
 
     def hours_between(self, a: datetime, b: datetime) -> float:
         """Working hours from a to b (negative if b < a)."""
@@ -202,6 +214,7 @@ class Activity(BaseModel):
     constraint: Constraint = Constraint.NONE
     constraint_date: Optional[datetime] = None
     deadline: Optional[datetime] = None                   # target finish (MS Project deadline): shown, filtered, never drives dates
+    elapsed: Optional[bool] = None                        # elapsed duration: runs on calendar time (24h, 7 days) whatever its calendar (curing, drying, lead times); see cpm.ELAPSED_CALENDAR
     # progress
     status: Status = Status.NOT_STARTED
     actual_start: Optional[datetime] = None
@@ -260,6 +273,9 @@ class Project(BaseModel):
     start_on_new_day: Optional[bool] = None    # Asta "start on new day": a not-started activity never starts part-way through a working day
     near_critical_days: Optional[float] = None  # working days of total float at or below which an open activity is near-critical (10 when None)
     currency: Optional[str] = None  # ISO code or symbol for money shown in the app and on reports (GBP when None)
+    levelling: Optional[dict] = None           # resource levelling options (levelling.level docstring): resources, from, to, within_float, order, preserve_actuals
+    levelling_report: Optional[list] = None    # set by level(): [{id, delay_hours, resource_id, waited_for, reason}] by id; None until levelled
+    check_thresholds: Optional[dict] = None    # a planner's edits to the health-check thresholds (dcma.health_check), by threshold key
     calendars: dict[str, Calendar] = Field(default_factory=dict)
     wbs: list[WBSNode] = Field(default_factory=list)
     activities: list[Activity] = Field(default_factory=list)

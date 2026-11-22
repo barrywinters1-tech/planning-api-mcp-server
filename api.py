@@ -18,7 +18,8 @@ from pydantic import BaseModel
 from planner import Project, schedule, health_check, ScheduleError
 from planner import store, history
 from planner.analysis import cost_curve, histogram, variance
-from planner.levelling import clear_baseline, level, set_baseline, unlevel, use_baseline
+from planner.dcma import CHECK_SETS
+from planner.levelling import clear_baseline, level, levelling_report, set_baseline, unlevel, use_baseline
 from planner.commands import CommandError, HELP, parse_command
 from planner.generator import Brief, RATES, generate, parse_brief
 from planner.io import read_any, write_any
@@ -38,11 +39,11 @@ WEB = Path(__file__).parent / "web"
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 
-def _view(project: Project, report=None, extra: Optional[dict] = None) -> dict:
+def _view(project: Project, report=None, extra: Optional[dict] = None, check_set: Optional[str] = None) -> dict:
     if report is None:
         try:
             schedule(project)
-            report = health_check(project)
+            report = health_check(project, check_set=check_set or "dcma")
         except ScheduleError as e:
             report = None
             extra = {**(extra or {}), "schedule_error": str(e)}
@@ -95,8 +96,23 @@ def list_projects():
 
 
 @app.get("/api/projects/{pid}")
-def get_project(pid: str):
-    return _view(_load(pid))
+def get_project(pid: str, check_set: Optional[str] = None):
+    """check_set: dcma (default) or pp21 (CIOB Planning Protocol 2021) for the report."""
+    return _view(_load(pid), check_set=check_set)
+
+
+@app.get("/api/projects/{pid}/health")
+def get_health(pid: str, check_set: str = "dcma"):
+    """The health report alone, for either check set; thresholds the planner saved on the project
+    (`check_thresholds`) apply. Lists the available sets and the effective thresholds."""
+    project = _load(pid)
+    if check_set not in CHECK_SETS:
+        raise HTTPException(422, f"check_set must be one of {', '.join(CHECK_SETS)}")
+    try:
+        schedule(project) if not project.levelled else level(project)
+    except ScheduleError as e:
+        raise HTTPException(422, str(e))
+    return {"check_sets": list(CHECK_SETS), "report": health_check(project, check_set=check_set).model_dump(mode="json")}
 
 
 class ProjectIn(BaseModel):
@@ -126,9 +142,9 @@ def delete_project(pid: str):
 
 
 @app.post("/api/projects/{pid}/schedule")
-def reschedule(pid: str):
+def reschedule(pid: str, check_set: Optional[str] = None):
     project = _load(pid)
-    view = _view(project)
+    view = _view(project, check_set=check_set)
     store.save(project)
     return view
 
@@ -308,10 +324,18 @@ def redo(pid: str):
     return _view(p)
 
 
+class LevelIn(BaseModel):
+    # levelling options (planner/levelling.py docstring): resources, from, to, within_float, order, preserve_actuals.
+    # Given, they are stored as Project.levelling so later re-levels (save, patch) use them; {} clears them.
+    options: Optional[dict] = None
+
+
 @app.post("/api/projects/{pid}/level")
-def level_project(pid: str):
+def level_project(pid: str, body: Optional[LevelIn] = None):
     project = _load(pid)
     history.snapshot(pid)
+    if body is not None and body.options is not None:
+        project.levelling = body.options or None
     try:
         level(project)
     except ScheduleError as e:
@@ -319,7 +343,12 @@ def level_project(pid: str):
     report = health_check(project)
     store.save(project)
     moved = sum(1 for a in project.activities if a.level_delay_hours > 0)
-    return _view(project, report, extra={"message": f"Levelled: {moved} activities delayed to stay within resource limits."})
+    rep = levelling_report(project)
+    stuck = [r for r in rep if r["reason"] != "capacity"]
+    msg = f"Levelled: {moved} activities delayed to stay within resource limits."
+    if stuck:
+        msg += f" {len(stuck)} over-allocated activities were not moved ({', '.join(sorted({r['reason'] for r in stuck}))})."
+    return _view(project, report, extra={"message": msg, "levelling_report": rep})
 
 
 @app.post("/api/projects/{pid}/unlevel")

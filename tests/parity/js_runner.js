@@ -18,7 +18,9 @@ function run(c) {
         const p = E.draftToProject(d, b.source_text); E.schedule(p);
         return { brief: b, draft: d, project: p, health: health(E.healthCheck(p)) };
       }
-      case 'level': { const p = c.project; E.level(p); return { project: p }; }
+      case 'level': { const p = c.project; E.level(p, c.options); return { project: p, report: E.levellingReport(p) }; }
+      case 'health': { const p = c.project; E.schedule(p); return { health: health(E.healthCheck(p, { checkSet: c.check_set, thresholds: c.thresholds })) }; }
+      case 'elapsed': { const p = c.project; E.schedule(p); const days = {}; for (const a of p.activities) days[a.id] = E.elapsedDays(p, a); return { project: p, days, health: health(E.healthCheck(p)) }; }
       case 'repair': {
         const p = c.project; E.schedule(p); const patch = E.planRepairs(p, E.healthCheck(p));
         const log = E.applyPatch(p, patch); E.schedule(p);

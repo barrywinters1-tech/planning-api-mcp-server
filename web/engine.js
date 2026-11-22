@@ -92,12 +92,13 @@ class Cal {
   is_working(d) { return this.hours_on(d) > 0; }
   _shift(d) { const s = mk(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), this._sh, this._sm, 0); const e = new Date(s.getTime() + this.hours_on(d) * 3600000); return [s, e]; }
   next_working_start(dt) { let d = dateOnly(dt); for (let i = 0; i < 3660; i++) { if (this.is_working(d)) { const [s, e] = this._shift(d); if (dt < s) return s; if (dt < e) return dt; } d = addDays(d, 1); dt = new Date(d); } throw new Error('no working time'); }
-  prev_working_end(dt) { let d = dateOnly(dt); for (let i = 0; i < 3660; i++) { if (this.is_working(d)) { const [s, e] = this._shift(d); if (dt > e) return e; if (dt > s) return dt; } d = addDays(d, -1); dt = mk(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59); } throw new Error('no working time'); }
+  prev_working_end(dt) { let d = dateOnly(dt); for (let i = 0; i < 3660; i++) { if (this.is_working(d)) { const [s, e] = this._shift(d); if (dt > e) return e; if (dt > s) return dt; if (dt.getTime() === s.getTime()) { const y = addDays(d, -1); if (this.is_working(y) && this._shift(y)[1].getTime() === s.getTime()) return dt; } } d = addDays(d, -1); dt = mk(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59); } throw new Error('no working time'); }   // continuous (24-hour) calendars: midnight ends the previous day
   in_shift(dt) { if (!this.is_working(dt)) return false; const [s, e] = this._shift(dt); return dt >= s && dt <= e; }
   add_hours(dt, hours) {
     if (hours === 0) return dt;
     if (hours > 0) { dt = this.next_working_start(dt); let rem = hours; for (let i = 0; i < 20000; i++) { const [s, e] = this._shift(dt); const avail = hoursDiff(dt, e); if (rem <= avail + 1e-9) return new Date(dt.getTime() + pyRound(rem * 3600) * 1000); rem -= avail; dt = this.next_working_start(new Date(dateOnly(addDays(dt, 1)))); } }
-    else { dt = this.prev_working_end(dt); let rem = -hours; for (let i = 0; i < 20000; i++) { const [s, e] = this._shift(dt); const avail = hoursDiff(s, dt); if (rem <= avail + 1e-9) return new Date(dt.getTime() - pyRound(rem * 3600) * 1000); rem -= avail; const y = addDays(dt, -1); dt = this.prev_working_end(mk(y.getUTCFullYear(), y.getUTCMonth(), y.getUTCDate(), 23, 59, 59)); } }
+    else { dt = this.prev_working_end(dt); let d = dateOnly(dt); if (dt.getTime() === this._shift(d)[0].getTime()) d = addDays(d, -1);   // midnight on a continuous (24-hour) calendar is the end of the previous day's shift
+      let rem = -hours; for (let i = 0; i < 20000; i++) { const [s] = this._shift(d); const avail = hoursDiff(s, dt); if (rem <= avail + 1e-9) return new Date(dt.getTime() - pyRound(rem * 3600) * 1000); rem -= avail; d = addDays(d, -1); let g = 0; while (!this.is_working(d) && g++ < 3660) d = addDays(d, -1); dt = this._shift(d)[1]; } }   // the previous working day's end
     throw new Error('add_hours overflow');
   }
   hours_between(a, b) { if (b < a) return -this.hours_between(b, a); let total = 0; let d = dateOnly(a); const end = dateOnly(b); while (d <= end) { if (this.is_working(d)) { const [s, e] = this._shift(d); const lo = a > s ? a : s, hi = b < e ? b : e; if (hi > lo) total += hoursDiff(lo, hi); } d = addDays(d, 1); } return total; }
@@ -107,6 +108,11 @@ class Cal {
 
 // ---------- project helpers over the plain JSON model ----------
 function calFor(p, a) { const cid = a.calendar_id || p.default_calendar_id; return new Cal(p.calendars[cid] || p.calendars[p.default_calendar_id] || { id: 'std' }); }
+// elapsed-duration activities (a.elapsed): scheduled on calendar time, 24 hours a day, seven days (cpm.ELAPSED_CALENDAR / sched_calendar)
+const ELAPSED_CAL = new Cal({ id: '24h', name: 'Elapsed (24-hour)', hours_per_day: 24, day_start: '00:00:00', working_days: [0, 1, 2, 3, 4, 5, 6], exceptions: {} });
+function schedCal(p, a) { return a.elapsed ? ELAPSED_CAL : calFor(p, a); }
+// calendar days between an activity's start (actual or early) and finish, to two decimals; null until scheduled (cpm.elapsed_days)
+function elapsedDays(p, a) { const s = D(a.actual_start || a.early_start), f = D(a.actual_finish || a.early_finish); if (!s || !f) return null; return pyRound((f - s) / 86400000, 2); }
 function amap(p) { const m = {}; p.activities.forEach(a => m[a.id] = a); return m; }
 const predsOf = (p, id) => p.relationships.filter(r => r.successor_id === id);
 const succsOf = (p, id) => p.relationships.filter(r => r.predecessor_id === id);
@@ -135,10 +141,10 @@ function resumeFrom(a, dataDate) { const r = D(a.resume_date); return r && r > d
 const LAG_CALENDARS = ['predecessor', 'successor', 'project', '24h'];
 function lagCal(p, r, pr, s) {
   const mode = r.lag_calendar || p.lag_calendar || 'predecessor';
-  if (mode === 'successor') return calFor(p, s);
+  if (mode === 'successor') return schedCal(p, s);
   if (mode === 'project') return new Cal(p.calendars[p.default_calendar_id]);
   if (mode === '24h') return null;
-  return calFor(p, pr);
+  return schedCal(p, pr);
 }
 // dt plus a lag: working hours on cal, or wall-clock hours when cal is null, landing on whole seconds as add_hours does (cpm._add_lag)
 function addLag(cal, dt, hours) { if (cal !== null) return cal.add_hours(dt, hours); if (hours === 0) return dt; return new Date(dt.getTime() + pyRound(hours * 3600) * 1000); }
@@ -162,7 +168,7 @@ function schedule(p) {
   const remEs = {}, remLs = {};   // retained logic: where an in-progress activity's remaining work starts (early / late)
 
   for (const a of order) {
-    const cal = calFor(p, a), rem = remHours(a);
+    const cal = schedCal(p, a), rem = remHours(a);
     if (a.status === 'complete' && a.actual_start && a.actual_finish) { a.early_start = a.actual_start; a.early_finish = a.actual_finish; continue; }
     let es_floor = cal.next_working_start(maxD(start, dataDate)), ef_floor = null;
     const inProg = inProgress(a), resume = inProg ? cal.next_working_start(resumeFrom(a, dataDate)) : null;
@@ -213,7 +219,7 @@ function schedule(p) {
   const lateAnchor = D(p.must_finish_by) || pfin;
 
   for (let i = order.length - 1; i >= 0; i--) {
-    const a = order[i], cal = calFor(p, a), rem = remHours(a);
+    const a = order[i], cal = schedCal(p, a), rem = remHours(a);
     if (a.status === 'complete' && a.actual_finish) { a.late_start = a.early_start; a.late_finish = a.early_finish; a.total_float_hours = 0; a.free_float_hours = 0; a.critical = false; continue; }
     let lf_ceil = cal.prev_working_end(lateAnchor), ls_ceil = null;
     for (const r of succs[a.id]) {
@@ -262,7 +268,7 @@ function schedule(p) {
 
   for (const a of p.activities) {
     if (a.type !== 'level_of_effort' || a.status === 'complete') continue;
-    const cal = calFor(p, a);
+    const cal = schedCal(p, a);
     let starts = preds[a.id].filter(r => r.type === 'SS').map(r => D(m[r.predecessor_id].early_start)).filter(Boolean);
     let ends = preds[a.id].filter(r => r.type === 'FF').map(r => D(m[r.predecessor_id].early_finish)).filter(Boolean);
     if (!starts.length && !ends.length) { const peers = p.activities.filter(x => x.wbs_id === a.wbs_id && x.id !== a.id && x.type !== 'level_of_effort' && x.early_start); starts = peers.map(x => D(x.actual_start || x.early_start)); ends = peers.map(x => D(x.actual_finish || x.early_finish)); }
@@ -273,7 +279,7 @@ function schedule(p) {
   for (const a of p.activities) if (a.constraint === 'as_late_as_possible' && a.status === 'not_started') { a.early_start = a.late_start; a.early_finish = a.late_finish; a.total_float_hours = 0; a.free_float_hours = 0; }
   // near-critical: open, off the longest path, total float within the threshold (working days of the activity's own calendar)
   const nearDays = p.near_critical_days == null ? DEFAULT_NEAR_CRITICAL_DAYS : p.near_critical_days;
-  for (const a of p.activities) a.near_critical = a.status !== 'complete' && a.type !== 'level_of_effort' && !a.critical && a.total_float_hours != null && a.total_float_hours <= nearDays * calFor(p, a).hours_per_day;
+  for (const a of p.activities) a.near_critical = a.status !== 'complete' && a.type !== 'level_of_effort' && !a.critical && a.total_float_hours != null && a.total_float_hours <= nearDays * schedCal(p, a).hours_per_day;
   p.scheduled_at = nowISO();
   return p;
 }
@@ -312,7 +318,7 @@ function floatPaths(p, n) {
 }
 
 global.PlannerEngine = { EPS, HARD, Cal, D, ISO, YMD, dow, addDays, dateOnly, mk, nowISO, today, calFor, amap, predsOf, succsOf, isMs, ensureDefaultCal, remHours, schedule,
-  LAG_CALENDARS, lagCal, addLag, PROGRESS_LOGIC, DEFAULT_NEAR_CRITICAL_DAYS, MAX_FLOAT_PATHS, floatPaths, pyRound, pyFixed, pyGroup, pyG, pyStr, pyFloorDiv };
+  LAG_CALENDARS, lagCal, addLag, PROGRESS_LOGIC, DEFAULT_NEAR_CRITICAL_DAYS, MAX_FLOAT_PATHS, floatPaths, ELAPSED_CAL, schedCal, elapsedDays, pyRound, pyFixed, pyGroup, pyG, pyStr, pyFloorDiv };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 /* ---- part 2: DCMA, generator, patches, commands, repair, levelling, analysis, files ---- */
@@ -324,31 +330,51 @@ const round = E.pyRound;
 const pct = (n, d) => d ? round(100 * n / d, 1) : 0;
 const HIGH_FLOAT = 44, HIGH_DUR = 44;
 
-// ---------- DCMA ----------
-function healthCheck(p) {
-  const checks = [];
+// ---------- health checks: DCMA 14-point and CIOB Planning Protocol 2021 (planner/dcma.py; the docstring there has each check's rationale) ----------
+const CHECK_SETS = ['dcma', 'pp21'];
+const DCMA_THRESHOLDS = { logic_pct: 5, leads_pct: 0, lags_pct: 5, fs_pct: 90, hard_constraints_pct: 5, high_float_days: HIGH_FLOAT, high_float_pct: 5, high_duration_days: HIGH_DUR, high_duration_pct: 5, missed_pct: 5, cpli_min: 0.95, bei_min: 0.95 };
+const PP21_THRESHOLDS = { max_duration_days: 44, duration_pct: 0, open_ends_pct: 0, lag_pct: 20, density_min: 1, density_max: 4, constraints_pct: 5, max_working_days: 7 };
+const g = x => E.pyG(x);                                   // a threshold as text (dcma._g)
+const within = (n, d, t) => t <= 0 ? n === 0 : pct(n, d) <= t;   // dcma._within: a zero threshold means none at all
+// the effective thresholds: the set's defaults, then p.check_thresholds (the planner's saved edits), then the call's (dcma.check_thresholds)
+function checkThresholds(p, checkSet, thresholds) { const out = Object.assign({}, checkSet === 'pp21' ? PP21_THRESHOLDS : DCMA_THRESHOLDS); for (const src of [p.check_thresholds, thresholds]) for (const [k, v] of Object.entries(src || {})) if (v != null && k in out) out[k] = v; return out; }
+// healthCheck(p, { checkSet: 'dcma' | 'pp21', thresholds: {...} }); the score is the share of applicable checks that pass
+function healthCheck(p, opts) {
+  opts = opts || {};
+  const want = opts.checkSet || opts.check_set, checkSet = CHECK_SETS.includes(want) ? want : 'dcma';
+  const th = checkThresholds(p, checkSet, opts.thresholds);
+  const checks = checkSet === 'pp21' ? pp21Checks(p, th) : dcmaChecks(p, th);
+  const applicable = checks.filter(c => c.applicable);
+  const score = applicable.length ? round(100 * applicable.filter(c => c.passed).length / applicable.length) : 100;
+  const fails = applicable.filter(c => !c.passed).map(c => c.title);
+  return { score, checks, summary: fails.length ? 'Failing: ' + fails.join(', ') + '.' : 'Schedule passes all applicable checks.', check_set: checkSet, thresholds: th, failing: () => checks.filter(c => c.applicable && !c.passed) };
+}
+const mkCheck = (checks) => (key, title, passed, o = {}) => checks.push(Object.assign({ key, title, passed, value: null, threshold: null, detail: '', items: [], applicable: true }, o));
+const missingLogic = (p, incomplete) => incomplete.filter(a => !((predsOf(p, a.id).length || a.type === 'start_milestone') && (succsOf(p, a.id).length || a.type === 'finish_milestone'))).map(a => a.id);
+const negativeFloat = incomplete => incomplete.filter(a => a.total_float_hours != null && a.total_float_hours < -1e-6).map(a => a.id);
+const longTasks = (p, incomplete, maxDays) => incomplete.filter(a => !isMs(a) && calFor(p, a).hours_to_days(a.remaining_hours != null ? a.remaining_hours : a.duration_hours) > maxDays).map(a => a.id);
+function dcmaChecks(p, th) {
+  const checks = [], C = mkCheck(checks);
   const acts = p.activities.filter(a => a.type !== 'level_of_effort');
   const incomplete = acts.filter(a => a.status !== 'complete');
   const nInc = incomplete.length;
   const dataDate = D(p.data_date) || D(p.start);
-  const C = (key, title, passed, o = {}) => checks.push(Object.assign({ key, title, passed, value: null, threshold: null, detail: '', items: [], applicable: true }, o));
-
-  const missing = incomplete.filter(a => !((predsOf(p, a.id).length || a.type === 'start_milestone') && (succsOf(p, a.id).length || a.type === 'finish_milestone'))).map(a => a.id);
-  C('logic', 'Missing logic', pct(missing.length, nInc) <= 5, { value: pct(missing.length, nInc), threshold: '≤ 5%', detail: `${missing.length} of ${nInc} incomplete activities lack a predecessor or successor.`, items: missing });
+  const missing = missingLogic(p, incomplete);
+  C('logic', 'Missing logic', within(missing.length, nInc, th.logic_pct), { value: pct(missing.length, nInc), threshold: `≤ ${g(th.logic_pct)}%`, detail: `${missing.length} of ${nInc} incomplete activities lack a predecessor or successor.`, items: missing });
   const leads = p.relationships.filter(r => r.lag_hours < 0).map(r => `${r.predecessor_id}->${r.successor_id}`);
-  C('leads', 'Leads (negative lag)', leads.length === 0, { value: pct(leads.length, p.relationships.length), threshold: '0%', detail: `${leads.length} relationships use negative lag.`, items: leads });
+  C('leads', 'Leads (negative lag)', within(leads.length, p.relationships.length, th.leads_pct), { value: pct(leads.length, p.relationships.length), threshold: th.leads_pct <= 0 ? `${g(th.leads_pct)}%` : `≤ ${g(th.leads_pct)}%`, detail: `${leads.length} relationships use negative lag.`, items: leads });
   const lags = p.relationships.filter(r => r.lag_hours > 0).map(r => `${r.predecessor_id}->${r.successor_id}`);
-  C('lags', 'Lags', pct(lags.length, p.relationships.length) <= 5, { value: pct(lags.length, p.relationships.length), threshold: '≤ 5%', detail: `${lags.length} of ${p.relationships.length} relationships carry positive lag.`, items: lags });
+  C('lags', 'Lags', within(lags.length, p.relationships.length, th.lags_pct), { value: pct(lags.length, p.relationships.length), threshold: `≤ ${g(th.lags_pct)}%`, detail: `${lags.length} of ${p.relationships.length} relationships carry positive lag.`, items: lags });
   const fs = p.relationships.filter(r => r.type === 'FS').length;
-  C('rel_types', 'Finish-to-start share', pct(fs, p.relationships.length) >= 90 || !p.relationships.length, { value: pct(fs, p.relationships.length), threshold: '≥ 90%', detail: `${fs} of ${p.relationships.length} links are FS.` });
+  C('rel_types', 'Finish-to-start share', pct(fs, p.relationships.length) >= th.fs_pct || !p.relationships.length, { value: pct(fs, p.relationships.length), threshold: `≥ ${g(th.fs_pct)}%`, detail: `${fs} of ${p.relationships.length} links are FS.` });
   const hard = incomplete.filter(a => HARD.has(a.constraint)).map(a => a.id);
-  C('hard_constraints', 'Hard constraints', pct(hard.length, nInc) <= 5, { value: pct(hard.length, nInc), threshold: '≤ 5%', detail: `${hard.length} incomplete activities have must-start/finish-on constraints.`, items: hard });
-  const hf = incomplete.filter(a => a.total_float_hours != null && calFor(p, a).hours_to_days(a.total_float_hours) > HIGH_FLOAT).map(a => a.id);
-  C('high_float', 'High float', pct(hf.length, nInc) <= 5, { value: pct(hf.length, nInc), threshold: '≤ 5%', detail: `${hf.length} incomplete activities have more than ${HIGH_FLOAT} days total float.`, items: hf });
-  const nf = incomplete.filter(a => a.total_float_hours != null && a.total_float_hours < -1e-6).map(a => a.id);
+  C('hard_constraints', 'Hard constraints', within(hard.length, nInc, th.hard_constraints_pct), { value: pct(hard.length, nInc), threshold: `≤ ${g(th.hard_constraints_pct)}%`, detail: `${hard.length} incomplete activities have must-start/finish-on constraints.`, items: hard });
+  const hf = incomplete.filter(a => a.total_float_hours != null && calFor(p, a).hours_to_days(a.total_float_hours) > th.high_float_days).map(a => a.id);
+  C('high_float', 'High float', within(hf.length, nInc, th.high_float_pct), { value: pct(hf.length, nInc), threshold: `≤ ${g(th.high_float_pct)}%`, detail: `${hf.length} incomplete activities have more than ${g(th.high_float_days)} days total float.`, items: hf });
+  const nf = negativeFloat(incomplete);
   C('negative_float', 'Negative float', !nf.length, { value: nf.length, threshold: '0', detail: `${nf.length} activities have negative total float.`, items: nf });
-  const hd = incomplete.filter(a => !isMs(a) && calFor(p, a).hours_to_days(a.remaining_hours != null ? a.remaining_hours : a.duration_hours) > HIGH_DUR).map(a => a.id);
-  C('high_duration', 'High duration', pct(hd.length, nInc) <= 5, { value: pct(hd.length, nInc), threshold: '≤ 5%', detail: `${hd.length} incomplete activities are longer than ${HIGH_DUR} working days.`, items: hd });
+  const hd = longTasks(p, incomplete, th.high_duration_days);
+  C('high_duration', 'High duration', within(hd.length, nInc, th.high_duration_pct), { value: pct(hd.length, nInc), threshold: `≤ ${g(th.high_duration_pct)}%`, detail: `${hd.length} incomplete activities are longer than ${g(th.high_duration_days)} working days.`, items: hd });
   let bad = [];
   for (const a of acts) {
     if (a.status === 'not_started' && a.early_start && D(a.early_start) < dataDate) bad.push(a.id);
@@ -364,13 +390,13 @@ function healthCheck(p) {
   const baselined = acts.filter(a => a.baseline_finish);
   const due = baselined.filter(a => D(a.baseline_finish) <= dataDate);
   const missed = due.filter(a => a.status !== 'complete' || (a.actual_finish && D(a.actual_finish) > D(a.baseline_finish))).map(a => a.id);
-  C('missed_tasks', 'Missed tasks', pct(missed.length, due.length) <= 5, { value: pct(missed.length, due.length), threshold: '≤ 5%', applicable: !!baselined.length, detail: `${missed.length} of ${due.length} baseline-due activities missed their finish.`, items: missed });
+  C('missed_tasks', 'Missed tasks', within(missed.length, due.length, th.missed_pct), { value: pct(missed.length, due.length), threshold: `≤ ${g(th.missed_pct)}%`, applicable: !!baselined.length, detail: `${missed.length} of ${due.length} baseline-due activities missed their finish.`, items: missed });
   const [cpOk, cpDetail] = cpTest(p);
   C('cp_test', 'Critical path test', cpOk, { threshold: 'finish moves with critical delay', detail: cpDetail, applicable: nInc > 0 });
-  if (p.must_finish_by && p.finish) { const cal = new E.Cal(p.calendars[p.default_calendar_id]); const cpl = cal.hours_between(dataDate, D(p.finish)); const tf = cal.hours_between(D(p.finish), D(p.must_finish_by)); const cpli = cpl > 0 ? round((cpl + tf) / cpl, 2) : 1; C('cpli', 'Critical path length index', cpli >= 0.95, { value: cpli, threshold: '≥ 0.95', detail: `Critical path ${pyFixed(cal.hours_to_days(cpl), 0)}d, float to must-finish ${pyFixed(cal.hours_to_days(tf), 0)}d.` }); }
+  if (p.must_finish_by && p.finish) { const cal = new E.Cal(p.calendars[p.default_calendar_id]); const cpl = cal.hours_between(dataDate, D(p.finish)); const tf = cal.hours_between(D(p.finish), D(p.must_finish_by)); const cpli = cpl > 0 ? round((cpl + tf) / cpl, 2) : 1; C('cpli', 'Critical path length index', cpli >= th.cpli_min, { value: cpli, threshold: `≥ ${g(th.cpli_min)}`, detail: `Critical path ${pyFixed(cal.hours_to_days(cpl), 0)}d, float to must-finish ${pyFixed(cal.hours_to_days(tf), 0)}d.` }); }
   else C('cpli', 'Critical path length index', true, { applicable: false, detail: 'Set a must-finish-by date to compute CPLI.' });
   const plannedDone = due, actuallyDone = acts.filter(a => a.status === 'complete');
-  if (plannedDone.length) { const bei = round(actuallyDone.length / plannedDone.length, 2); C('bei', 'Baseline execution index', bei >= 0.95, { value: bei, threshold: '≥ 0.95', detail: `${actuallyDone.length} complete vs ${plannedDone.length} planned complete by data date.` }); }
+  if (plannedDone.length) { const bei = round(actuallyDone.length / plannedDone.length, 2); C('bei', 'Baseline execution index', bei >= th.bei_min, { value: bei, threshold: `≥ ${g(th.bei_min)}`, detail: `${actuallyDone.length} complete vs ${plannedDone.length} planned complete by data date.` }); }
   else C('bei', 'Baseline execution index', true, { applicable: false, detail: 'Needs a baseline with activities due by the data date.' });
   const starts = incomplete.filter(a => !predsOf(p, a.id).length).map(a => a.id);
   const finishes = incomplete.filter(a => !succsOf(p, a.id).length).map(a => a.id);
@@ -379,16 +405,62 @@ function healthCheck(p) {
   for (const a of incomplete) { if (isMs(a)) continue; const outs = succsOf(p, a.id); if (outs.length && outs.every(r => r.type === 'SS')) dangling.push(a.id); const ins = predsOf(p, a.id); if (ins.length && ins.every(r => r.type === 'FF')) dangling.push(a.id); }
   dangling = [...new Set(dangling)].sort();
   C('dangling', 'Dangling logic', !dangling.length, { value: dangling.length, threshold: '0', detail: `${dangling.length} activities only drive successors by their start, or are only driven on their finish.`, items: dangling });
-  const applicable = checks.filter(c => c.applicable);
-  const score = applicable.length ? round(100 * applicable.filter(c => c.passed).length / applicable.length) : 100;
-  const fails = applicable.filter(c => !c.passed).map(c => c.title);
-  return { score, checks, summary: fails.length ? 'Failing: ' + fails.join(', ') + '.' : 'Schedule passes all applicable checks.', failing: () => checks.filter(c => c.applicable && !c.passed) };
+  return checks;
+}
+function pp21Checks(p, th) {
+  const checks = [], C = mkCheck(checks);
+  const acts = p.activities.filter(a => a.type !== 'level_of_effort');
+  const incomplete = acts.filter(a => a.status !== 'complete');
+  const nInc = incomplete.length, nRel = p.relationships.length, m = amap(p);
+  const dataDate = D(p.data_date) || D(p.start);
+  const hd = longTasks(p, incomplete, th.max_duration_days);
+  C('pp21_duration', 'Task duration', within(hd.length, nInc, th.duration_pct), { value: pct(hd.length, nInc), threshold: `≤ ${g(th.max_duration_days)} working days (${g(th.duration_pct)}% may exceed)`, detail: `${hd.length} of ${nInc} incomplete tasks are longer than ${g(th.max_duration_days)} working days.`, items: hd });
+  const missing = missingLogic(p, incomplete);
+  C('pp21_open_ends', 'Open ends', within(missing.length, nInc, th.open_ends_pct), { value: pct(missing.length, nInc), threshold: `≤ ${g(th.open_ends_pct)}%`, detail: `${missing.length} of ${nInc} incomplete activities lack a predecessor or successor.`, items: missing });
+  const nf = negativeFloat(incomplete);
+  C('pp21_negative_float', 'Negative float', !nf.length, { value: nf.length, threshold: '0', detail: `${nf.length} activities have negative total float.`, items: nf });
+  const leads = p.relationships.filter(r => r.lag_hours < 0).map(r => `${r.predecessor_id}->${r.successor_id}`);
+  C('pp21_leads', 'Leads (negative lag)', !leads.length, { value: leads.length, threshold: '0', detail: `${leads.length} relationships use negative lag.`, items: leads });
+  const longLags = [];
+  for (const r of p.relationships) { const sc = m[r.successor_id]; if (r.lag_hours > 0 && sc && r.lag_hours > th.lag_pct / 100 * sc.duration_hours + 1e-9) longLags.push(`${r.predecessor_id}->${r.successor_id}`); }
+  C('pp21_lags', 'Lag length', !longLags.length, { value: pct(longLags.length, nRel), threshold: `lag ≤ ${g(th.lag_pct)}% of successor duration`, detail: `${longLags.length} of ${nRel} relationships carry a lag longer than ${g(th.lag_pct)}% of their successor.`, items: longLags });
+  const density = acts.length ? round(nRel / acts.length, 2) : 0;
+  C('pp21_logic_density', 'Logic density', th.density_min <= density && density <= th.density_max, { value: density, threshold: `${g(th.density_min)} to ${g(th.density_max)} links per activity`, applicable: !!acts.length, detail: `${nRel} relationships over ${acts.length} activities: ${g(density)} per activity.` });
+  const con = incomplete.filter(a => a.constraint !== 'none').map(a => a.id);
+  C('pp21_constraints', 'Constraints', within(con.length, nInc, th.constraints_pct), { value: pct(con.length, nInc), threshold: `≤ ${g(th.constraints_pct)}%`, detail: `${con.length} of ${nInc} incomplete activities carry a date constraint.`, items: con });
+  const msBad = [];
+  for (const a of incomplete) { if (a.type === 'start_milestone' && !succsOf(p, a.id).length) msBad.push(a.id); else if (a.type === 'finish_milestone' && !predsOf(p, a.id).length) msBad.push(a.id); }
+  const nMs = incomplete.filter(isMs).length;
+  C('pp21_milestones', 'Milestones linked', !msBad.length, { value: msBad.length, threshold: '0', applicable: nMs > 0, detail: `${msBad.length} of ${nMs} milestones are not linked to the work.`, items: msBad });
+  let bad = [];
+  for (const a of acts) {
+    if (a.actual_start && D(a.actual_start) > dataDate) bad.push(a.id);
+    if (a.actual_finish && D(a.actual_finish) > dataDate) bad.push(a.id);
+    if (a.status === 'not_started' && a.early_start && D(a.early_start) < dataDate) bad.push(a.id);
+    if (a.status === 'in_progress' && (!a.actual_start || (a.early_finish && D(a.early_finish) < dataDate))) bad.push(a.id);
+    if (a.status === 'complete' && !a.actual_finish) bad.push(a.id);
+  }
+  bad = [...new Set(bad)].sort();
+  C('pp21_progress', 'Progress consistent', !bad.length, { value: bad.length, threshold: '0', detail: `${bad.length} activities have actual dates after, or remaining work before, the data date.`, items: bad });
+  const openActs = incomplete.filter(a => a.early_finish), crit = openActs.filter(a => a.critical);
+  let ok = true, atEnd = [], detail = 'No open activities.';
+  if (openActs.length) {
+    let end = null; for (const a of openActs) { const f = D(a.early_finish); if (!end || f > end) end = f; }
+    atEnd = crit.filter(a => D(a.early_finish) >= end).map(a => a.id);
+    ok = crit.length > 0 && atEnd.length > 0;
+    detail = ok ? `${crit.length} critical activities; the path ends at the finish (${atEnd.slice(0, 5).join(', ')}).` : crit.length ? 'No critical activity ends at the programme finish.' : 'No critical path.';
+  }
+  C('pp21_critical_path', 'Critical path', ok, { value: crit.length, threshold: 'exists, ends at the finish', applicable: !!openActs.length, detail, items: atEnd });
+  const calBad = [], calIds = Object.keys(p.calendars || {}).sort();
+  for (const cid of calIds) { const c = p.calendars[cid], hpd = c.hours_per_day != null ? c.hours_per_day : 8, days = c.working_days || [0, 1, 2, 3, 4]; const wd = new Set(days.filter(d => d >= 0 && d <= 6)); if (!(hpd > 0 && hpd <= 24) || !wd.size || wd.size > th.max_working_days || wd.size !== days.length) calBad.push(cid); }
+  C('pp21_calendars', 'Calendars', !calBad.length, { value: calBad.length, threshold: `1 to ${g(th.max_working_days)} working days, 0 to 24 hours`, applicable: calIds.length > 0, detail: `${calBad.length} of ${calIds.length} calendars have an impossible working week or day.`, items: calBad });
+  return checks;
 }
 function cpTest(p) {
   const crit = p.activities.filter(a => a.critical && a.status !== 'complete' && !isMs(a));
   if (!crit.length || !p.finish) return [true, 'No incomplete critical activities to test.'];
   const trial = clone(p); const t = trial.activities.find(a => a.id === crit[0].id);
-  const push = new E.Cal(trial.calendars[t.calendar_id || trial.default_calendar_id]).days_to_hours(600);
+  const push = E.schedCal(trial, t).days_to_hours(600);
   if (t.status === 'in_progress' && t.remaining_hours != null) t.remaining_hours += push; else { t.duration_hours += push; if (t.remaining_hours != null) t.remaining_hours += push; }
   try { schedule(trial); } catch (e) { return [false, 'Could not schedule the trial: ' + e.message]; }
   const moved = Math.floor((D(trial.finish) - D(p.finish)) / 86400000);   // timedelta.days floors
@@ -471,6 +543,10 @@ function applyPatch(p, patch) {
 }
 
 global.PlannerEngine.healthCheck = healthCheck;
+global.PlannerEngine.checkThresholds = checkThresholds;
+global.PlannerEngine.CHECK_SETS = CHECK_SETS;
+global.PlannerEngine.DCMA_THRESHOLDS = DCMA_THRESHOLDS;
+global.PlannerEngine.PP21_THRESHOLDS = PP21_THRESHOLDS;
 global.PlannerEngine.applyPatch = applyPatch;
 global.PlannerEngine.ensureCalendars = ensureCalendars;
 global.PlannerEngine.parseDate = parseDate;
@@ -668,47 +744,74 @@ function dedupeLinks(p) { const seen = new Set(), out = []; for (const r of p.re
 
 // ---------- levelling ----------
 function dailyDemand(p, a) { const cal = calFor(p, a); if (cal.hours_to_days(a.duration_hours) <= 0) return {}; const out = {}; for (const x of p.assignments) if (x.activity_id === a.id && x.units > 0) out[x.resource_id] = (out[x.resource_id] || 0) + x.units / a.duration_hours; return out; }
-function level(p) {
+// level(p, options): options over p.levelling; resources, from, to, within_float, order, preserve_actuals; the exact rules and the
+// report records {id, delay_hours, resource_id, waited_for, reason} are the docstring of planner/levelling.py
+const LEVEL_ORDERS = ['late_start', 'priority', 'total_float', 'early_start'], LEVEL_REASONS = ['capacity', 'within_float_blocked', 'window'];
+function levelOptions(p, options) { return Object.assign({}, p.levelling || {}, options || {}); }
+function levelKey(a, order, p) {
+  const ls = D(a.late_start || a.early_start || p.start).getTime();
+  if (order === 'priority') return [a.priority, ls, a.id];
+  if (order === 'total_float') return [a.total_float_hours == null ? Infinity : a.total_float_hours, ls, a.priority, a.id];
+  if (order === 'early_start') return [D(a.early_start || p.start).getTime(), a.priority, a.id];
+  return [ls, a.priority, a.id];
+}
+const keyLess = (x, y) => { for (let i = 0; i < x.length; i++) { if (x[i] < y[i]) return true; if (x[i] > y[i]) return false; } return false; };
+function levellingReport(p) { return (p.levelling_report || []).map(r => Object.assign({}, r)); }
+function level(p, options) {
   schedule(p);
-  const limits = {}; p.resources.forEach(r => { if (r.max_units_per_day) limits[r.id] = r.max_units_per_day; });
-  if (!Object.keys(limits).length) { p.levelled = false; return p; }
-  const m = amap(p), usage = {}, preds = {}, succs = {}, indeg = {};
+  const opts = levelOptions(p, options);
+  const subset = opts.resources && opts.resources.length ? new Set(opts.resources) : null;
+  const limits = {}; p.resources.forEach(r => { if (r.max_units_per_day && (!subset || subset.has(r.id))) limits[r.id] = r.max_units_per_day; });
+  if (!Object.keys(limits).length) { p.levelled = false; p.levelling_report = null; return p; }
+  const order = LEVEL_ORDERS.includes(opts.order) ? opts.order : 'late_start', withinFloat = !!opts.within_float;
+  const wFrom = opts.from ? YMD(D(opts.from)) : null, wTo = opts.to ? YMD(D(opts.to)) : null;
+  const m = amap(p), usage = {}, users = {}, preds = {}, succs = {}, indeg = {};
   p.activities.forEach(a => { preds[a.id] = []; succs[a.id] = []; indeg[a.id] = 0; });
   for (const r of p.relationships) { preds[r.successor_id].push(r); succs[r.predecessor_id].push(r); indeg[r.successor_id]++; }
-  const ready = p.activities.filter(a => indeg[a.id] === 0).map(a => ({ k: D(a.late_start || a.early_start || p.start).getTime(), pr: a.priority, id: a.id }));
-  const pop = () => { let bi = 0; for (let i = 1; i < ready.length; i++) if (ready[i].k < ready[bi].k || (ready[i].k === ready[bi].k && ready[i].pr < ready[bi].pr)) bi = i; return ready.splice(bi, 1)[0]; };
-  const done = {}, dataDate = D(p.data_date) || D(p.start);
+  const ready = p.activities.filter(a => indeg[a.id] === 0).map(a => ({ k: levelKey(a, order, p), id: a.id }));
+  const pop = () => { let bi = 0; for (let i = 1; i < ready.length; i++) if (keyLess(ready[i].k, ready[bi].k)) bi = i; return ready.splice(bi, 1)[0]; };
+  const done = {}, dataDate = D(p.data_date) || D(p.start), report = [];
+  const firstConflict = (cal, start, finish, demand) => { let d = dateOnly(start); const end = dateOnly(finish); while (d <= end) { if (cal.is_working(d)) { const key = YMD(d); for (const rid of Object.keys(demand).sort()) if ((usage[rid] && usage[rid][key] || 0) + demand[rid] > limits[rid] + EPS) return [d, rid]; } d = addDays(d, 1); } return [null, null]; };
   while (ready.length) {
-    const { id: aid } = pop(); const a = m[aid], cal = calFor(p, a), origEs = D(a.early_start); let start, finish;
+    const { id: aid } = pop(); const a = m[aid], cal = E.schedCal(p, a), origEs = D(a.early_start); let start, finish;
+    let resourceId = null, waitedFor = null, reason = null;
     if (a.status === 'complete' || a.status === 'in_progress') { start = D(a.early_start); finish = D(a.early_finish); }
     else {
-      let floor = cal.next_working_start(D(p.start) > dataDate ? D(p.start) : dataDate), efFloor = null;
-      for (const r of preds[aid]) { const pr = m[r.predecessor_id], pcal = calFor(p, pr); const dd = done[pr.id] || [D(pr.early_start), D(pr.early_finish)]; const ps = dd[0], pf = dd[1]; if (r.type === 'FS') { const t = pcal.add_hours(pf, r.lag_hours); if (t > floor) floor = t; } else if (r.type === 'SS') { const t = pcal.add_hours(ps, r.lag_hours); if (t > floor) floor = t; } else if (r.type === 'FF') { const t = pcal.add_hours(pf, r.lag_hours); efFloor = efFloor === null || t > efFloor ? t : efFloor; } else { const t = pcal.add_hours(ps, r.lag_hours); efFloor = efFloor === null || t > efFloor ? t : efFloor; } }
+      let floor = cal.next_working_start(D(p.start) > dataDate ? D(p.start) : dataDate), floorBy = null, efFloor = null;
+      for (const r of preds[aid]) { const pr = m[r.predecessor_id], lcal = E.lagCal(p, r, pr, a); const dd = done[pr.id] || [D(pr.early_start), D(pr.early_finish)]; const ps = dd[0], pf = dd[1]; if (r.type === 'FS') { const t = E.addLag(lcal, pf, r.lag_hours); if (t > floor) { floor = t; floorBy = pr.id; } } else if (r.type === 'SS') { const t = E.addLag(lcal, ps, r.lag_hours); if (t > floor) { floor = t; floorBy = pr.id; } } else if (r.type === 'FF') { const t = E.addLag(lcal, pf, r.lag_hours); efFloor = efFloor === null || t > efFloor ? t : efFloor; } else { const t = E.addLag(lcal, ps, r.lag_hours); efFloor = efFloor === null || t > efFloor ? t : efFloor; } }
       if (a.constraint_date && ['start_on_or_after', 'must_start_on'].includes(a.constraint)) { const cd = D(a.constraint_date); if (cd > floor) floor = cd; }
       const es0 = D(a.early_start) || floor; start = cal.next_working_start(floor > es0 ? floor : es0);
       const rem = a.duration_hours; finish = rem > 0 ? cal.add_hours(start, rem) : start;
       if (efFloor && efFloor > finish) { finish = rem > 0 ? efFloor : cal.prev_working_end(efFloor); start = rem > 0 ? cal.add_hours(finish, -rem) : finish; }
       const demand = {}; for (const [rid, u] of Object.entries(dailyDemand(p, a))) if (rid in limits) demand[rid] = u;
       if (Object.keys(demand).length && rem > 0) {
+        const logicStart = start, logicFinish = finish, esDay = YMD(origEs || start);
+        const inWindow = (!wFrom || esDay >= wFrom) && (!wTo || esDay <= wTo);
         for (let guard = 0; guard < 5000; guard++) {
-          let conflict = null; let d = dateOnly(start); const end = dateOnly(finish);
-          while (d <= end) { if (cal.is_working(d)) { for (const [rid, u] of Object.entries(demand)) { const key = YMD(d); if ((usage[rid] && usage[rid][key] || 0) + u > limits[rid] + EPS) { conflict = new Date(d); break; } } } if (conflict) break; d = addDays(d, 1); }
+          const [conflict, rid] = firstConflict(cal, start, finish, demand);
           if (!conflict) break;
+          resourceId = rid; reason = 'capacity';
+          const u = users[rid] && users[rid][YMD(conflict)]; waitedFor = u && u.length ? u[u.length - 1] : null;
+          if (!inWindow) { reason = 'window'; break; }
           start = cal.next_working_start(new Date(dateOnly(addDays(conflict, 1)))); finish = cal.add_hours(start, rem);
+          if (withinFloat && a.late_start && start > D(a.late_start)) { start = logicStart; finish = logicFinish; reason = 'within_float_blocked'; break; }
         }
         let d = dateOnly(start); const end = dateOnly(finish);
-        while (d <= end) { if (cal.is_working(d)) for (const [rid, u] of Object.entries(demand)) { usage[rid] = usage[rid] || {}; const key = YMD(d); usage[rid][key] = (usage[rid][key] || 0) + u; } d = addDays(d, 1); }
+        while (d <= end) { if (cal.is_working(d)) for (const [rid, u] of Object.entries(demand)) { usage[rid] = usage[rid] || {}; users[rid] = users[rid] || {}; const key = YMD(d); usage[rid][key] = (usage[rid][key] || 0) + u; (users[rid][key] = users[rid][key] || []).push(aid); } d = addDays(d, 1); }
       }
+      if (reason === null && origEs && start > origEs && floorBy) { reason = 'capacity'; waitedFor = floorBy; }
     }
     done[aid] = [start, finish]; a.level_delay_hours = origEs ? pyRound(cal.hours_between(origEs, start), 2) : 0;
     a.early_start = ISO(start); a.early_finish = ISO(finish);
-    for (const r of succs[aid]) { if (--indeg[r.successor_id] === 0) { const s = m[r.successor_id]; ready.push({ k: D(s.late_start || s.early_start || p.start).getTime(), pr: s.priority, id: s.id }); } }
+    if (reason !== null && (a.level_delay_hours > 0 || reason !== 'capacity')) report.push({ id: aid, delay_hours: a.level_delay_hours, resource_id: resourceId, waited_for: waitedFor, reason });
+    for (const r of succs[aid]) { if (--indeg[r.successor_id] === 0) { const sc = m[r.successor_id]; ready.push({ k: levelKey(sc, order, p), id: sc.id }); } }
   }
   let fin = null; for (const a of p.activities) { const f = D(a.early_finish); if (f && (!fin || f > fin)) fin = f; } p.finish = ISO(fin || D(p.start));
-  for (const a of p.activities) if (a.late_finish && a.early_finish) { const cal = calFor(p, a); a.total_float_hours = pyRound(cal.hours_between(D(a.early_finish), D(a.late_finish)), 4); a.critical = a.total_float_hours <= EPS; }
+  for (const a of p.activities) if (a.late_finish && a.early_finish) { const cal = E.schedCal(p, a); a.total_float_hours = pyRound(cal.hours_between(D(a.early_finish), D(a.late_finish)), 4); a.critical = a.total_float_hours <= EPS; }
+  p.levelling_report = report.sort((x, y) => x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
   p.levelled = true; return p;
 }
-function unlevel(p) { p.activities.forEach(a => a.level_delay_hours = 0); p.levelled = false; return schedule(p); }
+function unlevel(p) { p.activities.forEach(a => a.level_delay_hours = 0); p.levelled = false; p.levelling_report = null; return schedule(p); }
 function setBaseline(p, name = 'Baseline') { schedule(p); const bl = { name, saved_at: E.nowISO(), finish: p.finish, dates: {} }; for (const a of p.activities) { const s = a.actual_start || a.early_start, f = a.actual_finish || a.early_finish; bl.dates[a.id] = { start: s, finish: f, duration_hours: a.duration_hours }; a.baseline_start = s; a.baseline_finish = f; } p.baselines = p.baselines.filter(b => b.name !== name).concat([bl]); return bl; }
 function useBaseline(p, name) { const bl = p.baselines.find(b => b.name === name); if (!bl) return false; for (const a of p.activities) { const d = bl.dates[a.id]; a.baseline_start = d && d.start || null; a.baseline_finish = d && d.finish || null; } return true; }
 function clearBaseline(p) { p.activities.forEach(a => { a.baseline_start = null; a.baseline_finish = null; }); }
@@ -785,7 +888,7 @@ function planRepairs(p, report) {
   return { ops, message: msg, still_open: stillOpen };
 }
 
-Object.assign(global.PlannerEngine, { RATES, parseBrief, generate, draftToProject, level, unlevel, setBaseline, useBaseline, clearBaseline, histogram, costCurve, variance, planRepairs, dailyDemand });
+Object.assign(global.PlannerEngine, { RATES, parseBrief, generate, draftToProject, level, unlevel, levellingReport, levelOptions, LEVEL_ORDERS, LEVEL_REASONS, setBaseline, useBaseline, clearBaseline, histogram, costCurve, variance, planRepairs, dailyDemand });
 
 // ---------- guardrails: port of planner/guardrails.py (bit-identical, parity tested) ----------
 const _startedG = a => a.status !== 'not_started' && a.actual_start != null;
@@ -1085,12 +1188,14 @@ function writeXer(p, opts) {
   const memotype = table('MEMOTYPE', ['memo_type_id', 'seq_num', 'eps_flag', 'proj_flag', 'wbs_flag', 'task_flag', 'memo_type'], [{ memo_type_id: 1, seq_num: 0, eps_flag: 'N', proj_flag: 'N', wbs_flag: 'Y', task_flag: 'Y', memo_type: 'Notes' }]);
   const taskmemo = table('TASKMEMO', ['memo_id', 'task_id', 'memo_type_id', 'proj_id', 'task_memo'], p.activities.filter(a => a.notes && taskIds[a.id]).map((a, i) => ({ memo_id: i + 1, task_id: taskIds[a.id], memo_type_id: 1, proj_id: pid, task_memo: memoHtml(a.notes) })));
   // user-defined fields: UDFTYPE per field, UDFVALUE per value (mirrors xer.write_xer)
-  const defs = udfDefs(p), udfIds = {}, udfTy = {}; defs.forEach((d, i) => { udfIds[d.name] = i + 1; udfTy[d.name] = d.type; });
+  const defs = udfDefs(p); if (p.activities.some(a => a.elapsed && taskIds[a.id]) && defs.every(d => d.name !== 'elapsed')) defs.push({ name: 'elapsed', type: 'text' });   // elapsed-duration flag as a task UDF, Y (xer.ELAPSED_UDF)
+  const udfIds = {}, udfTy = {}; defs.forEach((d, i) => { udfIds[d.name] = i + 1; udfTy[d.name] = d.type; });
   const udftype = table('UDFTYPE', ['udf_type_id', 'table_name', 'udf_type_name', 'udf_type_label', 'logical_data_type', 'super_flag', 'indicator_expression', 'summary_indicator_expression', 'export_flag'], defs.map(d => ({ udf_type_id: udfIds[d.name], table_name: 'TASK', udf_type_name: 'user_field_' + udfIds[d.name], udf_type_label: d.name.slice(0, 40), logical_data_type: UDF_OUT[d.type], super_flag: 'N', export_flag: 'Y' })));
   const udfRows = [];
   for (const a of p.activities) { if (!taskIds[a.id]) continue; for (const [k, v] of Object.entries(a.fields || {})) { if (v == null || !udfIds[k]) continue; const ty = udfTy[k]; let row = null;
     if (ty === 'number') { const n = Number(v); if (v !== '' && !isNaN(n)) row = { udf_number: String(n) }; } else if (ty === 'date') { if (v) row = { udf_date: String(v).slice(0, 10) + ' 00:00' }; } else if (String(v) !== '') row = { udf_text: String(v).replace(/[\t\r\n]/g, ' ') };
-    if (row) udfRows.push(Object.assign({ udf_type_id: udfIds[k], fk_id: taskIds[a.id], proj_id: pid }, row)); } }
+    if (row) udfRows.push(Object.assign({ udf_type_id: udfIds[k], fk_id: taskIds[a.id], proj_id: pid }, row)); }
+    if (a.elapsed && udfIds.elapsed && !('elapsed' in (a.fields || {}))) udfRows.push({ udf_type_id: udfIds.elapsed, fk_id: taskIds[a.id], proj_id: pid, udf_text: 'Y' }); }
   const udfvalue = table('UDFVALUE', ['udf_type_id', 'fk_id', 'proj_id', 'udf_date', 'udf_number', 'udf_text', 'udf_code_id'], udfRows);
   return [header, currtype, memotype, calendar, projT, schedoptions, projwbs, rsrc, actvtype, actvcode].concat(defs.length ? [udftype] : [], [task, taskpred, taskrsrc, taskactv, taskmemo], defs.length ? [udfvalue] : [], ['%E', '']).join('\n');
 }
@@ -1124,7 +1229,7 @@ function writeMspdi(p) {
     if (e.wbs) { L.push('<Task>'); el('UID', e.uid); el('ID', e.uid); el('Name', e.wbs.name); el('Type', 1); el('OutlineNumber', e.outlineNo); el('OutlineLevel', e.level); el('Summary', 1); el('WBS', e.wbs.code || e.wbs.id); L.push('</Task>'); continue; }
     const a = e.act;
     L.push('<Task>'); el('UID', e.uid); el('ID', e.uid); el('Name', a.name); el('Type', 1); el('IsNull', 0); el('WBS', a.id); el('OutlineNumber', e.outlineNo); el('OutlineLevel', e.level); el('Priority', 500);
-    el('Start', fmtDtSec(aStart(a))); el('Finish', fmtDtSec(aFinish(a))); el('Duration', fmtDur(a.duration_hours)); el('DurationFormat', 7);
+    el('Start', fmtDtSec(aStart(a))); el('Finish', fmtDtSec(aFinish(a))); el('Duration', fmtDur(a.duration_hours)); el('DurationFormat', a.elapsed ? 8 : 7);
     const rem = a.remaining_hours != null ? a.remaining_hours : (a.status === 'complete' ? 0 : a.duration_hours);
     el('RemainingDuration', fmtDur(rem)); el('ManualStart', fmtDtSec(aStart(a))); el('ManualFinish', fmtDtSec(aFinish(a))); el('ManualDuration', fmtDur(a.duration_hours));
     el('ConstraintType', CSTR_MSP[a.constraint] || '0'); if (a.constraint_date && a.constraint !== 'none') el('ConstraintDate', fmtDtSec(a.constraint_date));

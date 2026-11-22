@@ -453,3 +453,112 @@ def test_near_critical_threshold():
     schedule(p7)
     assert a7["B1"].near_critical is False
     assert Activity(id="x", name="x").near_critical is None   # unscheduled
+
+
+# ----------------------------------------------------------------------------------------
+# elapsed-duration activities (Activity.elapsed): calendar time whatever the calendar
+# ----------------------------------------------------------------------------------------
+def _elapsed_project(**kw):
+    """A: a 72-hour elapsed cure that may not start before Friday 9 Jan 08:00; B: a one-day task after it."""
+    p = proj(**kw)
+    p.activities = [Activity(id="A", name="Cure", duration_hours=72, elapsed=True,
+                             constraint=Constraint.START_ON_OR_AFTER, constraint_date=datetime(2026, 1, 9, 8)),
+                    Activity(id="B", name="B", duration_hours=8)]
+    p.relationships = [Relationship(predecessor_id="A", successor_id="B")]
+    return p
+
+
+def test_elapsed_activity_runs_over_the_weekend():
+    """Friday 08:00 + 72 elapsed hours = Monday 08:00, on a five-day calendar; B starts Monday morning."""
+    from planner.cpm import ELAPSED_CALENDAR, elapsed_days, sched_calendar
+    p = _elapsed_project()
+    schedule(p)
+    a, b = p.activities
+    assert (a.early_start, a.early_finish) == (datetime(2026, 1, 9, 8), datetime(2026, 1, 12, 8))
+    assert (b.early_start, b.early_finish) == (datetime(2026, 1, 12, 8), datetime(2026, 1, 12, 16))
+    assert a.calendar_id is None and sched_calendar(p, a) is ELAPSED_CALENDAR and sched_calendar(p, b) is p.calendars["std"]
+    assert ELAPSED_CALENDAR.hours_per_day == 24 and ELAPSED_CALENDAR.working_days == [0, 1, 2, 3, 4, 5, 6]
+    # late dates and float are measured on the 24-hour calendar: A is critical with no float
+    assert (a.late_start, a.late_finish) == (datetime(2026, 1, 9, 8), datetime(2026, 1, 12, 8))
+    assert a.total_float_hours == 0 and a.critical and b.critical and p.relationships[0].driving
+    assert elapsed_days(p, a) == 3.0 and elapsed_days(p, b) == 0.33
+    assert elapsed_days(p, Activity(id="X", name="X")) is None
+    # the same activity without the flag takes nine working days on its own calendar
+    a.elapsed = None
+    schedule(p)
+    assert a.early_finish == datetime(2026, 1, 21, 16) and elapsed_days(p, a) == 12.33
+
+
+def test_elapsed_activity_with_a_lag_and_remaining_work():
+    """Lag measured on an elapsed predecessor is elapsed time; an in-progress elapsed activity resumes at the data
+    date and its remaining hours are wall-clock hours."""
+    p = _elapsed_project()
+    p.relationships[0].lag_hours = 12
+    schedule(p)
+    assert p.activities[1].early_start == datetime(2026, 1, 13, 8)   # Mon 08:00 + 12h elapsed = Mon 20:00 -> B's next working time
+    p = _elapsed_project(data_date=datetime(2026, 1, 10, 20))
+    a = p.activities[0]
+    a.status, a.actual_start, a.remaining_hours, a.percent_complete = Status.IN_PROGRESS, datetime(2026, 1, 9, 8), 30, 50
+    schedule(p)
+    assert a.early_finish == datetime(2026, 1, 12, 2)                 # Sat 20:00 + 30h
+    assert p.activities[1].early_start == datetime(2026, 1, 12, 8)
+
+
+def test_continuous_calendar_ends_the_previous_day_at_midnight():
+    """prev_working_end on a 24-hour calendar treats midnight as the end of the previous day, so a late finish that lands
+    exactly on a midnight shift boundary stays there (not 23:59:59), and float comes out whole. Working calendars are unchanged."""
+    from planner.cpm import ELAPSED_CALENDAR
+    assert ELAPSED_CALENDAR.prev_working_end(datetime(2026, 1, 7)) == datetime(2026, 1, 7)
+    assert Calendar(id="std").prev_working_end(datetime(2026, 1, 12, 8)) == datetime(2026, 1, 9, 16)
+    night = Calendar(id="night", day_start=time(0, 0), working_days=[0, 1, 2, 3, 4, 5, 6])      # 00:00-08:00
+    assert night.prev_working_end(datetime(2026, 1, 7)) == datetime(2026, 1, 6, 8)
+    p = proj()
+    p.calendars["night"] = night
+    p.activities = [Activity(id="A", name="A", duration_hours=24, elapsed=True), Activity(id="B", name="B", duration_hours=8, calendar_id="night")]
+    p.relationships = [Relationship(predecessor_id="A", successor_id="B")]
+    schedule(p)
+    a, b = p.activities
+    assert (a.early_start, a.early_finish) == (datetime(2026, 1, 5, 8), datetime(2026, 1, 6, 8))
+    assert (b.early_start, b.early_finish) == (datetime(2026, 1, 7), datetime(2026, 1, 7, 8))
+    assert a.late_finish == datetime(2026, 1, 7) and a.late_start == datetime(2026, 1, 6)
+    assert a.total_float_hours == 16
+
+
+def test_elapsed_flag_round_trips_through_xer_and_mspdi_in_both_engines():
+    """XER carries the flag as the task UDF "elapsed" = Y (not a user field on the way back); MSPDI as DurationFormat 8
+    (elapsed days). The browser writers and readers agree with the Python ones."""
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+    from planner.mspxml import read_mspdi, write_mspdi
+    from planner.xer import read_xer, write_xer
+    p = _elapsed_project()
+    p.activities[1].fields = {"Package": "Frame"}
+    schedule(p)
+    xer = write_xer(p)
+    assert "\tuser_field_2\telapsed\tFT_TEXT" in xer and xer.count("\tY\t") >= 1
+    q = read_xer(xer)
+    assert [a.elapsed for a in q.activities] == [True, None]
+    assert q.user_fields == [{"name": "Package", "type": "text"}] and q.activities[1].fields == {"Package": "Frame"}
+    schedule(q)
+    assert q.activities[0].early_finish == datetime(2026, 1, 12, 8)
+    xml = write_mspdi(p)
+    assert xml.count("<DurationFormat>8</DurationFormat>") == 1 and xml.count("<DurationFormat>7</DurationFormat>") >= 2
+    q = read_mspdi(xml)
+    assert [a.elapsed for a in q.activities] == [True, None]
+    assert [a.elapsed for a in read_mspdi(xml.replace("<DurationFormat>8<", "<DurationFormat>40<")).activities] == [True, None]   # estimated elapsed days
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    web = Path(__file__).resolve().parent.parent / "web"
+    prelude = "".join("require(%r);" % str(web / f) for f in ("engine.js", "import_xer.js", "import_xml.js"))
+    prelude += "const E = globalThis.PlannerEngine; const inp = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+    out = subprocess.run([node, "-e", prelude + "const p = inp.project; process.stdout.write(JSON.stringify({xer: E.writeXer(p), xml: E.writeMspdi(p), "
+                          "fromXer: E.readXer(inp.xer).activities.map(a => a.elapsed || null), fromXml: E.readMspdi(inp.xml).activities.map(a => a.elapsed || null)}));"],
+                         input=json.dumps({"project": p.model_dump(mode="json"), "xer": xer, "xml": xml}), capture_output=True, text=True, check=True).stdout
+    js = json.loads(out)
+    assert js["fromXer"] == [True, None] and js["fromXml"] == [True, None]
+    assert [a.elapsed for a in read_xer(js["xer"]).activities] == [True, None]
+    assert [a.elapsed for a in read_mspdi(js["xml"]).activities] == [True, None]
+    assert js["xml"].count("<DurationFormat>8</DurationFormat>") == 1

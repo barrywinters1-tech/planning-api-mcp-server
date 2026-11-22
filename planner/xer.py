@@ -57,6 +57,7 @@ RSRC_IN = {"RT_Labor": "labour", "RT_Mat": "material", "RT_Equip": "equipment"}
 UDF_IN = {"FT_TEXT": "text", "FT_STATICTYPE": "text", "FT_INT": "number", "FT_FLOAT_2_DECIMALS": "number", "FT_MONEY": "number",
           "FT_START_DATE": "date", "FT_END_DATE": "date"}
 UDF_OUT = {"text": "FT_TEXT", "number": "FT_FLOAT_2_DECIMALS", "date": "FT_START_DATE"}
+ELAPSED_UDF = "elapsed"   # task UDF (text, "Y") that carries Activity.elapsed (cpm docstring); never a user field on read
 
 
 def _num_text(v) -> str:
@@ -400,9 +401,13 @@ def read_xer(text: str, project_index: int = 0) -> Project:
         if raw == "":
             continue
         a = act_map[id_by_task[r["fk_id"]]]
+        if label == ELAPSED_UDF and typ == "text":
+            if raw.strip().upper() == "Y":
+                a.elapsed = True
+            continue
         a.fields = a.fields or {}
         a.fields[label] = _f(raw) if typ == "number" else raw[:10] if typ == "date" else raw
-    user_fields = [{"name": n, "type": ty} for n, ty in udf_types.values()] or None
+    user_fields = [{"name": n, "type": ty} for n, ty in udf_types.values() if not (n == ELAPSED_UDF and ty == "text")] or None
 
     default_cal = pr.get("clndr_id") or (next(iter(cals)) if cals else "std")
     proj = Project(
@@ -672,6 +677,8 @@ def write_xer(project: Project, currency: str = "GBP", version: str | None = Non
                       [{"memo_id": i + 1, "task_id": task_ids[a.id], "memo_type_id": 1, "proj_id": pid, "task_memo": _memo_html(a.notes)}
                        for i, a in enumerate([a for a in project.activities if a.notes and a.id in task_ids])])
     defs = udf_defs(project)
+    if any(a.elapsed for a in project.activities if a.id in task_ids) and all(d["name"] != ELAPSED_UDF for d in defs):
+        defs.append({"name": ELAPSED_UDF, "type": "text"})   # elapsed-duration activities: flag as a task UDF, Y
     udf_ids = {d["name"]: i + 1 for i, d in enumerate(defs)}
     udf_types = {d["name"]: d["type"] for d in defs}
     udftype = _table("UDFTYPE", ["udf_type_id", "table_name", "udf_type_name", "udf_type_label", "logical_data_type", "super_flag",
@@ -699,6 +706,8 @@ def write_xer(project: Project, currency: str = "GBP", version: str | None = Non
             row = _udf_row(a, k, v)
             if row:
                 udfrows.append({"udf_type_id": udf_ids[k], "fk_id": task_ids[a.id], "proj_id": pid, **row})
+        if a.elapsed and ELAPSED_UDF in udf_ids and ELAPSED_UDF not in (a.fields or {}):
+            udfrows.append({"udf_type_id": udf_ids[ELAPSED_UDF], "fk_id": task_ids[a.id], "proj_id": pid, "udf_text": "Y"})
     udfvalue = _table("UDFVALUE", ["udf_type_id", "fk_id", "proj_id", "udf_date", "udf_number", "udf_text", "udf_code_id"], udfrows)
     tables = [header, currtype, memotype, calendar, proj_t, schedoptions, projwbs, rsrc, actvtype, actvcode] + ([udftype] if defs else []) + \
         [task, taskpred, taskrsrc, taskactv, taskmemo] + ([udfvalue] if defs else []) + ["%E", ""]
