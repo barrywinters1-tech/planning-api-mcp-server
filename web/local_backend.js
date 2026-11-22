@@ -16,8 +16,8 @@ function depth(pid) { return { undo: (undoStacks[pid] || []).length, redo: (redo
 function unique(pid) { const a = loadAll(); if (!(pid in a)) return pid; return pid + '-' + Math.random().toString(36).slice(2, 6); }
 
 function view(p, report, extra) {
-  if (!report) { try { p.levelled ? E.level(p) : E.schedule(p); report = E.healthCheck(p); } catch (e) { report = null; extra = Object.assign({}, extra, { schedule_error: e.message }); } }
-  const out = { project: p, report: report ? { score: report.score, checks: report.checks, summary: report.summary } : null, history: depth(p.id) };
+  if (!report) { try { p.levelled ? E.level(p) : E.schedule(p); report = E.healthCheck(p, { checkSet: p.check_set || 'dcma' }); } catch (e) { report = null; extra = Object.assign({}, extra, { schedule_error: e.message }); } }
+  const out = { project: p, report: report ? { score: report.score, checks: report.checks, summary: report.summary, check_set: report.check_set, thresholds: report.thresholds } : null, history: depth(p.id) };
   return Object.assign(out, extra || {});
 }
 function runPatch(p, patch) {
@@ -52,7 +52,7 @@ async function route(method, path, body) {
     if (sub === 'repair') { p = load(pid); E.schedule(p); const rep = E.healthCheck(p); const patch = E.planRepairs(p, rep); snapshot(pid); const log = E.applyPatch(p, patch); const v = view(p, null, { log, message: patch.message, still_open: patch.still_open }); store(p); return v; }
     if (sub === 'undo') { const st = undoStacks[pid] || []; if (!st.length) throw { status: 409, detail: 'nothing to undo' }; (redoStacks[pid] = redoStacks[pid] || []).push(JSON.stringify(load(pid))); p = JSON.parse(st.pop()); store(p); return view(p); }
     if (sub === 'redo') { const st = redoStacks[pid] || []; if (!st.length) throw { status: 409, detail: 'nothing to redo' }; (undoStacks[pid] = undoStacks[pid] || []).push(JSON.stringify(load(pid))); p = JSON.parse(st.pop()); store(p); return view(p); }
-    if (sub === 'level') { p = load(pid); snapshot(pid); E.level(p); const rep = E.healthCheck(p); const moved = p.activities.filter(a => a.level_delay_hours > 0).length; const v = view(p, rep, { message: `Levelled: ${moved} activities delayed to stay within resource limits.` }); store(p); return v; }
+    if (sub === 'level') { p = load(pid); snapshot(pid); if (body && body.options) { if (Object.keys(body.options).length) p.levelling = body.options; else delete p.levelling; } E.level(p); const rep = E.healthCheck(p, { checkSet: p.check_set || 'dcma' }); const moved = p.activities.filter(a => a.level_delay_hours > 0).length; const stuck = (p.levelling_report || []).filter(r => r.reason !== 'capacity').length; const v = view(p, rep, { message: `Levelled: ${moved} activities delayed to stay within resource limits${stuck ? `; ${stuck} left over the limit` : ''}.`, levelling_report: p.levelling_report || [] }); store(p); return v; }
     if (sub === 'unlevel') { p = load(pid); snapshot(pid); E.unlevel(p); const v = view(p); store(p); return v; }
     if (sub === 'baseline' && method === 'POST') { p = load(pid); snapshot(pid); E.setBaseline(p, body.name || 'Baseline'); const v = view(p); store(p); return v; }
     if (sub === 'baseline' && method === 'DELETE') { p = load(pid); snapshot(pid); E.clearBaseline(p); const v = view(p); store(p); return v; }

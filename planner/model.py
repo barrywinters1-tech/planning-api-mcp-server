@@ -276,6 +276,7 @@ class Project(BaseModel):
     levelling: Optional[dict] = None           # resource levelling options (levelling.level docstring): resources, from, to, within_float, order, preserve_actuals
     levelling_report: Optional[list] = None    # set by level(): [{id, delay_hours, resource_id, waited_for, reason}] by id; None until levelled
     check_thresholds: Optional[dict] = None    # a planner's edits to the health-check thresholds (dcma.health_check), by threshold key
+    check_set: Optional[str] = None            # which check set the programme is scored against in the app: 'dcma' (when None) or 'pp21'
     calendars: dict[str, Calendar] = Field(default_factory=dict)
     wbs: list[WBSNode] = Field(default_factory=list)
     activities: list[Activity] = Field(default_factory=list)

@@ -35,6 +35,7 @@ const ALL_COLS = {
   ff: { t: 'FF', w: 48, num: 1, get: a => a.free_float_hours == null ? '' : fmt1(daysOf(a, a.free_float_hours)) + 'd' },
   fpath: { t: 'Path', w: 46, num: 1, get: a => a.float_path == null ? '' : String(a.float_path), cls: a => a.float_path === 1 ? 'crit' : '' },
   // progress columns (MS Project tracking table, P6 status tab): original, actual-to-date and remaining durations, and a status word
+  edur: { t: 'Elapsed', w: 62, num: 1, get: a => { const E = ENGINE(); const v = E && E.elapsedDays ? E.elapsedDays(S.project, a) : null; return v == null || a.type !== 'task' ? '' : fmt1(v) + 'd'; } },
   odur: { t: 'Orig dur', w: 62, num: 1, get: a => a.type !== 'task' ? '' : fmt1(origDays(a)) + 'd' },
   adur: { t: 'Act dur', w: 60, num: 1, get: a => a.type !== 'task' || !a.actual_start ? '' : fmt1(actualDays(a)) + 'd' },
   rem: { t: 'Rem', w: 52, num: 1, get: a => a.type !== 'task' ? '' : a.status === 'complete' ? '0d' : fmt1(daysOf(a, a.remaining_hours == null ? a.duration_hours : a.remaining_hours)) + 'd', set: (a, v) => { if (a.type !== 'task' || a.status === 'complete') return; const d = parseDays(v); if (!(d >= 0)) return; if (a.status === 'not_started') { a.duration_hours = Math.max(hpd(a) / 2, d * hpd(a)); return; } a.remaining_hours = d * hpd(a); a.percent_complete = a.duration_hours ? Math.max(0, Math.min(99, Math.round(100 * (1 - a.remaining_hours / a.duration_hours)))) : 0; } },
@@ -69,7 +70,8 @@ function parseDateInput(v) {
   const d = new Date(v); return isNaN(d) ? null : d;
 }
 // ---------- calendars on the client ----------
-const calOf = a => S.project.calendars[a.calendar_id || S.project.default_calendar_id] || { hours_per_day: 8, working_days: [0, 1, 2, 3, 4], exceptions: {} };
+const ELAPSED_CAL = { id: '__elapsed', name: 'Elapsed (24 hours, 7 days)', hours_per_day: 24, working_days: [0, 1, 2, 3, 4, 5, 6], exceptions: {}, day_start: '00:00' };   // curing, drying, lead times
+const calOf = a => a.elapsed ? ELAPSED_CAL : (S.project.calendars[a.calendar_id || S.project.default_calendar_id] || { hours_per_day: 8, working_days: [0, 1, 2, 3, 4], exceptions: {} });
 const hpd = a => calOf(a).hours_per_day || 8;
 const daysOf = (a, h) => h / hpd(a);
 function isWorking(cal, d) { const k = ymd(d); if (k in cal.exceptions) return cal.exceptions[k] > 0; return cal.working_days.includes((d.getDay() + 6) % 7); }
@@ -1027,6 +1029,7 @@ function renderActivityPanel() {
         <label>Duration, working days${a.type === 'task' ? stepper('iDur', fmt1(daysOf(a, a.duration_hours)), .5) : '<input disabled value="Milestone" id="iDurMs">'}</label>
         <label>Calendar<select id="iCal">${cals}</select></label>
       </div>
+      ${a.type === 'task' ? `<label class="sw"><span>Elapsed duration <span class="hint">runs through nights, weekends and holidays: curing, drying, lead times</span></span><input type="checkbox" id="iElapsed" ${a.elapsed ? 'checked' : ''} ${a.status === 'not_started' ? '' : 'disabled'}><i></i></label>` : ''}
       <div class="insp-sec">Progress</div>
       <label>Complete <b id="iPctV" style="color:var(--ink)">${pct}%</b><input type="range" id="iPct" min="0" max="100" step="5" value="${pct}" aria-label="Percent complete"></label>
       <div class="row2"><label>Actual start<input type="date" id="iAS" value="${(a.actual_start || '').slice(0, 10)}"></label><label>Actual finish<input type="date" id="iAF" value="${(a.actual_finish || '').slice(0, 10)}"></label></div>
@@ -1052,6 +1055,7 @@ function renderActivityPanel() {
   q('#iTraceBack').onclick = () => setTrace([a.id], 'back'); q('#iTraceFwd').onclick = () => setTrace([a.id], 'fwd');
   q('#iName').onchange = e => { const v = e.target.value.trim(); if (v) mutate(() => { a.name = v; }, null); };
   if (q('#iDur')) q('#iDur').onchange = e => mutate(() => { a.duration_hours = Math.max(0, +e.target.value || 0) * hpd(a); if (a.status === 'in_progress') a.remaining_hours = a.duration_hours * (1 - a.percent_complete / 100); }, `${a.id} is now ${fmt1(+e.target.value || 0)} days`);
+  if (q('#iElapsed')) q('#iElapsed').onchange = e => { const on = e.target.checked; mutate(() => { const days = daysOf(a, a.duration_hours); if (on) a.elapsed = true; else delete a.elapsed; a.duration_hours = days * hpd(a); }, on ? `${a.id} now runs on elapsed time: ${fmt1(daysOf(a, a.duration_hours))} calendar days` : `${a.id} back on its working calendar`); };
   q('#iCal').onchange = e => mutate(() => { const old = hpd(a); a.calendar_id = e.target.value; a.duration_hours = a.duration_hours / old * hpd(a); }, `${a.id} calendar changed`);
   q('#iPct').oninput = e => { q('#iPctV').textContent = e.target.value + '%'; };
   q('#iPct').onchange = e => mutate(p => setProgress(a, +e.target.value, p.data_date ? new Date(p.data_date) : null), `${a.id} ${+e.target.value}% complete`);
@@ -1135,7 +1139,7 @@ function pdfDoc(o) {
   };
 }
 // Report pack: tabular pages and vector charts bundled with the Gantt, chosen in the print sheet (backlog #3, #38, #49).
-const PACK_KINDS = [['milestones', 'Milestones: target, forecast, variance'], ['lookahead', 'Three-week lookahead'], ['critical', 'Critical path list'], ['variance', 'Variance against the baseline'], ['scurve', 'S-curve (early, late, baseline, actual)'], ['histogram', 'Resource histogram'], ['cost', 'Cost and earned value curve']];
+const PACK_KINDS = [['levelling', 'Levelling report: what was delayed and what it waited for'], ['milestones', 'Milestones: target, forecast, variance'], ['lookahead', 'Three-week lookahead'], ['critical', 'Critical path list'], ['variance', 'Variance against the baseline'], ['scurve', 'S-curve (early, late, baseline, actual)'], ['histogram', 'Resource histogram'], ['cost', 'Cost and earned value curve']];
 function reportPack(kinds) {
   const p = S.project, E = ENGINE(), reports = [], charts = [];
   const cal = p.calendars[p.default_calendar_id] || { working_days: [0, 1, 2, 3, 4], exceptions: {} };
@@ -1163,6 +1167,11 @@ function reportPack(kinds) {
     const rows = p.activities.filter(a => a.baseline_finish && a.type !== 'level_of_effort').map(a => { const f = a.actual_finish || a.early_finish, s = a.actual_start || a.early_start; return { a, fv: vd(a.baseline_finish, f), sv: vd(a.baseline_start, s), f, s }; }).sort((x, y) => (y.fv || 0) - (x.fv || 0));
     reports.push({ kind: 'variance', title: 'Variance against the baseline', subtitle: `${rows.filter(r => r.fv > 0).length} finishing later than the baseline, ${rows.filter(r => r.fv < 0).length} earlier`, columns: [{ key: 'id', label: 'ID', width: 22 }, { key: 'name', label: 'Activity' }, { key: 'bs', label: 'BL start', width: 22 }, { key: 's', label: 'Start', width: 22 }, { key: 'sv', label: 'Var', width: 14, align: 'right', num: true }, { key: 'bf', label: 'BL finish', width: 22 }, { key: 'f', label: 'Finish', width: 22 }, { key: 'fv', label: 'Var', width: 14, align: 'right', num: true }],
       rows: rows.map(r => ({ id: r.a.id, name: r.a.name, bs: D10(r.a.baseline_start), s: D10(r.s), sv: sgn(r.sv), bf: D10(r.a.baseline_finish), f: D10(r.f), fv: sgn(r.fv), _colour: r.fv > 0 ? '#c0392b' : r.fv < 0 ? '#2e8b57' : null })), notes: 'Working days; positive is later than the baseline.' });
+  }
+  if (kinds.includes('levelling') && (p.levelling_report || []).length) {
+    const rn = id => (p.resources.find(r => r.id === id) || { name: id || '' }).name;
+    reports.push({ kind: 'levelling', title: 'Levelling report', subtitle: `${p.levelling_report.length} activities delayed or left over the crew limit`, columns: [{ key: 'id', label: 'ID', width: 22 }, { key: 'name', label: 'Activity' }, { key: 'delay', label: 'Delay (days)', width: 22, align: 'right', num: true }, { key: 'res', label: 'Resource', width: 40 }, { key: 'wait', label: 'Waited for', width: 60 }, { key: 'why', label: 'Why', width: 70 }],
+      rows: p.levelling_report.map(r => { const a = byId(r.id) || { name: r.id }, w = r.waited_for && byId(r.waited_for); return { id: r.id, name: a.name, delay: r.delay_hours ? fmt1(daysOf(a, r.delay_hours)) : '', res: rn(r.resource_id), wait: w ? `${w.id} ${w.name}` : '', why: levelWhy(r), _colour: r.reason === 'capacity' ? null : '#c0392b' }; }) });
   }
   const dd = p.data_date || p.start;
   if (kinds.includes('scurve')) {
@@ -1213,7 +1222,7 @@ function printSheet() {
     <label class="sw" style="margin:0 0 8px"><span>Progress period lines as shown on the chart (${periodsShown(S.project).length})</span><input type="checkbox" id="pPeriods" ${periodsShown(S.project).length ? 'checked' : 'disabled'}><i></i></label>
     <div class="row2"><label>Company logo (JPEG or PNG)<input type="file" id="pLogo" accept="image/jpeg,image/png"></label><label>&nbsp;<span class="hint" id="pLogoNote">${saved.logo ? 'Logo kept from last time' : 'Optional; shown in the title block'}</span> ${saved.logo ? '<button type="button" class="chipbtn" id="pLogoClear">Remove</button>' : ''}</label></div>
     <h3>Report pack</h3><p class="hint" style="margin:-4px 0 6px">Table and chart pages bound in after the cover, before the Gantt.</p>
-    <div class="pack">${PACK_KINDS.map(([k, l]) => { const off = (k === 'variance' && !S.project.activities.some(a => a.baseline_finish)) || (k === 'histogram' && !S.project.assignments.length) || (k === 'cost' && !S.project.assignments.length); return `<label class="row"><input type="checkbox" data-pack="${k}" ${off ? 'disabled' : (saved.pack || []).includes(k) ? 'checked' : ''}>${l}${off ? ' <span class="hint">(nothing to report)</span>' : ''}</label>`; }).join('')}</div>
+    <div class="pack">${PACK_KINDS.map(([k, l]) => { const off = (k === 'levelling' && !(S.project.levelling_report || []).length) || (k === 'variance' && !S.project.activities.some(a => a.baseline_finish)) || (k === 'histogram' && !S.project.assignments.length) || (k === 'cost' && !S.project.assignments.length); return `<label class="row"><input type="checkbox" data-pack="${k}" ${off ? 'disabled' : (saved.pack || []).includes(k) ? 'checked' : ''}>${l}${off ? ' <span class="hint">(nothing to report)</span>' : ''}</label>`; }).join('')}</div>
     <label class="sw" style="margin:6px 0 8px"><span>Reports only: leave the Gantt pages out</span><input type="checkbox" id="pOnly" ${saved.reportsOnly ? 'checked' : ''}><i></i></label>
     <label>Notes in the title block<input id="pNotes" value="${esc((() => { try { return getBriefing().headline || ''; } catch { return ''; } })())}" placeholder="e.g. Programme for acceptance; durations in working days"></label>
     <p class="hint" id="pPlan"></p><div class="bar-row"><button type="button" class="btn" id="pPreview">Preview</button><span class="hint" id="pPrevNote"></span></div><div id="pPrev" hidden></div>`, async mm => {
@@ -2253,6 +2262,45 @@ const CURRENCIES = [['GBP', '£ GBP'], ['EUR', '€ EUR'], ['USD', '$ USD'], ['A
 const CUR_SYM = { GBP: '£', EUR: '€', USD: '$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$', ZAR: 'R', INR: '₹', JPY: '¥', CHF: 'CHF ', AED: 'AED ', SAR: 'SAR ' };
 function curSym() { const c = (S.project && S.project.currency) || 'GBP'; return CUR_SYM[c] != null ? CUR_SYM[c] : c + ' '; }
 function money(v) { v = +v || 0; const s = curSym(); const r = Math.round(v * 100) / 100, whole = Math.abs(v) >= 1e5 || Number.isInteger(r); const n = whole ? Math.round(v).toLocaleString('en-GB') : r.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return (v < 0 ? '-' : '') + s + n.replace(/^-/, ''); }
+// ---------- levelling that explains itself: options, then a report naming what each delayed activity waited for ----------
+const LEVEL_ORDERS_UI = [['late_start', 'Latest start first (P6 and Asta default)'], ['priority', 'Priority first'], ['total_float', 'Least float first'], ['early_start', 'Earliest start first']];
+const LEVEL_REASON = { capacity: 'Waited for the crew', within_float_blocked: 'Left over the limit: delaying it would use more than its float', window: 'Left over the limit: outside the levelling window' };
+const levelWhy = r => r.reason === 'capacity' && !r.resource_id ? 'Follows a delayed predecessor' : (LEVEL_REASON[r.reason] || r.reason);
+function levelReportHtml(p) {
+  const rep = p.levelling_report || []; if (!p.levelled) return '<p class="hint">Not levelled. Early dates come from the logic alone.</p>';
+  if (!rep.length) return '<p class="hint">Levelled: nothing had to move.</p>';
+  const rn = id => (p.resources.find(r => r.id === id) || { name: id || '' }).name; const stuck = rep.filter(r => r.reason !== 'capacity').length;
+  const crew = rep.filter(r => r.reason === 'capacity' && r.resource_id).length;
+  return `<p class="hint">${crew} waited for a crew, ${rep.length - stuck - crew} followed a delayed predecessor${stuck ? `, ${stuck} left over the limit` : ''}. Finish ${fmtD(p.finish)}.</p><div style="max-height:260px;overflow:auto"><table class="ov-table"><thead><tr><th>Activity</th><th class="n">Delay</th><th>Resource</th><th>Waited for</th><th>Why</th></tr></thead><tbody>${rep.map(r => { const a = byId(r.id) || { name: r.id }, w = r.waited_for && byId(r.waited_for); return `<tr><td><a data-goto="${esc(r.id)}" style="cursor:pointer"><span class="mono">${esc(r.id)}</span> ${esc(a.name)}</a></td><td class="n">${r.delay_hours ? fmt1(daysOf(a, r.delay_hours)) + 'd' : '–'}</td><td>${esc(rn(r.resource_id))}</td><td>${w ? `<span class="mono">${esc(w.id)}</span> ${esc(w.name)}` : ''}</td><td>${esc(levelWhy(r))}</td></tr>`; }).join('')}</tbody></table></div>`;
+}
+function levelDialog() {
+  const p = S.project; if (!p) return; const o = p.levelling || {}; const limited = p.resources.filter(r => r.max_units_per_day);
+  if (!limited.length) return toast('No resource has a crew limit yet. Set limits under More → Resources and crews.', { ms: 5000 });
+  const { m } = modal('Level to crew limits', `<p class="hint" style="margin-top:-4px">Delays not-started activities so no trade is used beyond its crew limit. Work that has started never moves.</p>
+    <div class="insp-sec">Which resources</div><div class="pack">${limited.map(r => `<label class="row"><input type="checkbox" data-lr="${esc(r.id)}" ${!o.resources || o.resources.includes(r.id) ? 'checked' : ''}>${esc(r.name)} <span class="hint">limit ${fmt1(r.max_units_per_day)}</span></label>`).join('')}</div>
+    <div class="grid" style="margin-top:8px"><label>Only activities starting from<input type="date" name="lf" value="${esc((o.from || '').slice(0, 10))}"></label><label>to<input type="date" name="lt" value="${esc((o.to || '').slice(0, 10))}"></label><label>When two compete<select name="lo">${LEVEL_ORDERS_UI.map(([v, l]) => `<option value="${v}" ${(o.order || 'late_start') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+    <label class="sw" style="margin-top:8px"><span>Within float only: never delay an activity past its latest start, so nothing uses more than its float</span><input type="checkbox" name="lw" ${o.within_float ? 'checked' : ''}><i></i></label>
+    <div class="insp-sec">Last levelling</div><div id="lvRep">${levelReportHtml(p)}</div>
+    <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="lvCsv" ${(p.levelling_report || []).length ? '' : 'disabled'}>Report as CSV</button><button type="button" class="btn" id="lvOff" ${p.levelled ? '' : 'disabled'}>Remove levelling</button></div>`,
+    async mm => {
+      const all = limited.map(r => r.id), pick = [...mm.querySelectorAll('[data-lr]:checked')].map(x => x.dataset.lr); if (!pick.length) { toast('Tick at least one resource'); return false; }
+      const opt = {}; if (pick.length < all.length) opt.resources = pick; const lf = mm.querySelector('[name=lf]').value, lt = mm.querySelector('[name=lt]').value, lo = mm.querySelector('[name=lo]').value;
+      if (lf) opt.from = lf; if (lt) opt.to = lt; if (lo !== 'late_start') opt.order = lo; if (mm.querySelector('[name=lw]').checked) opt.within_float = true;
+      const f0 = p.finish; await act('/level', { options: opt });
+      const q = S.project, rep = q.levelling_report || [], stuck = rep.filter(r => r.reason !== 'capacity').length, cal = q.calendars[q.default_calendar_id], d = f0 && q.finish && cal ? workingDaysBetween(cal, new Date(f0), new Date(q.finish)) : 0;
+      toast(`Levelled: ${rep.length - stuck} delayed${stuck ? `, ${stuck} left over the limit` : ''}. Finish ${d ? (d > 0 ? '+' : '') + d + ' working days' : 'unchanged'}.`, { ms: 6000, undo: true, action: { label: 'Report', fn: levelDialog } });
+    }, 'Level', { wide: true });
+  m.querySelectorAll('[data-goto]').forEach(a => a.onclick = () => { modalClose(); goToActivity(a.dataset.goto); });
+  m.querySelector('#lvOff').onclick = () => { modalClose(); act('/unlevel'); };
+  m.querySelector('#lvCsv').onclick = () => { const q = v => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v == null ? '' : v); const rn = id => (p.resources.find(r => r.id === id) || { name: id || '' }).name; const lines = [['ID', 'Activity', 'Delay (days)', 'Resource', 'Waited for', 'Reason'].join(',')].concat((p.levelling_report || []).map(r => { const a = byId(r.id) || { name: '' }; return [r.id, a.name, fmt1(daysOf(a, r.delay_hours || 0)), rn(r.resource_id), r.waited_for || '', levelWhy(r)].map(q).join(','); })); saveBlob(`${p.id}-levelling-report.csv`, new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })); };
+}
+// Health-check thresholds: a planner's edits are stored with the programme and used by both check sets.
+function thresholdsDialog() {
+  const p = S.project, r = S.report; if (!p || !r || !r.thresholds) return toast('Thresholds need the in-browser engine');
+  const set = r.check_set || 'dcma'; const label = k => k.replace(/_/g, ' ').replace(/\bpct\b/, '%').replace(/^\w/, c => c.toUpperCase());
+  modal(`Thresholds: ${set === 'pp21' ? 'CIOB Planning Protocol 2021' : 'DCMA 14-point'}`, `<p class="hint" style="margin-top:-4px">Change a figure to suit the contract. Edits are kept with the programme; clear a box to go back to the standard.</p><div class="grid">${Object.entries(r.thresholds).map(([k, v]) => `<label>${esc(label(k))}<input type="number" step="any" data-th="${esc(k)}" value="${v}" ${(p.check_thresholds || {})[k] != null ? 'style="border-color:var(--accent)"' : ''}></label>`).join('')}</div>`,
+    m => { const E = ENGINE(), std = E && E[set === 'pp21' ? 'PP21_THRESHOLDS' : 'DCMA_THRESHOLDS'] || {}; mutate(pr => { const t = Object.assign({}, pr.check_thresholds || {}); m.querySelectorAll('[data-th]').forEach(i => { const k = i.dataset.th; if (i.value === '' || +i.value === std[k]) delete t[k]; else t[k] = +i.value; }); if (Object.keys(t).length) pr.check_thresholds = t; else delete pr.check_thresholds; }, 'Health-check thresholds changed'); }, 'Save');
+}
 // Scheduling options (P6 Schedule Options, Asta progress settings): how progressed work is placed, float paths, start on new day, near-critical threshold.
 const PROGRESS_LOGIC = [['', 'Remaining work from the data date (planner default)', 'Started work carries on from the data date whatever its unfinished predecessors do; the links still count for float.'], ['retained', 'Retained logic (P6 default)', 'Remaining work waits for unfinished predecessors, as the links say.'], ['override', 'Progress override', 'Started work ignores its unfinished predecessors in both passes: the network is reset around what has happened.']];
 function schedOptionsDialog() {
@@ -2908,7 +2956,7 @@ function renderMonitor() {
         <section class="panel" aria-labelledby="hDrive"><div class="panel-head"><h2 id="hDrive">What is driving the finish</h2><span class="hint">The critical path, in order</span></div>
           <div class="list">${crit.slice(0, 10).map(a => `<div class="li click" data-goto="${esc(a.id)}" role="button" tabindex="0"><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s"><span class="mono">${esc(a.id)}</span> · ${fmtD(a.actual_start || a.early_start)} to ${fmtD(a.early_finish)} · ${fmt1(daysOf(a, a.duration_hours))}d</div></div><span class="chip ${a.total_float_hours < 0 ? 'bad' : 'plain'}">${fmt1(daysOf(a, a.total_float_hours || 0))}d float</span></div>`).join('') || '<div class="empty"><b>No critical path</b>Every remaining activity has spare time.</div>'}${crit.length > 10 ? `<div class="li"><span class="hint">and ${crit.length - 10} more</span></div>` : ''}</div>
         </section>
-        <section class="panel" aria-labelledby="hHealth"><div class="panel-head"><h2 id="hHealth">Health checks</h2>${failing.length ? '<button type="button" class="primary" id="mFix">Auto-repair</button>' : '<span class="chip ok">All passing</span>'}</div>
+        <section class="panel" aria-labelledby="hHealth"><div class="panel-head"><h2 id="hHealth">Health checks</h2><div class="miniseg" id="mSet" role="group" aria-label="Check set"><button type="button" data-set="dcma" class="${(p.check_set || 'dcma') === 'dcma' ? 'on' : ''}" title="DCMA 14-point assessment">DCMA 14</button><button type="button" data-set="pp21" class="${p.check_set === 'pp21' ? 'on' : ''}" title="CIOB Planning Protocol 2021">CIOB PP21</button></div><button type="button" class="chipbtn" id="mThresh">Thresholds</button><span class="spacer"></span>${failing.length ? ((p.check_set || 'dcma') === 'dcma' ? '<button type="button" class="primary" id="mFix">Auto-repair</button>' : `<span class="chip bad">${failing.length} failing</span>`) : '<span class="chip ok">All passing</span>'}</div>
           <div class="list">${failing.map(c => `<div class="check fail"><span class="dot"></span><b>${esc(c.title)}</b><span class="hint mono">${c.value != null ? c.value : ''}${c.threshold ? ' · ' + esc(c.threshold) : ''}</span><div class="d">${esc(c.detail)}</div>${c.items && c.items.length ? `<div class="items">${c.items.slice(0, 24).map(i => `<a data-goto="${esc(i.split('->')[0])}">${esc(i)}</a>`).join(', ')}${c.items.length > 24 ? ' …' : ''}</div>` : ''}</div>`).join('')}
           ${r ? `<div class="check"><span class="dot"></span><b>${passing} checks pass</b><span></span><div class="d">${esc(r.checks.filter(c => c.applicable && c.passed).map(c => c.title).join(', '))}</div></div>` : ''}</div>
         </section>
@@ -2929,6 +2977,8 @@ function renderMonitor() {
   el.querySelectorAll('[data-pdel]').forEach(b => b.onclick = () => deletePeriod(b.dataset.pdel));
   el.querySelectorAll('[data-pcmp]').forEach(b => b.onclick = () => { const r = (p.revisions || []).find(x => x.name === b.dataset.pcmp); if (r && window.PlannerEngine) compareSheet(window.PlannerEngine.compareProjects(r.project, S.project)); });
   const fix = el.querySelector('#mFix'); if (fix) fix.onclick = () => act('/repair');
+  el.querySelectorAll('#mSet [data-set]').forEach(b => b.onclick = () => { const v = b.dataset.set; if ((S.project.check_set || 'dcma') === v) return; mutate(pr => { if (v === 'dcma') delete pr.check_set; else pr.check_set = v; }, v === 'pp21' ? 'Scored against the CIOB Planning Protocol 2021' : 'Scored against the DCMA 14-point assessment'); });
+  const th = el.querySelector('#mThresh'); if (th) th.onclick = thresholdsDialog;
   el.querySelectorAll('[data-goto]').forEach(n => { const goTo = () => { const id = n.dataset.goto; if (!byId(id)) return; go('plan'); S.sel = new Set([id]); S.active = id; paintSelection(); const i = S.rowsCache.findIndex(q => rowKey(q) === id); if (i >= 0) scrollToRow(i); if (S.inspector) renderInspector(); }; n.onclick = goTo; n.onkeydown = e => { if (e.key === 'Enter') goTo(); }; });
   el.querySelector('#blMgr').onclick = baselineManager; const cc = el.querySelector('#chgCsv'); if (cc) cc.onclick = async () => { if (await saveBlob(`${p.id}-changes.csv`, new Blob([changesCsv(p)], { type: 'text/csv;charset=utf-8' }))) toast('Change log saved'); };
   el.querySelectorAll('[data-why]').forEach(b => b.onclick = () => reasonDialog(b.dataset.why));
@@ -3211,7 +3261,8 @@ function palActions() {
     S.project && S.view.show !== 'all' && ['Show everything', 'Filter', () => { S.view.show = 'all'; S.view.filter = ''; go('plan'); }],
     S.project && ['Auto-repair failing checks', 'Fix', () => act('/repair')],
     S.project && ['Set a baseline', 'Plan', () => $('#btnBaseline').click()],
-    S.project && ['Level to crew limits', 'Plan', () => act('/level')],
+    S.project && ['Level to crew limits: options and report', 'Plan', levelDialog],
+    S.project && ['Health checks: thresholds', 'Check', thresholdsDialog],
     S.project && ['Schedule risk (Monte Carlo)', 'Analyse', riskSheet],
     S.project && ['Show the inspector', 'View', () => { go('plan'); S.sideTab = 'activity'; toggleInspector(true); }],
     S.project && ['Progress charts beside the programme', 'View', () => { go('plan'); S.sideTab = 'progress'; if (S.inspector) renderInspector(); else toggleInspector(true); }],
@@ -3769,7 +3820,7 @@ function wireToolbar() {
   $('#btnRisk').onclick = riskSheet; $('#btnDrag').onclick = () => computeDrag();
   $('#btnRevision').onclick = revisionDialog; $('#btnCompare').onclick = () => compareSheet();
   $('#btnSite').onclick = () => siteUpdateSheet(); $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
-  $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
+  $('#btnLevel').onclick = levelDialog; $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnSchedOpts').onclick = schedOptionsDialog; $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
   $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog; $('#btnRenumber').onclick = renumberDialog; $('#btnTemplate').onclick = saveTemplateDialog; $('#btnFragnets').onclick = fragnetDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));

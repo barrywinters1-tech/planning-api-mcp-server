@@ -43,7 +43,7 @@ def _view(project: Project, report=None, extra: Optional[dict] = None, check_set
     if report is None:
         try:
             schedule(project)
-            report = health_check(project, check_set=check_set or "dcma")
+            report = health_check(project, check_set=check_set or project.check_set or "dcma")
         except ScheduleError as e:
             report = None
             extra = {**(extra or {}), "schedule_error": str(e)}
