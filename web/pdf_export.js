@@ -63,7 +63,8 @@
      }],
      links: [{ from: rowIndex, to: rowIndex, type: 'FS'|'SS'|'FF'|'SF', critical: bool }],
      range: { t0: ISO, t1: ISO },     // the timescale shown (a date-only t1 is inclusive)
-     annotations: [{ date: ISO, row: index|null, text }],  // callouts; row null = whole chart
+     annotations: [{ date: ISO, row: index|null, text,     // callouts; row null = whole chart
+                     kind?: 'callout'|'box'|'arrow', to_date?: ISO, row2?: index }],   // box: date range x rows; arrow: from (date,row) to (to_date,row2)
      period_lines: [{ label, date: ISO, colour?, points: [{ row: index, x_date: ISO }] }],
      shading: [{ from: ISO date, to: ISO date (inclusive), label?, colour? '#rrggbb' }],  // date-range bands behind the bars (shutdowns, holidays, phases)
                                       // closed progress periods: one dashed polyline each, in a
@@ -606,7 +607,9 @@
       if (!an || typeof an !== 'object') return null;
       if (idx(an.row) === null) return an;                          // whole-chart callout
       const row = remap(an.row);
-      return row === null ? null : Object.assign({}, an, { row });
+      if (row === null) return null;
+      const row2 = an.row2 === undefined || an.row2 === null ? row : remap(an.row2);
+      return Object.assign({}, an, { row, row2: row2 === null ? row : row2 });
     }).filter(Boolean);
     const period_lines = (Array.isArray(doc.period_lines) ? doc.period_lines : []).map(pl => {
       if (!pl || typeof pl !== 'object' || !parseISO(pl.date)) return null;
@@ -1329,6 +1332,23 @@
       const p = parseISO(an.date);
       if (!p || !an.text) continue;
       const d = disp(p.ms);
+      if (an.kind === 'box' || an.kind === 'arrow') {              // drawn where they sit; clipped to this page's rows and dates
+        const p2 = parseISO(an.to_date) || p, d2 = disp(p2.ms), r1 = an.row === null || an.row === undefined ? first : +an.row, r2 = an.row2 === null || an.row2 === undefined ? r1 : +an.row2;
+        const lo = Math.min(r1, r2), hi = Math.max(r1, r2); if (hi < first || lo >= last || Math.max(d, d2) < s0 || Math.min(d, d2) > s1) continue;
+        const yOf = r => rowTop(Math.max(first, Math.min(last - 1, r))) + rowH / 2;
+        if (an.kind === 'box') {
+          const x0 = X(Math.max(s0, Math.min(d, d2))), x1 = X(Math.min(s1, Math.max(d, d2) + 1)), y0 = rowTop(Math.max(first, lo)) + 0.4, y1 = rowTop(Math.min(last - 1, hi)) + rowH - 0.4;
+          cv.rect(x0, y0, Math.max(1, x1 - x0), y1 - y0, null, C.annStroke, 0.3);
+          cv.text(an.text, x0 + 0.9, y0 + 2.3, pt, true, C.annText, 'left', Math.max(30, x1 - x0 - 1.8));
+        } else {
+          const xa = X(Math.max(s0, Math.min(s1, d))), ya = yOf(r1), xb0 = X(Math.max(s0, Math.min(s1, d2))), yb = yOf(r2), xb = xb0 === xa && ya === yb ? xa + 8 : xb0;
+          const ang = Math.atan2(yb - ya, xb - xa), hx = xb - 1.8 * Math.cos(ang), hy = yb - 1.8 * Math.sin(ang), nx = 0.8 * Math.sin(ang), ny = -0.8 * Math.cos(ang);
+          cv.line(xa, ya, hx, hy, C.annStroke, 0.4);
+          cv.polygon([[xb, yb], [hx + nx, hy + ny], [hx - nx, hy - ny]], C.annStroke);
+          cv.text(an.text, (xa + xb) / 2, (ya + yb) / 2 - 1.2, pt, true, C.annText, 'center', 60);
+        }
+        continue;
+      }
       if (d < s0 || d > s1) continue;
       const whole = an.row === null || an.row === undefined || an.row === '';
       const ri = +an.row;

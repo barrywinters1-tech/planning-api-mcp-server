@@ -612,6 +612,7 @@ Object.assign(doc.meta, patch.meta || {});
 if (patch.page) Object.assign(doc.page, patch.page);
 if (patch.period_lines) doc.period_lines = patch.period_lines;
 if (patch.shading) doc.shading = patch.shading;
+if (patch.annotations) doc.annotations = patch.annotations;
 if (patch.reports) doc.reports = patch.reports;
 if (patch.charts) doc.charts = patch.charts;
 if (patch.cover) doc.cover = patch.cover;
@@ -1260,3 +1261,21 @@ def test_shading_bands(tmp_path):
     again = render_patched(tmp_path / "again", {"shading": bands})
     assert again["pdf"] == r["pdf"]                       # deterministic
     assert render_patched(tmp_path / "none", {"shading": []})["pdf"] == base["pdf"]
+
+
+def test_box_and_arrow_annotations(tmp_path):
+    """Annotation kinds box (date range x rows) and arrow (point to point) print with their text."""
+    base = render_patched(tmp_path, {"annotations": []})
+    rows, d0 = base["rows"], date.fromisoformat(base["data_date"][:10])
+    tasks = [i for i, r in enumerate(rows) if r["kind"] == "task" and r["start"]][:6]
+    notes = [{"date": d0.isoformat(), "to_date": (d0 + timedelta(days=20)).isoformat(), "row": tasks[0], "row2": tasks[2], "kind": "box", "text": "Crane on site"},
+             {"date": (d0 + timedelta(days=5)).isoformat(), "to_date": (d0 + timedelta(days=30)).isoformat(), "row": tasks[1], "row2": tasks[3], "kind": "arrow", "text": "Access handed over"},
+             {"date": d0.isoformat(), "row": tasks[0], "text": "Plain callout"}]
+    r = render_patched(tmp_path, {"annotations": notes})
+    assert r["error"] is None and r["layout"]["page_count"] == base["layout"]["page_count"]
+    texts = Pdf(r["pdf"]).page_texts()
+    flat = [t for page in texts for t in page]
+    assert any("Crane on site" in t for t in flat) and any("Access handed over" in t for t in flat) and any("Plain callout" in t for t in flat)
+    assert render_patched(tmp_path / "again", {"annotations": notes})["pdf"] == r["pdf"]
+    only_callout = render_patched(tmp_path / "c", {"annotations": notes[2:]})
+    assert only_callout["pdf"] != r["pdf"]
