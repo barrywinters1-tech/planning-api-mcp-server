@@ -1118,6 +1118,7 @@ function pdfDoc(o) {
     columns, rows, links, annotations,
     range: { t0: o.t0 || iso(S.t0), t1: o.t1 || iso(S.t1) },
     cover: o.cover ? coverFor(o) : null,
+    shading: (p.shading || []).map(b => ({ from: b.from, to: b.to, label: b.label, colour: b.colour })),
     reports: o.pack && o.pack.length ? reportPack(o.pack).reports : [],
     charts: o.pack && o.pack.length ? reportPack(o.pack).charts : [],
     period_lines: o.periods ? periodsShown(p).map(pp => ({ label: pp.name, date: pp.data_date, points: rs.map((r, i) => { if (!r.act) return null; const v = pp.acts[r.act.id]; if (!v) return null; const [st, fi, pc, k] = v; const xd = k === 'c' ? pp.data_date : k === 'p' ? iso(new Date(+new Date(st) + (new Date(fi) - new Date(st)) * pc / 100)) : (st < pp.data_date ? st : pp.data_date); return { row: i, x_date: xd }; }).filter(Boolean) })) : [],

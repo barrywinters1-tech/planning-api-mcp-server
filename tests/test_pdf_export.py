@@ -611,6 +611,7 @@ Object.assign(doc.options, patch.options || {});
 Object.assign(doc.meta, patch.meta || {});
 if (patch.page) Object.assign(doc.page, patch.page);
 if (patch.period_lines) doc.period_lines = patch.period_lines;
+if (patch.shading) doc.shading = patch.shading;
 if (patch.reports) doc.reports = patch.reports;
 if (patch.charts) doc.charts = patch.charts;
 if (patch.cover) doc.cover = patch.cover;
@@ -1243,3 +1244,19 @@ def test_report_pack_absent_leaves_output_unchanged(tmp_path):
     assert r["pdf"] == (tmp_path / "base.pdf").read_bytes()
     L = r["layout"]
     assert L["report_pages"] == 0 and L["chart_pages"] == 0 and L["gantt_pages"] == L["page_count"] == r["base"]["page_count"]
+
+
+def test_shading_bands(tmp_path):
+    """Date-range shading bands (shutdowns, holidays, phases) print behind the bars with their label."""
+    base = render_patched(tmp_path, {})
+    d0 = date.fromisoformat(base["data_date"][:10])
+    bands = [{"from": (d0 + timedelta(days=21)).isoformat(), "to": (d0 + timedelta(days=34)).isoformat(), "label": "Christmas shutdown", "colour": "#ffd166"},
+             {"from": "not a date", "to": "2026-01-01", "label": "ignored"}]
+    r = render_patched(tmp_path, {"shading": bands})
+    assert r["error"] is None and r["layout"]["page_count"] == base["layout"]["page_count"]
+    texts = Pdf(r["pdf"]).page_texts()
+    assert "Christmas shutdown" in texts[0] and all("ignored" not in t for page in texts for t in page)
+    assert r["pdf"] != base["pdf"]
+    again = render_patched(tmp_path / "again", {"shading": bands})
+    assert again["pdf"] == r["pdf"]                       # deterministic
+    assert render_patched(tmp_path / "none", {"shading": []})["pdf"] == base["pdf"]

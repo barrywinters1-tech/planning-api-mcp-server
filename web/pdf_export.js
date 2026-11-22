@@ -65,6 +65,7 @@
      range: { t0: ISO, t1: ISO },     // the timescale shown (a date-only t1 is inclusive)
      annotations: [{ date: ISO, row: index|null, text }],  // callouts; row null = whole chart
      period_lines: [{ label, date: ISO, colour?, points: [{ row: index, x_date: ISO }] }],
+     shading: [{ from: ISO date, to: ISO date (inclusive), label?, colour? '#rrggbb' }],  // date-range bands behind the bars (shutdowns, holidays, phases)
                                       // closed progress periods: one dashed polyline each, in a
                                       // muted colour (cycled, or `colour`), labelled at the top of
                                       // the chart; it runs down the period's date and jogs through
@@ -629,7 +630,8 @@
     }
     let d0 = r0.ms / DAY, d1 = r1.ms / DAY + (r1.dateOnly ? 1 : 0);
     if (!(d1 > d0)) d1 = d0 + 7;
-    return { meta, page, options, rows, columns, links, annotations, period_lines, logo, d0, d1,
+    const shading = (Array.isArray(doc.shading) ? doc.shading : []).map(b => { if (!b || typeof b !== 'object') return null; const f = parseISO(b.from), t = parseISO(b.to); if (!f || !t) return null; const a = dayNum(Math.min(f.ms, t.ms)), z = dayNum(Math.max(f.ms, t.ms)) + 1; return { a, z, label: String(b.label || ''), colour: /^#[0-9a-fA-F]{6}$/.test(b.colour || '') ? b.colour : '#ffd166' }; }).filter(Boolean);
+    return { shading, meta, page, options, rows, columns, links, annotations, period_lines, logo, d0, d1,
       cover: normaliseCover(doc.cover), reports: normaliseReports(doc.reports), charts: normaliseCharts(doc.charts) };
   }
 
@@ -932,6 +934,13 @@
     cv.clip(P.chartX, P.tsY, P.chartW, bodyBottom - P.tsY);
     if (n.options.shade_weekends !== false && dw >= 2) {
       for (let d = Math.floor(s0); d < s1; d++) if (mdow(d) === 5) cv.rect(X(d), P.bodyY, 2 * dw, P.bodyH, C.weekend);
+    }
+    // date-range shading bands: a pale wash of the band colour with its label at the top (grey in black and white)
+    for (const b of n.shading) {
+      const a = Math.max(b.a, s0), z = Math.min(b.z, s1); if (z <= a) continue;
+      const [r, g, bl] = rgb(n.options.colour === false ? grey(b.colour) : b.colour); const wash = '#' + [r, g, bl].map(v => hex2(v + (1 - v) * 0.72)).join('');
+      cv.rect(X(a), P.bodyY, (z - a) * dw, P.bodyH, wash);
+      if (b.label && b.a >= s0) cv.text(b.label, X(a) + 0.8, P.bodyY + 2.6, 5.5, true, C.text, 'left', Math.max(34, (z - a) * dw - 1.6));   // a narrow band's label may run past it
     }
 
     // ---------- timescale ----------
