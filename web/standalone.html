@@ -6038,15 +6038,23 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
 /* PlannerPDF: a self-contained, dependency-free vector PDF writer for Gantt programmes.
 
    Works in browsers and in node: no DOM, no libraries, no network. Loading the file sets
-   globalThis.PlannerPDF = { render, layout, formatDate, encodeText, textWidth }.
+   globalThis.PlannerPDF = { render, layout, money, formatNumber, formatDate, encodeText, textWidth }.
 
    render(doc) -> Uint8Array   a PDF 1.4 file (uncompressed content streams, exact xref).
    layout(doc) -> object       the pagination plan render() will use: page_w_mm, page_h_mm,
                                rows_per_page, row_height_mm, body_height_mm, pages_tall, pages_wide,
-                               page_count (= pages), rows (printed), bands [{ first, last }] (row
-                               indices [first, last) per page band), fit_to_pages_tall, fits,
-                               cover, cover_pages, table_width_mm, chart_width_mm, title_block_mm,
+                               page_count (= pages, every page of the file), rows (printed),
+                               bands [{ first, last }] (row indices [first, last) per page band),
+                               fit_to_pages_tall, fits, cover, cover_pages, report_pages,
+                               chart_pages, gantt_pages, reports, charts (counts), reports_only,
+                               currency, table_width_mm, chart_width_mm, title_block_mm,
                                title_layout, logo (bool), slices [{ t0, t1 }].
+   money(value, currency)      "£12,500" / "€1,250.50" / "-$300": thousands grouped, no decimals
+                               when the value is whole, else two; `currency` is an ISO code (GBP,
+                               EUR, USD, AUD, ... an unknown code prints as a prefix, "SEK 1,200")
+                               or a symbol; default GBP. A non-numeric value prints as given.
+
+   Page order: cover (if any), report pages, chart pages, Gantt pages; one run of page numbers.
 
    ------------------------------------------------------------------------------------------
    Input `doc`
@@ -6060,6 +6068,8 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
        deadline,         // ISO | null
        printed_at,       // ISO
        notes,            // free text, wrapped into the title block
+       currency,         // 'GBP' (default) | 'EUR' | 'USD' | ... or a symbol: how report columns
+                         // flagged `money` and money y-axes print (see money())
        title_layout,     // 'standard' (default) | 'compact' (one-line strip) | 'wide' (two rows:
                          // info cells, then the legend on a row of its own)
        logo              // null | { data: base64 (a data: URL prefix is fine), type: 'jpeg'|'png',
@@ -6117,11 +6127,43 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
        selected_only: false,          // print only rows with `selected`, plus their ancestor
                                       // summary rows (when no row is selected, every row prints);
                                       // links, annotations and period_lines are re-indexed
-       legend_items: []               // [{ label, colour: '#rrggbb' }]: extra swatches after the
+       legend_items: [],              // [{ label, colour: '#rrggbb' }]: extra swatches after the
                                       // standard legend items (chart coloured by code/resource).
                                       // With more than 12 items the legend leaves the info strip
                                       // and wraps across as many rows as it needs.
+       reports_only: false            // true: emit the cover (if any), the report pages and the
+                                      // chart pages but no Gantt pages (ignored when that would
+                                      // leave the file empty)
      },
+     reports: [{                      // the "report pack": table pages after the cover, before the
+                                      // Gantt pages, on the same paper; a report that overflows
+                                      // continues on further pages with its title and column
+                                      // headers repeated
+       kind,                          // free tag ('milestones', 'cost', ...), not printed
+       title, subtitle,               // heading lines above the table
+       columns: [{ key, label, width?, align?: 'left'|'right', num?: true, money?: true }],
+                                      // width in mm; columns without one share what is left in
+                                      // proportion to their label / longest cell. `num` prints a
+                                      // number with thousands separators, `money` with the
+                                      // currency symbol (both right-aligned unless `align` says)
+       rows: [{ ...cells by key, _bold?: true, _indent?: 0..4, _colour?: '#rrggbb' }],
+                                      // _bold: a section heading row (bold, shaded, no zebra);
+                                      // _indent: indents the first cell by 2.6 mm a level;
+                                      // _colour: a small swatch before the first cell
+       notes                          // small text under the table on the report's last page
+     }],
+     charts: [{                       // one vector page per chart, after the reports
+       kind: 'scurve' | 'histogram',  // a tag; series (polylines) and bars (stacked columns per
+                                      // date) are both drawn whenever they are given
+       title, subtitle,
+       series: [{ label, colour, points: [[iso_date, value], ...] }],
+       bars: [{ label, colour, points }],      // stacked per date in array order
+       x_labels: 'months' | 'weeks',  // tick spacing and labels (default months)
+       y_label,                       // axis caption above the y axis
+       y_money: false,                // y tick labels as money (meta.currency)
+       limit: { label, value },       // a horizontal capacity line
+       data_date: iso                 // dashed vertical line
+     }],
      cover: null | {                  // optional briefing page, emitted before the Gantt pages
        title,                         // large heading, e.g. "Construction programme"
        subtitle,                      // line beneath it, e.g. "Two-storey house · Rev B · issued 9 Mar 2026"
@@ -6301,6 +6343,43 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
   }
 
   // ---------------------------------------------------------------------------------------
+  // numbers and money
+  // ---------------------------------------------------------------------------------------
+  const CURRENCY_SYMBOLS = { GBP: '£', EUR: '€', USD: '$', AUD: 'A$', CAD: 'C$', NZD: 'NZ$', HKD: 'HK$', SGD: 'S$',
+    JPY: '¥', CNY: '¥', ZAR: 'R', INR: 'Rs ', CHF: 'CHF ' };
+  /** 'GBP' | '£' | 'SEK' | ... -> the prefix money() prints; an unknown ISO code prints as 'SEK '. */
+  function currencySymbol(c) {
+    const s = c == null ? '' : String(c).trim();
+    if (!s) return CURRENCY_SYMBOLS.GBP;
+    const up = s.toUpperCase();
+    if (CURRENCY_SYMBOLS[up]) return CURRENCY_SYMBOLS[up];
+    return /^[A-Z]{3}$/.test(up) ? up + ' ' : s;
+  }
+  const groupThousands = s => s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  /** A finite number from a number or a numeric string, else null. */
+  function numberOf(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    if (typeof v === 'string' && v.trim() !== '' && isFinite(+v)) return +v;
+    return null;
+  }
+  /** "12,500" or "12,500.50" (two decimals unless the value is whole); non-numbers print as given. */
+  function formatNumber(v) {
+    const x = numberOf(v);
+    if (x === null) return v == null ? '' : String(v);
+    const abs = Math.abs(x), whole = Math.abs(abs - Math.round(abs)) < 0.005;
+    const [i, d] = (whole ? Math.round(abs).toFixed(0) : abs.toFixed(2)).split('.');
+    const body = groupThousands(i) + (d ? '.' + d : '');
+    return (x < 0 && body !== '0' ? '-' : '') + body;
+  }
+  /** "£12,500" / "€1,250.50" / "-$300"; `currency` an ISO code or a symbol (default GBP). */
+  function money(value, currency) {
+    const x = numberOf(value);
+    if (x === null) return value == null ? '' : String(value);
+    const body = formatNumber(Math.abs(x));
+    return (x < 0 && body !== '0' ? '-' : '') + currencySymbol(currency) + body;
+  }
+
+  // ---------------------------------------------------------------------------------------
   // colour
   // ---------------------------------------------------------------------------------------
   const PALETTE_COLOUR = {
@@ -6311,7 +6390,7 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
     weekend: '#eff1f4', sumRow: '#f2f4f7', headFill: '#e7ebf0', gridMaj: '#c3cad3',
     gridMin: '#e4e8ed', rowLine: '#dfe3e9', frame: '#3a4350', text: '#111827', muted: '#5f6b7a',
     annFill: '#fff6cc', annStroke: '#b8930b', annText: '#3d3300', accent: '#1f2a37',
-    msEdge: '#1f2937', white: '#ffffff', progLine: '#8b5cf6'
+    msEdge: '#1f2937', white: '#ffffff', progLine: '#8b5cf6', zebra: '#f7f8fa'
   };
   const PALETTE_MONO = Object.assign({}, PALETTE_COLOUR, {
     crit: '#333333', critProg: '#000000', critEdge: '#000000',
@@ -6321,8 +6400,11 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
     weekend: '#f0f0f0', sumRow: '#f2f2f2', headFill: '#e8e8e8', gridMaj: '#c4c4c4',
     gridMin: '#e5e5e5', rowLine: '#e0e0e0', frame: '#333333', text: '#111111', muted: '#606060',
     annFill: '#f5f5f5', annStroke: '#555555', annText: '#111111', accent: '#222222',
-    msEdge: '#000000', progLine: '#3c3c3c'
+    msEdge: '#000000', progLine: '#3c3c3c', zebra: '#f6f6f6'
   });
+  // default colours for chart series (lines) and bars (stacked columns), cycled
+  const SERIES_COLOUR = ['#1f5fbf', '#d97706', '#059669', '#7c3aed', '#dc2626', '#0891b2'];
+  const BAR_COLOUR = ['#4a78c8', '#9bb8e8', '#d9a441', '#6b8e6b', '#8a7ca8', '#a88a5f'];
   function rgb(hex) {
     const h = hex.replace('#', '');
     return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -6516,8 +6598,9 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
     doc = doc || {};
     const meta = Object.assign({ project_name: '', project_id: '', client: '', revision: '', prepared_by: '',
       title: 'Construction programme', data_date: null, forecast_finish: null, deadline: null,
-      printed_at: null, notes: '', title_layout: 'standard', logo: null }, doc.meta || {});
+      printed_at: null, notes: '', title_layout: 'standard', logo: null, currency: 'GBP' }, doc.meta || {});
     if (!TITLE_LAYOUTS.includes(meta.title_layout)) meta.title_layout = 'standard';
+    if (meta.currency == null || String(meta.currency).trim() === '') meta.currency = 'GBP';
     const logo = normaliseLogo(meta.logo);
     const page = Object.assign({ size: 'A3', orientation: 'landscape', margins_mm: 10 }, doc.page || {});
     if (!PAGE_SIZES[page.size]) page.size = 'A3';
@@ -6525,7 +6608,8 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
     const options = Object.assign({ show_links: true, show_float: true, show_baseline: true,
       show_progress_line: false, legend: true, rows_per_page: null, fit_to_pages_wide: 1, colour: true,
       shade_weekends: true, row_height_mm: GEOMETRY.row_mm, work_hours: [8, 16],
-      fit_to_pages_tall: null, page_break_before_groups: false, selected_only: false, legend_items: [] }, doc.options || {});
+      fit_to_pages_tall: null, page_break_before_groups: false, selected_only: false, legend_items: [],
+      reports_only: false }, doc.options || {});
     options.legend_items = (Array.isArray(options.legend_items) ? options.legend_items : [])
       .map(it => (it && typeof it === 'object' ? { label: it.label == null ? '' : String(it.label).trim(), colour: hexColour(it.colour) || '#888888' } : null))
       .filter(it => it && it.label);
@@ -6583,7 +6667,48 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
     let d0 = r0.ms / DAY, d1 = r1.ms / DAY + (r1.dateOnly ? 1 : 0);
     if (!(d1 > d0)) d1 = d0 + 7;
     return { meta, page, options, rows, columns, links, annotations, period_lines, logo, d0, d1,
-      cover: normaliseCover(doc.cover) };
+      cover: normaliseCover(doc.cover), reports: normaliseReports(doc.reports), charts: normaliseCharts(doc.charts) };
+  }
+
+  const REPORT_INDENT_MAX = 4;
+  /** doc.reports -> [{ kind, title, subtitle, notes, columns, rows: [{ cells, bold, indent, colour }] }]. */
+  function normaliseReports(list) {
+    if (!Array.isArray(list)) return [];
+    const str = v => (v == null ? '' : String(v).trim());
+    return list.filter(r => r && typeof r === 'object').map(r => {
+      const rows = (Array.isArray(r.rows) ? r.rows : []).filter(x => x && typeof x === 'object').map(x => ({
+        cells: x, bold: !!x._bold, indent: Math.max(0, Math.min(REPORT_INDENT_MAX, Math.floor(+x._indent || 0))), colour: hexColour(x._colour) }));
+      let colDefs = Array.isArray(r.columns) ? r.columns.filter(c => c && typeof c === 'object') : [];
+      if (!colDefs.length && rows.length) colDefs = Object.keys(rows[0].cells).filter(k => k[0] !== '_').map(k => ({ key: k, label: k }));
+      const columns = colDefs.map((c, i) => ({
+        key: c.key == null ? String(i) : String(c.key), label: str(c.label), width: +c.width > 0 ? +c.width : 0,
+        align: c.align === 'right' ? 'right' : c.align === 'left' ? 'left' : (c.num || c.money ? 'right' : 'left'),
+        num: !!c.num, money: !!c.money }));
+      return { kind: str(r.kind), title: str(r.title), subtitle: str(r.subtitle), notes: str(r.notes), columns, rows };
+    });
+  }
+
+  /** doc.charts -> [{ kind, title, subtitle, x_labels, y_label, y_money, series, bars, limit, data_date }]
+      with every point as { d: day number (fractional), v } sorted by date. */
+  function normaliseCharts(list) {
+    if (!Array.isArray(list)) return [];
+    const str = v => (v == null ? '' : String(v).trim());
+    const seriesOf = (arr, dflt) => (Array.isArray(arr) ? arr : []).filter(s => s && typeof s === 'object').map((s, i) => ({
+      label: str(s.label), colour: hexColour(s.colour) || dflt[i % dflt.length],
+      points: (Array.isArray(s.points) ? s.points : []).map(p => {
+        const d = Array.isArray(p) ? p[0] : p && typeof p === 'object' ? p.date : null;
+        const v = Array.isArray(p) ? p[1] : p && typeof p === 'object' ? p.value : null;
+        const t = msOf(d), y = numberOf(v);
+        return t === null || y === null ? null : { d: t / DAY, v: y };
+      }).filter(Boolean).sort((a, b) => a.d - b.d) }));
+    return list.filter(c => c && typeof c === 'object').map(c => {
+      const limV = c.limit && typeof c.limit === 'object' ? numberOf(c.limit.value) : numberOf(c.limit);
+      return { kind: c.kind === 'histogram' ? 'histogram' : 'scurve', title: str(c.title), subtitle: str(c.subtitle),
+        x_labels: c.x_labels === 'weeks' ? 'weeks' : 'months', y_label: str(c.y_label), y_money: !!c.y_money,
+        series: seriesOf(c.series, SERIES_COLOUR), bars: seriesOf(c.bars, BAR_COLOUR),
+        limit: limV === null ? null : { label: str(c.limit && typeof c.limit === 'object' ? c.limit.label : '') || 'Limit', value: limV },
+        data_date: parseISO(c.data_date) ? c.data_date : null };
+    });
   }
 
   /** doc.cover -> a cover with every field present and trimmed, or null when there is no cover. */
@@ -6704,9 +6829,93 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
       for (let i = 0; i < wide; i++) slices.push([s0 + i * weeks * 7, s0 + (i + 1) * weeks * 7]);
     }
     const coverPages = n.cover ? 1 : 0;
+    // report pack: table pages (one or more per report) and one page per chart, between the
+    // cover and the Gantt pages, on the same paper; reports_only drops the Gantt pages unless
+    // that would leave the file without a page
+    const reports = n.reports.map(r => planReport(n, r, usableW, m, tsY, tbY - G.gap_mm));
+    const reportPages = reports.reduce((s, r) => s + r.bands.length, 0);
+    const chartPages = n.charts.length;
+    const reportsOnly = !!n.options.reports_only && coverPages + reportPages + chartPages > 0;
+    const ganttPages = reportsOnly ? 0 : pagesTall * wide;
     return { W, H, m, usableW, headerY, tsY, tsH, bodyY, bodyH, tbY, tbH, infoH, titleLayout, legendInline, legendStrip, legendPerLine,
       rowH, rpp, bands, pagesTall, fitTall, fits, wide, slices, cols, tableW, indentCol, chartX, chartW, coverPages,
-      pageCount: pagesTall * wide + coverPages };
+      reports, reportPages, chartPages, reportsOnly, ganttPages,
+      pageCount: coverPages + reportPages + chartPages + ganttPages };
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // report pages: geometry and pagination
+  // ---------------------------------------------------------------------------------------
+  const REPORT = { title_pt: 12, sub_pt: 8, head_mm: 6.5, head_pt: 6.5, row_mm: 5, pt: 7, note_pt: 6.5,
+    indent_mm: 2.6, swatch_mm: 2.4, pad_mm: 1.5, min_col_mm: 10 };
+
+  /** The text a report cell prints (money / number formatting per its column). */
+  function reportCell(n, col, row) {
+    const v = row.cells[col.key];
+    if (v == null) return '';
+    if (col.money) return money(v, n.meta.currency);
+    if (col.num) return formatNumber(v);
+    return String(v);
+  }
+
+  /** Height of the heading block (title, subtitle, rule and gap) above a report or chart; 0 when neither is set. */
+  function headingHeight(title, subtitle) {
+    if (!title && !subtitle) return 0;
+    return (title ? REPORT.title_pt / MM * 1.25 : 0) + (subtitle ? REPORT.sub_pt / MM * 1.4 : 0) + 1.6 + 3.2;
+  }
+
+  /** Column positions and row bands for one report. `top`..`bottom` is the content area; the
+      table header repeats on every band and the notes take rows from the last band only. */
+  function planReport(n, r, usableW, x0, top, bottom) {
+    const R = REPORT;
+    const headY = top + headingHeight(r.title, r.subtitle);
+    // widths: given in mm, else shared out by the widest of the label and the longest cell
+    const widths = r.columns.map(c => c.width);
+    const free = widths.map(w => !(w > 0));
+    const weights = r.columns.map((c, i) => {
+      if (!free[i]) return 0;
+      let w = textWidth(c.label, R.head_pt, true);
+      for (const row of r.rows) {
+        const lead = i === 0 ? row.indent * R.indent_mm + (row.colour ? R.swatch_mm + 1 : 0) : 0;
+        w = Math.max(w, textWidth(reportCell(n, c, row), R.pt, row.bold) + lead);
+      }
+      return Math.max(R.min_col_mm, w + 2 * R.pad_mm + 1);
+    });
+    const nFree = free.filter(Boolean).length;
+    let fixed = widths.reduce((s, w, i) => s + (free[i] ? 0 : w), 0);
+    if (nFree) {
+      const room = R.min_col_mm * nFree;
+      if (fixed > usableW - room && fixed > 0) {              // fixed widths leave the free columns their minimum
+        const k = Math.max(0, usableW - room) / fixed;
+        for (let i = 0; i < widths.length; i++) if (!free[i]) widths[i] *= k;
+        fixed *= k;
+      }
+      const rem = usableW - fixed, wsum = weights.reduce((s, w) => s + w, 0);
+      for (let i = 0; i < widths.length; i++) if (free[i]) widths[i] = rem * weights[i] / wsum;
+    } else if (fixed > usableW) {
+      const k = usableW / fixed;
+      for (let i = 0; i < widths.length; i++) widths[i] *= k;
+    }
+    const cols = [];
+    let x = x0;
+    r.columns.forEach((c, i) => { cols.push(Object.assign({}, c, { x, w: widths[i] })); x += widths[i]; });
+    const tableW = cols.length ? x - x0 : usableW;
+    // pagination: `cap` rows under the header on a page; the notes take rows from the last page
+    const avail = bottom - headY - R.head_mm;
+    const cap = Math.max(1, Math.floor(avail / R.row_mm + 1e-9));
+    const noteLh = R.note_pt / MM * 1.3;
+    const maxNoteLines = r.notes ? Math.max(0, Math.min(8, Math.floor((avail - R.row_mm - 3) / noteLh))) : 0;
+    const noteLines = maxNoteLines ? wrapEnc(encodeText(r.notes), usableW, R.note_pt, false, maxNoteLines) : [];
+    const notesH = noteLines.length ? 3 + noteLines.length * noteLh : 0;
+    const capLast = Math.max(1, Math.floor((avail - notesH) / R.row_mm + 1e-9));
+    const bands = [];
+    let first = 0;
+    for (;;) {
+      if (r.rows.length - first <= capLast) { bands.push({ first, last: r.rows.length }); break; }
+      bands.push({ first, last: first + cap });
+      first += cap;
+    }
+    return { r, cols, tableW, headY, bands, noteLines, noteLh };
   }
 
   /** Public pagination plan. */
@@ -6718,6 +6927,8 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
       rows: n.rows.length, bands: p.bands.map(b => ({ first: b.first, last: b.last })),   // [first, last) per band
       fit_to_pages_tall: p.fitTall > 0 ? p.fitTall : null, fits: p.fits,
       cover: !!n.cover, cover_pages: p.coverPages,
+      report_pages: p.reportPages, chart_pages: p.chartPages, gantt_pages: p.ganttPages,
+      reports: n.reports.length, charts: n.charts.length, reports_only: p.reportsOnly, currency: n.meta.currency,
       table_width_mm: p.tableW, chart_width_mm: p.chartW, title_block_mm: p.tbH, title_layout: p.titleLayout,
       logo: !!n.logo,
       slices: p.slices.map(([a, b]) => ({ t0: iso(a), t1: iso(b) })) };
@@ -7284,8 +7495,10 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
     }
   }
 
-  /** The SHEET cell's second line: which rows / sheet this page shows ('' when there is one page). */
+  /** The SHEET cell's second line: which rows / sheet this page shows ('' when there is one page).
+      `band` is the row band index, null on the cover, or a ready-made note (report / chart pages). */
   function sheetNote(n, P, band, sheet) {
+    if (typeof band === 'string') return band;
     if (band === null) return 'Briefing';
     if (P.wide > 1) return `Rows ${band + 1}/${P.pagesTall}  •  across ${sheet + 1}/${P.wide}`;
     if (P.pagesTall > 1) { const b = P.bands[band]; return `Rows ${b.first + 1}–${b.last} of ${n.rows.length}`; }
@@ -7682,6 +7895,224 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
   }
 
   // ---------------------------------------------------------------------------------------
+  // report pack: table pages and chart pages
+  // ---------------------------------------------------------------------------------------
+  /** Title and subtitle at the top of a report / chart page with a rule beneath; returns the y
+      below them (headingHeight() tall), or `y` unchanged when there is neither. */
+  function drawHeading(cv, x0, W, y, title, subtitle, C) {
+    if (!title && !subtitle) return y;
+    const R = REPORT;
+    const base = (ty, pt, lh) => ty + (lh + 0.72 * pt / MM) / 2;
+    if (title) { const lh = R.title_pt / MM * 1.25; cv.textEnc(fitEnc(encodeText(title), W, R.title_pt, true), x0, base(y, R.title_pt, lh), R.title_pt, true, C.text); y += lh; }
+    if (subtitle) { const lh = R.sub_pt / MM * 1.4; cv.text(subtitle, x0, base(y, R.sub_pt, lh), R.sub_pt, false, C.muted, 'left', W); y += lh; }
+    y += 1.6;
+    cv.line(x0, y, x0 + W, y, C.frame, 0.3);
+    return y + 3.2;
+  }
+
+  /** Band `k` of report plan `rp`: heading, column headers, the band's rows (zebra, section rows
+      shaded and bold, indents and swatches in the first column), the notes on the last band. */
+  function drawReportPage(cv, n, P, rp, k, pageNo, note) {
+    const C = n.options.colour === false ? PALETTE_MONO : PALETTE_COLOUR, mono = n.options.colour === false;
+    const R = REPORT, r = rp.r, x0 = P.m, W = P.usableW, tw = rp.tableW;
+    const { first, last } = rp.bands[k];
+    const parts = rp.bands.length;
+    drawHeader(cv, n, P, C, parts > 1 ? `${r.title || 'Report'}  •  part ${k + 1} of ${parts}` : null);
+    drawHeading(cv, x0, W, P.tsY, r.title ? r.title + (k ? ' (continued)' : '') : '', r.subtitle, C);
+    const tableTop = rp.headY;
+    // column headers (bottom aligned, up to two lines)
+    cv.rect(x0, tableTop, tw, R.head_mm, C.headFill);
+    const hlh = R.head_pt / MM * 1.2;
+    for (const col of rp.cols) {
+      const lines = wrapEnc(encodeText(col.label), Math.max(0, col.w - 2 * R.pad_mm), R.head_pt, true, 2);
+      let ty = tableTop + R.head_mm - 1.6 - (lines.length - 1) * hlh;
+      for (const l of lines) { cv.textEnc(l, col.align === 'right' ? col.x + col.w - R.pad_mm : col.x + R.pad_mm, ty, R.head_pt, true, C.text, col.align); ty += hlh; }
+    }
+    // rows
+    let ry = tableTop + R.head_mm;
+    for (let i = first; i < last; i++) {
+      const row = r.rows[i];
+      if (row.bold) cv.rect(x0, ry, tw, R.row_mm, C.sumRow);
+      else if ((i - first) % 2) cv.rect(x0, ry, tw, R.row_mm, C.zebra);
+      if (i > first) cv.line(x0, ry, x0 + tw, ry, C.rowLine, 0.1);
+      const by = ry + R.row_mm / 2 + 0.718 * R.pt / MM / 2;
+      rp.cols.forEach((col, ci) => {
+        let lead = R.pad_mm;
+        if (ci === 0) {
+          lead += row.indent * R.indent_mm;
+          if (row.colour) {
+            const c = tone(row.colour, mono);
+            cv.rect(col.x + lead, ry + (R.row_mm - R.swatch_mm) / 2, R.swatch_mm, R.swatch_mm, c, shade(c, 0.3), 0.1);
+            lead += R.swatch_mm + 1;
+          }
+        }
+        const avail = col.w - lead - R.pad_mm;
+        if (avail <= 0) return;
+        const enc = fitEnc(encodeText(reportCell(n, col, row)), avail, R.pt, row.bold);
+        cv.textEnc(enc, col.align === 'right' ? col.x + col.w - R.pad_mm : col.x + lead, by, R.pt, row.bold, C.text, col.align);
+      });
+      ry += R.row_mm;
+    }
+    // frame, header rule, column dividers
+    cv.rect(x0, tableTop, tw, ry - tableTop, null, C.frame, 0.3);
+    cv.line(x0, tableTop + R.head_mm, x0 + tw, tableTop + R.head_mm, C.frame, 0.25);
+    rp.cols.forEach((c, i) => { if (i) cv.line(c.x, tableTop, c.x, ry, C.gridMaj, 0.12); });
+    if (k === parts - 1 && rp.noteLines.length) {
+      let ny = ry + 3 + 0.718 * R.note_pt / MM;
+      for (const l of rp.noteLines) { cv.textEnc(l, x0, ny, R.note_pt, false, C.muted); ny += rp.noteLh; }
+    }
+    drawTitleBlock(cv, n, P, pageNo, note, 0, C);
+  }
+
+  const CHART = { lab_pt: 6, legend_pt: 6.5, legend_lh: 4.2, swatch_mm: 7 };
+
+  /** A round step (1, 2, 2.5, 5 x 10^k) that divides `range` into about `target` intervals. */
+  function niceStep(range, target) {
+    if (!(range > 0)) return 1;
+    const raw = range / target, mag = Math.pow(10, Math.floor(Math.log10(raw))), norm = raw / mag;
+    return (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  }
+
+  /** One chart page: heading, legend, axes with a y grid and month (or week) ticks, stacked bars
+      per date, series polylines, the limit line and the data date; everything vector. */
+  function drawChartPage(cv, n, P, ch, pageNo, note) {
+    const C = n.options.colour === false ? PALETTE_MONO : PALETTE_COLOUR, mono = n.options.colour === false;
+    const K = CHART, x0 = P.m, W = P.usableW, bottom = P.tbY - GEOMETRY.gap_mm;
+    drawHeader(cv, n, P, C, null);
+    let y = drawHeading(cv, x0, W, P.tsY, ch.title, ch.subtitle, C);
+    // ---------- legend: one row, wrapping ----------
+    const items = [];
+    for (const s of ch.series) if (s.label) items.push({ kind: 'line', label: s.label, colour: tone(s.colour, mono) });
+    for (const b of ch.bars) if (b.label) items.push({ kind: 'bar', label: b.label, colour: tone(b.colour, mono) });
+    if (ch.limit) items.push({ kind: 'limit', label: ch.limit.label, colour: C.deadline });
+    if (ch.data_date) items.push({ kind: 'dd', label: 'Data date ' + formatDate(ch.data_date), colour: C.dd });
+    if (items.length) {
+      let lx = x0;
+      const lh = K.legend_lh, sw = K.swatch_mm;
+      for (const it of items) {
+        const w = sw + 2 + textWidth(it.label, K.legend_pt, false) + 6;
+        if (lx + w > x0 + W && lx > x0) { lx = x0; y += lh; }
+        const mid = y + lh / 2;
+        if (it.kind === 'line') cv.line(lx, mid, lx + sw, mid, it.colour, 0.45);
+        else if (it.kind === 'bar') cv.rect(lx, mid - 1.3, sw, 2.6, it.colour, shade(it.colour, 0.3), 0.1);
+        else if (it.kind === 'limit') cv.line(lx, mid, lx + sw, mid, it.colour, 0.35, [2.4, 0.8, 0.5, 0.8]);
+        else cv.line(lx + sw / 2, mid - 1.6, lx + sw / 2, mid + 1.6, it.colour, 0.35, [1.6, 1.0]);
+        cv.text(it.label, lx + sw + 2, mid + 0.718 * K.legend_pt / MM / 2, K.legend_pt, false, C.text, 'left', x0 + W - lx - sw - 2);
+        lx += w;
+      }
+      y += lh + 3;
+    }
+    // ---------- data extent ----------
+    let xmin = Infinity, xmax = -Infinity, ymax = 0;
+    for (const s of ch.series) for (const p of s.points) { xmin = Math.min(xmin, p.d); xmax = Math.max(xmax, p.d); ymax = Math.max(ymax, p.v); }
+    const stacks = new Map();                                // day -> [value per bars series]
+    ch.bars.forEach((b, bi) => {
+      for (const p of b.points) {
+        xmin = Math.min(xmin, p.d); xmax = Math.max(xmax, p.d);
+        let st = stacks.get(p.d);
+        if (!st) stacks.set(p.d, st = []);
+        st[bi] = (st[bi] || 0) + p.v;
+      }
+    });
+    for (const st of stacks.values()) ymax = Math.max(ymax, st.reduce((s, v) => s + Math.max(0, v || 0), 0));
+    if (ch.limit) ymax = Math.max(ymax, ch.limit.value);
+    const ddDay = ch.data_date ? msOf(ch.data_date) / DAY : null;
+    if (ddDay !== null) { xmin = Math.min(xmin, ddDay); xmax = Math.max(xmax, ddDay); }
+    if (!isFinite(xmin)) { xmin = n.d0; xmax = n.d1; }
+    // the x range padded to whole months (or weeks), with a tick at each boundary
+    const weeks = ch.x_labels === 'weeks';
+    let a0, a1;
+    if (weeks) { a0 = mondayOf(Math.floor(xmin)); a1 = mondayOf(Math.floor(xmax)) + 7; }
+    else {
+      const [y0, m0] = ymd(Math.floor(xmin)), [y1, m1] = ymd(Math.floor(xmax));
+      a0 = dnOf(y0, m0, 1); a1 = dnOf(y1, m1 + 1, 1);
+    }
+    if (!(a1 > a0)) a1 = a0 + (weeks ? 7 : 28);
+    const ticks = [];
+    if (weeks) for (let d = a0; d <= a1; d += 7) { const [, mm, dd] = ymd(d); ticks.push({ d, labels: [dd + ' ' + MONTHS[mm]] }); }   // every k-th tick when narrow
+    else for (let d = a0; d <= a1;) { const [yy, mm] = ymd(d); ticks.push({ d, labels: [MONTHS_LONG[mm] + ' ' + yy, MONTHS[mm] + ' ' + String(yy % 100).padStart(2, '0'), MONTHS[mm]] }); d = dnOf(yy, mm + 1, 1); }
+    // y scale: 0 .. a round top, about five labelled steps
+    if (!(ymax > 0)) ymax = 1;
+    const step = niceStep(ymax, 5), yTop = Math.ceil(ymax / step - 1e-9) * step;
+    const yLab = v => (ch.y_money ? money(v, n.meta.currency) : formatNumber(Math.round(v * 1000) / 1000));
+    const yLabels = [];
+    for (let i = 0; i * step <= yTop + step * 1e-9; i++) yLabels.push({ v: i * step, text: yLab(i * step) });
+    const yLabW = Math.max(...yLabels.map(l => textWidth(l.text, K.lab_pt, false))) + 3;
+    if (ch.y_label) { cv.text(ch.y_label, x0, y + 2.6, K.lab_pt, true, C.muted, 'left', W); y += 4.5; }
+    // ---------- plot area ----------
+    const px0 = x0 + yLabW, px1 = x0 + W - 2, py0 = y + 1.5, py1 = bottom - 7;
+    const X = d => px0 + (d - a0) / (a1 - a0) * (px1 - px0);
+    const Y = v => py1 - Math.max(0, Math.min(yTop, v)) / yTop * (py1 - py0);
+    if (py1 - py0 > 15 && px1 - px0 > 20) {
+      for (const l of yLabels) {
+        const yy = Y(l.v);
+        if (l.v > 0) cv.line(px0, yy, px1, yy, C.gridMin, 0.1);
+        cv.text(l.text, px0 - 1.5, yy + 0.718 * K.lab_pt / MM / 2, K.lab_pt, false, C.muted, 'right');
+      }
+      ticks.forEach((t, i) => { if (i && i < ticks.length - 1) cv.line(X(t.d), py0, X(t.d), py1, C.gridMin, 0.1); });
+      // x labels: months centred in their cell, weeks under their tick; when a label does not fit
+      // its cell, every k-th cell is labelled with a shorter form
+      const cells = weeks ? ticks.map(t => ({ c: X(t.d), room: ticks.length > 1 ? X(ticks[1].d) - X(ticks[0].d) : px1 - px0, labels: t.labels }))
+        : ticks.slice(0, -1).map((t, i) => ({ c: (X(t.d) + X(ticks[i + 1].d)) / 2, room: X(ticks[i + 1].d) - X(t.d), labels: t.labels }));
+      if (cells.length) {
+        // one label form for every cell: the longest whose widest label fits a cell, else the
+        // shortest form on every k-th cell
+        const forms = cells[0].labels.length;
+        const widest = f => Math.max(...cells.map(c => textWidth(c.labels[Math.min(f, c.labels.length - 1)], K.lab_pt, false)));
+        let form = 0;
+        while (form < forms - 1 && widest(form) > cells[0].room - 1.5) form++;
+        const k = Math.max(1, Math.ceil((widest(form) + 1.5) / cells[0].room));
+        cells.forEach((cell, i) => {
+          if (i % k) return;
+          cv.text(cell.labels[Math.min(form, cell.labels.length - 1)], cell.c, py1 + 3.4, K.lab_pt, false, C.muted, 'center', k * cell.room - 1.5);
+        });
+      }
+      // bars (stacked per date), then series, then the limit line and data date, clipped to the plot
+      cv.save();
+      cv.clip(px0 - 0.1, py0 - 0.1, px1 - px0 + 0.2, py1 - py0 + 0.2);
+      const days = Array.from(stacks.keys()).sort((a, b) => a - b);
+      if (days.length) {
+        let gap = Infinity;
+        for (let i = 1; i < days.length; i++) gap = Math.min(gap, X(days[i]) - X(days[i - 1]));
+        const barW = Math.max(0.4, Math.min(16, isFinite(gap) ? gap * 0.7 : (px1 - px0) * 0.1));
+        for (const d of days) {
+          let cum = 0;
+          stacks.get(d).forEach((v, bi) => {
+            if (!(v > 0)) return;
+            const c = tone(ch.bars[bi].colour, mono);
+            cv.rect(X(d) - barW / 2, Y(cum + v), barW, Y(cum) - Y(cum + v), c, shade(c, 0.3), 0.1);
+            cum += v;
+          });
+        }
+      }
+      for (const s of ch.series) {
+        if (!s.points.length) continue;
+        const c = tone(s.colour, mono);
+        const pts = s.points.map(p => [X(p.d), Y(p.v)]);
+        if (pts.length > 1) cv.polyline(pts, c, 0.45);
+        if (pts.length <= 60) for (const [x, yy] of pts) cv.circle(x, yy, 0.55, c);
+      }
+      if (ch.limit) {
+        const ly = Y(ch.limit.value);
+        cv.line(px0, ly, px1, ly, C.deadline, 0.35, [2.4, 0.8, 0.5, 0.8]);
+        cv.text(ch.limit.label + '  ' + yLab(ch.limit.value), px1 - 1, ly - 1.2, 5.5, true, C.deadline, 'right', px1 - px0 - 2);
+      }
+      if (ddDay !== null && ddDay >= a0 && ddDay <= a1) {
+        const xd = X(ddDay);
+        cv.line(xd, py0, xd, py1, C.dd, 0.35, [1.6, 1.0]);
+        const lab = 'Data date', lw = textWidth(lab, 5.5, true);
+        if (xd + 1 + lw <= px1 - 1) cv.text(lab, xd + 1, py0 + 2.4, 5.5, true, C.dd);
+        else cv.text(lab, xd - 1, py0 + 2.4, 5.5, true, C.dd, 'right');
+      }
+      cv.restore();
+      // axes
+      cv.line(px0, py1, px1, py1, C.frame, 0.3);
+      cv.line(px0, py0, px0, py1, C.frame, 0.3);
+    }
+    drawTitleBlock(cv, n, P, pageNo, note, 0, C);
+  }
+
+  // ---------------------------------------------------------------------------------------
   // PDF file assembly
   // ---------------------------------------------------------------------------------------
   function pdfDate(s) {
@@ -7729,25 +8160,23 @@ Object.assign(global.PlannerEngine, { ask, ASK_EXAMPLES });
     const P = plan(n);
     const pages = [];
     let pageNo = 0;
-    if (n.cover) {
-      pageNo++;
-      const cv = new Canvas(P.H);
-      drawCover(cv, n, P, pageNo);
-      pages.push(cv.toString());
-    }
-    for (let g = 0; g < P.pagesTall; g++) {
-      for (let c = 0; c < P.wide; c++) {
-        pageNo++;
-        const cv = new Canvas(P.H);
-        drawPage(cv, n, P, g, c, pageNo);
-        pages.push(cv.toString());
+    const emit = draw => { pageNo++; const cv = new Canvas(P.H); draw(cv, pageNo); pages.push(cv.toString()); };
+    if (n.cover) emit((cv, no) => drawCover(cv, n, P, no));
+    P.reports.forEach((rp, ri) => rp.bands.forEach((b, k) => {
+      const note = `Report ${ri + 1}/${P.reports.length}` + (rp.bands.length > 1 ? `  •  part ${k + 1}/${rp.bands.length}` : '');
+      emit((cv, no) => drawReportPage(cv, n, P, rp, k, no, note));
+    }));
+    n.charts.forEach((ch, ci) => emit((cv, no) => drawChartPage(cv, n, P, ch, no, `Chart ${ci + 1}/${n.charts.length}`)));
+    if (P.ganttPages) {
+      for (let g = 0; g < P.pagesTall; g++) {
+        for (let c = 0; c < P.wide; c++) emit((cv, no) => drawPage(cv, n, P, g, c, no));
       }
     }
     const title = [n.meta.project_name, n.meta.title].filter(Boolean).join(' - ');
     return assemble(pages, P.W, P.H, { title, subject: n.meta.title || '', author: n.meta.prepared_by || '', date: pdfDate(n.meta.printed_at) }, n.logo);
   }
 
-  root.PlannerPDF = { render, layout, formatDate, encodeText, textWidth, GEOMETRY };
+  root.PlannerPDF = { render, layout, money, formatNumber, formatDate, encodeText, textWidth, GEOMETRY };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 </script>
