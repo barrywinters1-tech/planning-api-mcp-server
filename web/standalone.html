@@ -11643,15 +11643,16 @@ function exportCheck(fmt) {
   const sec = r => `<h3>${esc(r.tool)}</h3><ul class="fid">${r.items.map(i => `<li class="${i.ok ? 'ok' : 'warn'}"><span class="fi" aria-hidden="true">${i.ok ? '✓' : '!'}</span><div><b>${esc(i.text)}</b>${i.detail ? `<div class="hint">${esc(i.detail)}</div>` : ''}</div></li>`).join('')}</ul>`;
   const scopes = exportScopes(); const verSaved = localStorage.getItem('xerVersion') || '19';
   const vers = [['24', 'P6 24 (24.12)'], ['23', 'P6 23'], ['22', 'P6 22'], ['21', 'P6 21'], ['20', 'P6 20'], ['19', 'P6 19 (19.12) · widest compatibility'], ['18', 'P6 18'], ['17', 'P6 17'], ['16', 'P6 16'], ['15', 'P6 15.2'], ['8', 'P6 8.4']];
-  const opts = `<div class="row2" style="margin-top:8px">${fmt !== 'xml' ? `<label>P6 version stamp<select id="xVer">${vers.map(([v, l]) => `<option value="${v}" ${v === verSaved ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : '<span></span>'}<label>Scope<select id="xScope">${scopes.map((s, i) => `<option value="${i}">${esc(s.label)}</option>`).join('')}</select></label></div>${fmt !== 'xml' ? '<p class="hint" style="font-size:12px;margin:4px 0 0">Only the header version differs between P6 releases; P6 refuses a file stamped newer than itself, so match the receiving installation.</p>' : ''}`;
+  const opts = `<div class="row2" style="margin-top:8px">${fmt !== 'xml' ? `<label>P6 version stamp<select id="xVer">${vers.map(([v, l]) => `<option value="${v}" ${v === verSaved ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : '<span></span>'}<label>Scope<select id="xScope">${scopes.map((s, i) => `<option value="${i}">${esc(s.label)}</option>`).join('')}</select></label></div><label style="margin-top:8px">Commercial data<select id="xStrip"><option value="">Keep costs, rates and resources</option><option value="costs">Strip costs and rates (keep who does what)</option><option value="all">Strip costs, rates and resources</option></select></label>${fmt !== 'xml' ? '<p class="hint" style="font-size:12px;margin:4px 0 0">Only the header version differs between P6 releases; P6 refuses a file stamped newer than itself, so match the receiving installation.</p>' : ''}`;
   modal('What the other tool will receive', `<p class="hint" style="margin-top:-4px">${ok ? 'Everything survives the round trip.' : 'Checked by writing the file and reading it back. Items marked ! will not arrive as they are here.'}</p>${reps.map(sec).join('')}${opts}<label class="sw" style="margin-top:6px"><span>Record this as issued revision <b>${esc(nextRev(S.project))}</b>, so later versions can be compared with it</span><input type="checkbox" id="xRev" checked><i></i></label>`,
     async m => {
       const issue = m.querySelector('#xRev').checked, sc = scopes[+m.querySelector('#xScope').value] || scopes[0], vEl = m.querySelector('#xVer'), version = vEl ? vEl.value : null;
       if (version) localStorage.setItem('xerVersion', version);
-      const o = { version: version || undefined }; if (sc.ids) o.project = scopedProject(S.project, sc.ids, sc.label);
+      const o = { version: version || undefined }, strip = m.querySelector('#xStrip').value; if (sc.ids) o.project = scopedProject(S.project, sc.ids, sc.label);
+      if (strip) o.project = stripCommercial(o.project || JSON.parse(JSON.stringify(S.project)), strip);
       await exportAs(fmt, o);
-      if (issue && !sc.ids) await act('/revision', { name: nextRev(S.project), note: 'Issued as ' + (fmt === 'bundle' ? 'XER, MS Project XML and JSON' : fmt.toUpperCase()) + (version ? ', P6 ' + version : '') });
-      else if (sc.ids) toast(`${sc.ids.size} activities exported${issue ? '. A part is not recorded as a revision' : ''}`, { ms: 5000 });
+      if (issue && !sc.ids && !strip) await act('/revision', { name: nextRev(S.project), note: 'Issued as ' + (fmt === 'bundle' ? 'XER, MS Project XML and JSON' : fmt.toUpperCase()) + (version ? ', P6 ' + version : '') });
+      else if (sc.ids || strip) toast(`${sc.ids ? sc.ids.size + ' activities exported' : 'Exported'}${strip ? (strip === 'all' ? ', without costs or resources' : ', without costs and rates') : ''}${issue ? '. A part or stripped copy is not recorded as a revision' : ''}`, { ms: 6000 });
     }, fmt === 'bundle' ? 'Download all three' : 'Download', { wide: true });
 }
 // Export scope: the whole programme, the selected summary (one sub-programme for a subcontractor), or the selected activities.
@@ -11661,6 +11662,13 @@ function exportScopes() {
   if (w) { const ids = new Set(wbsActs(w.id).map(a => a.id)); if (ids.size) out.push({ label: `Summary "${w.name}" only (${ids.size} activities)`, ids }); }
   const sel = selectedActs(); if (sel.length > 1 && sel.length < p.activities.length) out.push({ label: `Selected activities (${sel.length})`, ids: new Set(sel.map(a => a.id)) });
   return out;
+}
+// A copy safe to send to a subcontractor: no rates or costs, and optionally no resources at all (Ten Six's workaround was to zero every price by hand).
+function stripCommercial(c, mode) {
+  c.revisions = []; delete c.changes;
+  if (mode === 'all') { c.resources = []; c.assignments = []; }
+  else { (c.resources || []).forEach(r => { r.rate = 0; }); (c.assignments || []).forEach(x => { x.cost = 0; x.actual_cost = 0; }); }
+  return c;
 }
 function scopedProject(p, ids, label) {
   const c = JSON.parse(JSON.stringify(p)); const keep = a => ids.has(a.id);
