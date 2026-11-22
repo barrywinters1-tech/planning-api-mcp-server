@@ -734,6 +734,8 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 
 .spine .sp-h .linkish { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
 
+.dropline { position: absolute; height: 2px; background: var(--accent); border-radius: var(--r-full); pointer-events: none; z-index: 3; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
+body.dragging-row { user-select: none; cursor: grabbing; }
 .pf { margin-top: var(--space-6); } .pf-wrap { overflow-x: auto; } .pf-wrap svg { min-width: 720px; display: block; } .pf-row:hover rect:first-child { fill: var(--overlay-hover); } .ov-table td.n, .ov-table th.n { text-align: right; font-variant-numeric: tabular-nums; }
 .ms-strip .ms-wrap { overflow-x: auto; } .ms-strip svg { display: block; width: 100%; height: auto; min-width: 640px; }
 .pack { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-1) var(--space-3); }

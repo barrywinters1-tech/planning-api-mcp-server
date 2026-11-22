@@ -740,6 +740,8 @@ body[data-mode=client] .facts .linkish { pointer-events: none; }
 
 .spine .sp-h .linkish { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
 
+.dropline { position: absolute; height: 2px; background: var(--accent); border-radius: var(--r-full); pointer-events: none; z-index: 3; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
+body.dragging-row { user-select: none; cursor: grabbing; }
 .pf { margin-top: var(--space-6); } .pf-wrap { overflow-x: auto; } .pf-wrap svg { min-width: 720px; display: block; } .pf-row:hover rect:first-child { fill: var(--overlay-hover); } .ov-table td.n, .ov-table th.n { text-align: right; font-variant-numeric: tabular-nums; }
 .ms-strip .ms-wrap { overflow-x: auto; } .ms-strip svg { display: block; width: 100%; height: auto; min-width: 640px; }
 .pack { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-1) var(--space-3); }
@@ -9817,13 +9819,44 @@ function whyHtml(a) {
 function wireRows() {
   $$('#rows .row[data-key]').forEach(row => {
     row.querySelectorAll('.c').forEach(cell => {
-      cell.onmousedown = e => { if (e.button !== 0 || S.editing) return; selectRow(row.dataset.key, e, cell.dataset.col); };
+      cell.onmousedown = e => { if (e.button !== 0 || S.editing) return; const had = S.sel.has(row.dataset.key) && S.sel.size > 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey; if (!had) selectRow(row.dataset.key, e, cell.dataset.col); if (byId(row.dataset.key) && !e.shiftKey && !e.ctrlKey && !e.metaKey) startRowDrag(e, row, cell, had); };
       cell.ondblclick = () => { if (!byId(row.dataset.key) && cell.dataset.col !== 'name') toggleCollapse(row.dataset.key); else startEdit(row.dataset.key, cell.dataset.col); };
     });
     row.oncontextmenu = e => { e.preventDefault(); if (!S.sel.has(row.dataset.key)) selectRow(row.dataset.key, e); contextMenu(e.clientX, e.clientY); };
     const tw = row.querySelector('[data-tw]'); if (tw) tw.onmousedown = e => { e.stopPropagation(); toggleCollapse(tw.dataset.tw); };
   });
 }
+// Drag rows to another place or into another summary (Asta: drag tasks between WBS bands). A drop line shows where they will land.
+function startRowDrag(e, row, cell, keepSel) {
+  if (readOnly()) return; const rowsEl = $('#rows'), y0 = e.clientY; let line = null, target = null;
+  const mv = ev => {
+    if (!line) { if (Math.abs(ev.clientY - y0) < 8) return; if (S.view.group || S.view.sort) { up(ev, true); return toast('Drag to reorder works in the WBS view with Sequence sort'); }
+      line = document.createElement('div'); line.className = 'dropline'; rowsEl.appendChild(line); document.body.classList.add('dragging-row'); }
+    const r = rowsEl.getBoundingClientRect(); const i = Math.max(0, Math.min(S.rowsCache.length - 1, Math.floor((ev.clientY - r.top) / RH))); const after = (ev.clientY - r.top) - i * RH > RH / 2;
+    const tr = S.rowsCache[i]; target = { key: rowKey(tr), after: tr.wbs ? true : after, into: !!tr.wbs };
+    line.style.top = ((target.after ? i + 1 : i) * RH - 1) + 'px'; line.style.left = (tr.depth + (tr.wbs ? 1 : 0)) * 14 + 'px'; line.style.width = (paneWidth() - 8) + 'px';
+  };
+  const up = (ev, cancel) => {
+    document.removeEventListener('pointermove', mv); document.removeEventListener('pointerup', up); document.body.classList.remove('dragging-row'); if (line) line.remove();
+    if (!line || cancel === true) { if (keepSel && !line) selectRow(row.dataset.key, ev, cell.dataset.col); return; }
+    if (target && !S.sel.has(target.key)) moveRowsTo(target);
+  };
+  document.addEventListener('pointermove', mv); document.addEventListener('pointerup', up);
+}
+function moveRowsTo(t) {
+  const moving = selectedRowsInOrder().filter(r => r.act).map(r => r.act); if (!moving.length) return;
+  mutate(p => {
+    const ids = new Set(moving.map(a => a.id)); const tr = S.rowsCache.find(r => rowKey(r) === t.key); if (!tr) return false;
+    const wbs = tr.wbs ? tr.wbs.id : tr.act ? tr.act.wbs_id : null;
+    p.activities = p.activities.filter(a => !ids.has(a.id));
+    let idx;
+    if (tr.act) idx = p.activities.indexOf(tr.act) + (t.after ? 1 : 0);
+    else { const first = p.activities.findIndex(a => a.wbs_id === wbs); idx = first >= 0 ? first : p.activities.length; }   // dropped on a summary: its first row
+    moving.forEach(a => { a.wbs_id = wbs; });
+    p.activities.splice(idx, 0, ...moving);
+  }, `${moving.length} moved${tr_name(t.key)}`);
+}
+function tr_name(key) { const w = wbsById(key), a = byId(key); const s = w ? w : a && a.wbs_id ? wbsById(a.wbs_id) : null; return s ? ` to ${s.name}` : ''; }
 function toggleCollapse(key) { if (S.collapsed.has(key)) S.collapsed.delete(key); else S.collapsed.add(key); render(); }
 function selectRow(key, e, col) {
   const keys = S.rowsCache.map(rowKey);
@@ -10878,7 +10911,7 @@ function helpSheet(stage) {
 }
 function shortcutsSheet() {
   const rows = [['Plan', [['Enter / F2', 'Edit the cell'], ['Insert', 'Insert activity below'], ['Shift+Insert', 'Insert activity above'], ['Delete', 'Delete selected'], ['Tab / Shift+Tab', 'Indent / outdent'], ['Alt+↑ / Alt+↓', 'Move row up / down'], ['Space', 'Collapse or expand a summary'], ['Ctrl+L / Ctrl+U', 'Link / unlink selected'], ['Ctrl+C / Ctrl+V', 'Copy / paste activities'], ['Ctrl+A', 'Select all'], ['+ / −', 'Zoom the timescale'], ['I', 'Inspector'], ['Esc', 'Clear selection, stop tracing']]],
-    ['Chart', [['Drag on empty chart space', 'Draw a new activity across those days'], ['Drag a bar', 'Move it (successors follow)'], ['Drag a bar end', 'Change start or finish'], ['Drag a link dot onto a bar', 'Link (left half SS/FS, right half FF/SF)'], ['Drag the progress point', 'Record % complete'], ['Double-click a bar', 'Inspector'], ['Right-click', 'Menu, notes on the chart'], ['Hover', 'Why it starts, what it holds up']]],
+    ['Chart', [['Drag on empty chart space', 'Draw a new activity across those days'], ['Drag a row up or down', 'Move it, or the selected rows, into another place or summary'], ['Drag a bar', 'Move it (successors follow)'], ['Drag a bar end', 'Change start or finish'], ['Drag a link dot onto a bar', 'Link (left half SS/FS, right half FF/SF)'], ['Drag the progress point', 'Record % complete'], ['Double-click a bar', 'Inspector'], ['Right-click', 'Menu, notes on the chart'], ['Hover', 'Why it starts, what it holds up']]],
     ['Everywhere', [['Ctrl+K / ⌘K', 'Ask or type a command'], ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['?', 'This sheet']]]];
   modal('Keyboard and mouse', rows.map(([h, items]) => `<div class="insp-sec">${h}</div><table class="ov-table"><tbody>${items.map(([k, d]) => `<tr><td style="width:46%"><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</tbody></table>`).join(''), null);
 }
