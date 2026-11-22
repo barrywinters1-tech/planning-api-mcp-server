@@ -132,3 +132,64 @@ T1 through T6 are about twelve working days and would close, in the gap diff's t
 | Timesheets, Agile task boards, EPS/OBS enterprise structure, enterprise resource pools (07 H5; 05 signatures; 04 signature 3) | Enterprise and PPM features; the evidence that wants them (Project Online refugees) wants a hosted multi-project service, which is T12 at the earliest. |
 | Windows-only mechanics: OLE annotations, Powerdraw border editor, printer-driver output, macro recorder (08 n/a rows) | Replaced by the logo and layout picker, native PDF, and the REST API, MCP and Python package. |
 | Price, licensing clarity, support response, roadmap honesty (06 B, K; 07 B, J) | Not product features. They are the positioning: one price, one product name, no install, nothing paywalled, and this document as the public backlog. |
+
+## Status at 22 November 2026
+
+Built on branch `claude/ai-project-planning-ux-c4sxcq` and published to the test link. 43 of 52 items done, 6 part done or in progress, 3 not built.
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Print page control | Done |
+| 2 | Print preview rendered live in the sheet | Done |
+| 3 | Report pack | Done |
+| 4 | Weekly lookahead as one view | Done |
+| 5 | In-app guide | Done |
+| 6 | Company logo and a choice of title-block layouts, saved with the proj… | Done (logo and layout remembered per device, not yet in the project file) |
+| 7 | Change log with reasons | Done |
+| 8 | Lookahead CSV round trip for subcontractors | Done |
+| 9 | Levelling that explains itself | In progress (engine) |
+| 10 | Link display | Done |
+| 11 | Legend for colour-by code or resource on the PDF, and progress-period… | Done |
+| 12 | Filter builder that writes the existing grammar, and named filters re… | Done |
+| 13 | Code columns in the table with a select editor, in CSV and PDF | Done |
+| 14 | As-built lock | Done |
+| 15 | Export target version and a live fidelity badge | Done (XER version; MSPDI has one target) |
+| 16 | Paste from Excel into the table | Done |
+| 17 | Move blocks | Done |
+| 18 | Progress override as an option beside retained logic for out-of-seque… | Done |
+| 19 | Milestone timeline strip for clients | Done (strip and picture; no draggable window, no PDF page) |
+| 20 | Dated notes and photos on an activity, from the site update | Done (notes and photos on chart notes; site comments go to activity notes) |
+| 21 | Progress the selection as planned to the data date | Done |
+| 22 | Start and duration variance columns beside finish variance; planned %… | Done |
+| 23 | Per-activity deadlines (key dates) with a bar marker, a "past deadlin… | Done |
+| 24 | Baseline manager | Done |
+| 25 | Multiple float paths | Done |
+| 26 | Draw a task on an empty row by press and drag | Done |
+| 27 | Link Tasks mode | Done |
+| 28 | Insert above, bridged into the chain like insert below | Done |
+| 29 | Multi-edit panel | Done |
+| 30 | CIOB Planning Protocol 2021 check set and editable thresholds beside … | In progress (engine) |
+| 31 | Sub-programmes and multi-project | Part: portfolio timeline and shared-trade table. Sub-programmes and cross-programme links not built |
+| 32 | Scoped export for a subcontractor | Done |
+| 33 | Custom fields in MS Project XML (ExtendedAttribute) and P6 XML both w… | Done for MS Project XML; P6 XML reads only |
+| 34 | Annotations | Done (callout, box, arrow, printed; placed by dialog, not dragged) |
+| 35 | Snapping unit | Done (day, week) |
+| 36 | Outline | Done |
+| 37 | Column header menu (insert column here, hide, sort), drag to reorder,… | Done |
+| 38 | Early/late envelope ("banana") and cumulative toggle on the resource … | Done for the S-curve and report pack; no cumulative toggle on the bands |
+| 39 | Save as template and New from template | Done |
+| 40 | Renumber activity IDs by current sort or logic order with prefix and … | Done |
+| 41 | Progress columns | Done |
+| 42 | Copy picture | Done |
+| 43 | Fragnets (task pools) | Done |
+| 44 | Several tasks on one bar line, with implied FS between them and a +/-… | Not built |
+| 45 | Start on new day and whole-hour display | Start on new day done; whole-hour display not built |
+| 46 | Buffer (contingency) tasks whose duration flexes to a deadline, with … | Not built |
+| 47 | Near-critical threshold and definition of critical | Done |
+| 48 | Elapsed duration column and elapsed days between two activities | In progress (engine) |
+| 49 | Currency symbol and format setting used by the cost band, columns and… | Done |
+| 50 | Effort-driven activities and quantity × rate durations | Not built |
+| 51 | Multi-level group and sort, named and saved | Group by two levels done; multi-level sort not built |
+| 52 | Date range shading (shutdowns, holidays, phases) stored with the proj… | Done |
+
+Not built, and why: several tasks on one bar line (44) changes how rows map to activities across the grid, exports and the PDF; buffers that flex to a deadline (46) and effort-driven durations (50) change the scheduling engine and need the same parity work as the other engine options; sub-programmes (31) need a multi-programme file format. Each is a tranche of its own.
