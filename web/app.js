@@ -1884,6 +1884,174 @@ function shrinkImage(file, max) {
   return new Promise((res, rej) => { const url = URL.createObjectURL(file); const im = new Image(); im.onload = () => { const k = Math.min(1, max / Math.max(im.width, im.height)); const c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', 0.8)); }; im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('bad image')); }; im.src = url; });
 }
 
+// ---------- copy picture: the chart as a PNG (MS Project "Copy Picture"), and the table as a static HTML page ----------
+function cssVarsResolved(svgText) { const cs = getComputedStyle(document.documentElement); return svgText.replace(/var\((--[\w-]+)(?:,\s*([^)]+))?\)/g, (m, name, fb) => (cs.getPropertyValue(name) || '').trim() || (fb || '#888')); }
+// scope 'all' = the whole programme as shown; 'screen' = the part of the chart on screen now
+function chartSvg(scope) {
+  const svg = $('svg.chart'), sheet = $('#sheet'); if (!svg) return null;
+  const W = +svg.getAttribute('width'), H = S.rowsCache.length * RH, NW = 280;
+  const crop = scope === 'screen' ? { x: sheet.scrollLeft, y: Math.floor(sheet.scrollTop / RH) * RH, w: Math.max(200, sheet.clientWidth - paneWidth()), h: Math.min(H, Math.ceil((sheet.clientHeight - HDR) / RH) * RH) } : { x: 0, y: 0, w: W, h: H };
+  crop.w = Math.min(crop.w, W - crop.x); crop.h = Math.max(RH, Math.min(crop.h, H - crop.y));
+  const ts = timescale(S.t0, S.t1, W).replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+  const i0 = Math.floor(crop.y / RH), i1 = Math.min(S.rowsCache.length, Math.ceil((crop.y + crop.h) / RH));
+  let names = ''; for (let i = i0; i < i1; i++) { const r = S.rowsCache[i], y = HDR + (i - i0) * RH, head = !r.act; const label = r.act ? r.act.name : r.wbs ? r.wbs.name : r.group; const t = label.length > 40 ? label.slice(0, 39) + '…' : label;
+    names += `${head ? `<rect x="0" y="${y}" width="${NW}" height="${RH}" fill="var(--surface-2)"/>` : ''}<text x="${10 + r.depth * 12}" y="${y + 19}" font-size="12" font-weight="${head ? 650 : 400}" fill="var(--ink)">${esc(t)}</text><line x1="0" x2="${NW}" y1="${y + RH - .5}" y2="${y + RH - .5}" stroke="var(--line-2)"/>`; }
+  const TW = NW + crop.w, TH = HDR + crop.h;
+  // a picture carries no affordances: link dots, drag handles and the blank draw row are left out; text takes the sheet's own size
+  const clone = svg.cloneNode(true); clone.querySelectorAll('.linkdot, .handle, .proghandle, .rowbg.blank, .ghost').forEach(n => n.remove()); clone.querySelectorAll('.rowbg').forEach(n => { if (n.getAttribute('fill') === 'var(--sel)') n.setAttribute('fill', 'transparent'); });
+  clone.querySelectorAll('.bar[stroke]').forEach(n => n.setAttribute('stroke', 'none'));
+  const fs = parseFloat(getComputedStyle(svg).fontSize) || 12; const inner = clone.innerHTML;
+  const out = `<svg xmlns="http://www.w3.org/2000/svg" width="${TW}" height="${TH}" viewBox="0 0 ${TW} ${TH}" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"><rect width="${TW}" height="${TH}" fill="var(--surface)"/>
+    <rect x="0" y="0" width="${NW}" height="${HDR}" fill="var(--surface-2)"/><text x="10" y="36" font-size="12" font-weight="650" fill="var(--ink)">${esc(S.project.name)}</text><text x="10" y="52" font-size="10.5" fill="var(--ink-3)">Data date ${fmtD(S.project.data_date || S.project.start)}</text>${names}
+    <svg x="${NW}" y="0" width="${crop.w}" height="${HDR}" viewBox="${crop.x} 0 ${crop.w} ${HDR}">${ts}</svg>
+    <svg x="${NW}" y="${HDR}" width="${crop.w}" height="${crop.h}" viewBox="${crop.x} ${crop.y} ${crop.w} ${crop.h}" font-size="${fs}">${inner}</svg>
+    <line x1="${NW}" x2="${NW}" y1="0" y2="${TH}" stroke="var(--line)"/></svg>`;
+  return { text: cssVarsResolved(out), w: TW, h: TH };
+}
+function svgToPng(svg, scale) {
+  return new Promise((res, rej) => {
+    const k = Math.min(scale || 2, 12000 / svg.w, 12000 / svg.h); const url = URL.createObjectURL(new Blob([svg.text], { type: 'image/svg+xml;charset=utf-8' })); const im = new Image();
+    im.onload = () => { const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(svg.w * k)); c.height = Math.max(1, Math.round(svg.h * k)); const g = c.getContext('2d'); g.drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(url); c.toBlob(b => b ? res(b) : rej(new Error('Could not make the picture')), 'image/png'); };
+    im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Could not draw the chart')); }; im.src = url;
+  });
+}
+async function pictureOut(svg, name, how) {
+  let blob; try { blob = await svgToPng(svg, 2); } catch (e) { return toast(e.message); }
+  if (how === 'copy') { try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); return toast('Picture copied: paste it into an email, Word or PowerPoint'); } catch (e) { toast('This browser would not take a picture on the clipboard; saving a file instead'); } }
+  if (await saveBlob(name, blob)) toast(`${name} saved`);
+}
+function pictureDialog() {
+  if (!S.project) return; if (S.screen !== 'plan') go('plan'); if (!S.rowsCache.length) render();
+  const { m } = modal('Copy picture', `<p class="hint" style="margin-top:-4px">The chart as it looks now, with the activity names, as a PNG at twice screen resolution.</p>
+    <label>What<select name="sc"><option value="screen">What is on screen</option><option value="all">The whole programme as shown (${S.rowsCache.length} rows)</option></select></label>
+    <div class="bar-row" style="margin-top:12px"><button type="button" class="btn primary" id="picCopy">Copy to clipboard</button><button type="button" class="btn" id="picSave">Save PNG</button><button type="button" class="btn" id="picHtml">Table as HTML page</button></div>`, null, '');
+  const run = how => { const svg = chartSvg(m.querySelector('[name=sc]').value); if (!svg) return; modalClose(); pictureOut(svg, `${S.project.id}-chart.png`, how); };
+  m.querySelector('#picCopy').onclick = () => run('copy'); m.querySelector('#picSave').onclick = () => run('save'); m.querySelector('#picHtml').onclick = () => { modalClose(); exportHtmlTable(); };
+}
+async function exportHtmlTable() {
+  const p = S.project; if (!p) return; if (!S.rowsCache.length) render();
+  const cols = S.cols.filter(k => ALL_COLS[k]);
+  const rows = S.rowsCache.map(r => { if (r.act) return `<tr${r.act.critical ? ' class="crit"' : ''}>${cols.map((k, i) => `<td${ALL_COLS[k].num ? ' class="n"' : ''}${i === (cols.indexOf('name') < 0 ? 0 : cols.indexOf('name')) ? ` style="padding-left:${8 + r.depth * 14}px"` : ''}>${esc(String(ALL_COLS[k].get(r.act) ?? ''))}</td>`).join('')}</tr>`; return `<tr class="sum">${cols.map(k => `<td>${k === 'name' ? `<span style="padding-left:${r.depth * 14}px">${esc(r.wbs ? r.wbs.name : r.group)}</span>` : k === 'start' ? esc(fmtD(r.start)) : k === 'finish' ? esc(fmtD(r.finish)) : ''}</td>`).join('')}</tr>`; }).join('\n');
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(p.name)}</title><style>body{font:14px/1.45 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;margin:24px;color:#1a1d21}h1{font-size:20px;margin:0 0 4px}p{color:#5b6470;margin:0 0 16px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #e3e6ea;padding:5px 8px;text-align:left;white-space:nowrap}th{font-size:12px;color:#5b6470;position:sticky;top:0;background:#fff}td.n{text-align:right;font-variant-numeric:tabular-nums}tr.sum td{font-weight:650;background:#f4f6f8}tr.crit td:first-child{box-shadow:inset 3px 0 #c0392b}.wrap{overflow-x:auto}</style></head><body><h1>${esc(p.name)}</h1><p>${esc(p.id)} · data date ${esc(fmtD(p.data_date || p.start))} · finish ${esc(fmtD(p.finish))} · ${S.rowsCache.filter(r => r.act).length} activities as shown. A red edge marks the critical path.</p><div class="wrap"><table><thead><tr>${cols.map(k => `<th>${esc(ALL_COLS[k].t)}</th>`).join('')}</tr></thead><tbody>\n${rows}\n</tbody></table></div></body></html>`;
+  if (await saveBlob(`${p.id}-programme.html`, new Blob([html], { type: 'text/html;charset=utf-8' }))) toast('HTML page saved: opens in any browser, no software needed');
+}
+// ---------- milestone strip: one line of key dates a client can read (Asta Project Timeline, MS Timeline) ----------
+function milestoneStripSvg(p, W) {
+  const cal = p.calendars[p.default_calendar_id] || { working_days: [0, 1, 2, 3, 4], exceptions: {} };
+  const list = p.activities.filter(a => a.type === 'start_milestone' || a.type === 'finish_milestone').map(a => ({ a, f: a.actual_finish || a.actual_start || (a.type === 'start_milestone' ? a.early_start : a.early_finish) })).filter(x => x.f).sort((x, y) => x.f.localeCompare(y.f));
+  if (list.length < 2) return null;
+  const last = list[list.length - 1].a, t0 = ms(list[0].f), t1 = Math.max(ms(list[list.length - 1].f), p.must_finish_by ? ms(p.must_finish_by) : 0), pad = 70, H = 150, mid = 78;
+  const X = t => pad + (t - t0) / Math.max(1, t1 - t0) * (W - 2 * pad);
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"><rect width="${W}" height="${H}" fill="var(--surface)"/><line x1="${pad}" x2="${W - pad}" y1="${mid}" y2="${mid}" stroke="var(--line)" stroke-width="3" stroke-linecap="round"/>`;
+  const dd = ms(p.data_date || p.start); if (dd >= t0 && dd <= t1) { s += `<line x1="${pad}" x2="${X(dd)}" y1="${mid}" y2="${mid}" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/><line x1="${X(dd)}" x2="${X(dd)}" y1="${mid - 12}" y2="${mid + 12}" stroke="var(--dd)" stroke-width="1.5" stroke-dasharray="3 3"/>`; }
+  for (let d = new Date(new Date(t0).getFullYear(), new Date(t0).getMonth() + 1, 1); d.getTime() < t1; d.setMonth(d.getMonth() + 1)) s += `<line x1="${X(d.getTime())}" x2="${X(d.getTime())}" y1="${mid - 4}" y2="${mid + 4}" stroke="var(--ink-3)"/>`;
+  let lastX = [-1e9, -1e9];   // labels alternate above and below, and step further out when two would touch
+  list.forEach(({ a, f }, i) => {
+    const x = X(ms(f)), up = i % 2 === 0, side = up ? 0 : 1; const ref = a.baseline_finish || (a === last && p.must_finish_by) || null; const done = a.status === 'complete';
+    const v = ref ? workingDaysBetween(cal, new Date(ref), new Date(f)) : null; const col = done ? 'var(--ink-3)' : v > 0 ? 'var(--crit)' : 'var(--ok)';
+    const far = x - lastX[side] < 118; lastX[side] = far ? lastX[side] : x; const ly = up ? (far ? 16 : 40) : (far ? H - 22 : H - 46);
+    const name = a.name.length > 22 ? a.name.slice(0, 21) + '…' : a.name; const anchor = x < pad + 40 ? 'start' : x > W - pad - 40 ? 'end' : 'middle';
+    s += `<g class="ms-pt" data-goto="${esc(a.id)}" style="cursor:pointer"><line x1="${x}" x2="${x}" y1="${up ? ly + 20 : mid + 8}" y2="${up ? mid - 8 : ly - 12}" stroke="var(--line)"/><path d="M${x} ${mid - 7}l7 7-7 7-7-7z" fill="${col}" stroke="var(--surface)" stroke-width="1.5"/><text x="${x}" y="${ly}" text-anchor="${anchor}" font-size="11.5" font-weight="650" fill="var(--ink)">${esc(name)}</text><text x="${x}" y="${ly + 14}" text-anchor="${anchor}" font-size="10.5" fill="${v > 0 && !done ? 'var(--crit)' : 'var(--ink-3)'}">${esc(fmtD(f))}${done ? ' · achieved' : v == null ? '' : v > 0 ? ` · ${v}d late` : v < 0 ? ` · ${-v}d early` : ' · on time'}</text><title>${esc(a.name)}: ${esc(fmtD(f))}</title></g>`;
+  });
+  return { text: s + '</svg>', w: W, h: H };
+}
+function milestoneStripPanel(p) {
+  const svg = milestoneStripSvg(p, 960); if (!svg) return '';
+  return `<section class="panel ms-strip" aria-labelledby="hStrip"><div class="panel-head"><h2 id="hStrip">Key dates</h2><span class="hint">green on time, red late, grey achieved</span><span class="spacer"></span><button type="button" class="btn" id="msCopy">Copy picture</button></div><div class="ms-wrap">${svg.text}</div></section>`;
+}
+// ---------- templates: a programme without its history, to start the next job from ----------
+const tplList = () => { try { return JSON.parse(localStorage.getItem('plannerTemplates') || '[]'); } catch { return []; } };
+function templateOf(p) {
+  const c = JSON.parse(JSON.stringify(p)); ['revisions', 'changes', 'progress_periods', 'accepted_baseline', 'levelling_report'].forEach(k => delete c[k]); c.baselines = []; c.levelled = false;
+  c.annotations = (c.annotations || []).map(n => { const x = { ...n }; delete x.photo; return x; });
+  c.activities.forEach(a => { a.status = 'not_started'; a.actual_start = a.actual_finish = null; a.remaining_hours = null; a.percent_complete = 0; a.baseline_start = a.baseline_finish = null; a.suspend_date = a.resume_date = null; a.level_delay_hours = 0; });
+  c.assignments.forEach(x => { x.actual_cost = 0; }); c.data_date = c.start;
+  return c;
+}
+function saveTemplateDialog() {
+  const p = S.project; if (!p) return;
+  modal('Save as template', `<p class="hint" style="margin-top:-4px">Keeps the activities, logic, calendars, resources, codes, fields and views. Drops progress, baselines, periods, revisions and the change log.</p><label>Template name<input name="n" value="${esc(p.name)}"></label><label class="sw" style="margin-top:8px"><span>Also save a file to share with colleagues</span><input type="checkbox" name="f"><i></i></label>`,
+    async m => { const name = m.querySelector('[name=n]').value.trim() || p.name; const t = templateOf(p); t.name = name;
+      const list = tplList().filter(x => x.name !== name).concat([{ name, saved_at: iso(new Date()), activities: t.activities.length, project: t }]);
+      try { localStorage.setItem('plannerTemplates', JSON.stringify(list)); } catch (e) { toast('This browser has no room to keep the template; saving a file instead'); await saveBlob(`${name.replace(/[^\w-]+/g, '-')}.template.json`, new Blob([JSON.stringify(t)], { type: 'application/json' })); return; }
+      if (m.querySelector('[name=f]').checked) await saveBlob(`${name.replace(/[^\w-]+/g, '-')}.template.json`, new Blob([JSON.stringify(t)], { type: 'application/json' }));
+      toast(`Template "${name}" saved: New from template starts a programme from it`); }, 'Save template');
+}
+function newFromTemplateDialog() {
+  const list = tplList(); const today = iso(new Date()).slice(0, 10);
+  const { m } = modal('New from template', `${list.length ? `<label>Template<select name="t">${list.map((x, i) => `<option value="${i}">${esc(x.name)} · ${x.activities} activities</option>`).join('')}</select></label>` : '<p class="hint">No templates on this device yet. Open a programme and use More → Save as template, or pick a template file below.</p>'}
+    <label>or a template file<input type="file" name="f" accept=".json,application/json"></label>
+    <div class="row2"><label>Programme name<input name="n" placeholder="e.g. Plot 14, Mill Lane"></label><label>Start date<input type="date" name="d" value="${today}"></label></div>
+    ${list.length ? '<div class="bar-row"><button type="button" class="chipbtn" id="tplDel">Delete the selected template</button></div>' : ''}`,
+    async mm => {
+      let t = null; const f = mm.querySelector('[name=f]').files[0];
+      if (f) { try { t = JSON.parse(await f.text()); } catch { toast('That file is not a template'); return false; } } else if (list.length) t = list[+mm.querySelector('[name=t]').value].project;
+      if (!t || !Array.isArray(t.activities)) { toast('Pick a template first'); return false; }
+      t = templateOf(t); const name = mm.querySelector('[name=n]').value.trim() || t.name, start = mm.querySelector('[name=d]').value || today;
+      const delta = Math.round((new Date(start + 'T00:00:00') - new Date(String(t.start).slice(0, 10) + 'T00:00:00')) / DAY);
+      const shift = v => { if (!v) return v; const d = new Date(v); d.setDate(d.getDate() + delta); return iso(d); };
+      t.activities.forEach(a => { a.constraint_date = shift(a.constraint_date); if (a.deadline) a.deadline = shift(a.deadline); });
+      (t.annotations || []).forEach(n => { n.date = shift(n.date); }); (t.shading || []).forEach(b => { b.from = shift(b.from + 'T00:00:00').slice(0, 10); b.to = shift(b.to + 'T00:00:00').slice(0, 10); });
+      t.must_finish_by = shift(t.must_finish_by); t.start = start + 'T08:00:00'; t.data_date = t.start; t.name = name; t.id = (name.replace(/[^A-Za-z0-9]+/g, '-').slice(0, 12).toUpperCase() || 'PROJ');
+      try { const v = await importFile(new File([JSON.stringify(t)], t.id + '.json', { type: 'application/json' })); await loadList(); await openProject(v.project.id); toast(`${name} started from the template: ${t.activities.length} activities from ${fmtD(start)}`, { ms: 5000 }); } catch (e) { toast((e && (e.detail || e.message)) || 'Could not create the programme', { ms: 6000 }); return false; }
+    }, 'Create programme');
+  const del = m.querySelector('#tplDel'); if (del) del.onclick = () => { const i = +m.querySelector('[name=t]').value; const l = tplList(); l.splice(i, 1); localStorage.setItem('plannerTemplates', JSON.stringify(l)); modalClose(); newFromTemplateDialog(); };
+}
+// ---------- fragnets: a named block of activities and their logic, inserted as many times as needed (per plot, per floor) ----------
+const fragList = () => { try { return JSON.parse(localStorage.getItem('plannerFragnets') || '[]'); } catch { return []; } };
+const fragSave = l => { try { localStorage.setItem('plannerFragnets', JSON.stringify(l)); return true; } catch { toast('This browser has no room to keep fragnets'); return false; } };
+function fragnetOf(acts, name) {
+  const p = S.project, ids = new Set(acts.map(a => a.id)); const resName = id => (p.resources.find(r => r.id === id) || { name: id }).name;
+  return { name, saved_at: iso(new Date()), acts: acts.map(a => ({ id: a.id, name: a.name, type: a.type, duration_days: daysOf(a, a.duration_hours), codes: { ...(a.codes || {}) }, fields: a.fields ? { ...a.fields } : undefined, notes: a.notes || '', priority: a.priority, calendar: (p.calendars[a.calendar_id] || {}).name || null, res: p.assignments.filter(x => x.activity_id === a.id).map(x => resName(x.resource_id)).join(', ') })),
+    links: p.relationships.filter(r => ids.has(r.predecessor_id) && ids.has(r.successor_id)).map(r => ({ p: r.predecessor_id, s: r.successor_id, type: r.type, lag_days: r.lag_hours / hpd(byId(r.predecessor_id)), lag_calendar: r.lag_calendar })) };
+}
+// Inserts `copies` of a fragnet below the active row. Each copy gets new IDs; the first activities of the first copy can link from `from`;
+// with `chain` each copy's first activities follow the previous copy's last ones, otherwise the copies run in parallel.
+function insertFragnet(fr, o) {
+  o = o || {}; const copies = Math.max(1, Math.min(200, o.copies || 1)); let made = 0;
+  mutate(p => {
+    const r = S.rowsCache.find(r => rowKey(r) === S.active); let idx = r && r.act ? p.activities.indexOf(r.act) + 1 : p.activities.length;
+    const wbs = r ? (r.act ? r.act.wbs_id : r.wbs ? r.wbs.id : null) : ((p.wbs[0] && p.wbs[0].id) || null);
+    const calByName = n => { const c = Object.values(p.calendars).find(c => c.name === n); return c ? c.id : null; };
+    const heads = fr.acts.filter(a => !fr.links.some(l => l.s === a.id)).map(a => a.id), tails = fr.acts.filter(a => !fr.links.some(l => l.p === a.id)).map(a => a.id);
+    const nums = p.activities.map(a => parseInt((a.id.match(/\d+/) || ['0'])[0])); let n = Math.max(1000, ...nums); let prevTails = o.from && p.activities.some(a => a.id === o.from) ? [o.from] : []; const all = [];
+    for (let c = 0; c < copies; c++) {
+      const map = {}; const label = (o.prefix || '').replace('#', String((o.first || 1) + c));
+      fr.acts.forEach(src => { n += 10; while (p.activities.some(a => a.id === 'A' + n)) n += 10; const id = 'A' + n; map[src.id] = id;
+        const a = { id, name: label + src.name, wbs_id: wbs, calendar_id: src.calendar ? calByName(src.calendar) : null, type: src.type || 'task', duration_hours: 0, constraint: 'none', constraint_date: null, status: 'not_started', actual_start: null, actual_finish: null, remaining_hours: null, percent_complete: 0, baseline_start: null, baseline_finish: null, notes: src.notes || '', codes: { ...(src.codes || {}) }, priority: src.priority == null ? 500 : src.priority, level_delay_hours: 0, critical: false };
+        if (src.fields) a.fields = { ...src.fields }; a.duration_hours = (src.type && src.type !== 'task') ? 0 : src.duration_days * hpd(a);
+        Object.keys(a.codes).forEach(t => { p.code_types[t] = p.code_types[t] || {}; if (!(a.codes[t] in p.code_types[t])) p.code_types[t][a.codes[t]] = '#7a8aa6'; });
+        p.activities.splice(idx++, 0, a); all.push(id); made++; });
+      fr.links.forEach(l => p.relationships.push(Object.assign({ predecessor_id: map[l.p], successor_id: map[l.s], type: l.type, lag_hours: (l.lag_days || 0) * hpd(p.activities.find(a => a.id === map[l.p])) }, l.lag_calendar ? { lag_calendar: l.lag_calendar } : {})));
+      prevTails.forEach(t => heads.forEach(h => p.relationships.push({ predecessor_id: t, successor_id: map[h], type: 'FS', lag_hours: 0 })));
+      if (o.chain) prevTails = tails.map(t => map[t]);
+      Object.entries(map).forEach(([sid, id]) => { const src = fr.acts.find(a => a.id === sid); if (src.res) { const saved = S.project; setResources(p.activities.find(a => a.id === id), src.res); } });
+    }
+    S.sel = new Set(all); S.active = all[0]; S.linkFrom = all[all.length - 1];
+  }, `${fr.name}: ${copies} cop${copies === 1 ? 'y' : 'ies'} inserted`);
+  return made;
+}
+function fragnetDialog() {
+  if (!S.project) return; const sel = selectedRowsInOrder().filter(r => r.act).map(r => r.act); const one = S.active && byId(S.active);
+  const draw = () => { const list = fragList(); return `<p class="hint" style="margin-top:-4px">A fragnet is a block of activities with its logic, resources and codes: a plot, a floor, a bathroom pod. Insert it below the selected row as many times as the job needs.</p>
+    ${list.length ? `<label>Fragnet<select name="fr">${list.map((f, i) => `<option value="${i}">${esc(f.name)} · ${f.acts.length} activities, ${f.links.length} links</option>`).join('')}</select></label>
+    <div class="grid"><label>Copies<input name="cp" type="number" min="1" max="200" value="1"></label><label>Name prefix <span class="hint">(# is the copy number)</span><input name="px" placeholder="Plot #: "></label><label>First number<input name="fn" type="number" value="1"></label></div>
+    <label class="sw" style="margin-top:6px"><span>Copies follow one another (off: they run side by side)</span><input type="checkbox" name="ch" checked><i></i></label>
+    <label class="sw"><span>Link the first copy from ${one ? esc(one.id) + ' ' + esc(one.name) : 'the selected activity (none selected)'}</span><input type="checkbox" name="lf" ${one ? 'checked' : 'disabled'}><i></i></label>
+    <div class="bar-row" style="margin-top:8px"><button type="button" class="btn primary" id="frIns">Insert</button><button type="button" class="chipbtn" id="frDel">Delete this fragnet</button></div>` : '<div class="empty"><b>No fragnets yet</b>Select the activities of one plot or floor, then save them below.</div>'}
+    <div class="insp-sec">Save and share</div>
+    <div class="row2"><label>Save the ${sel.length} selected activit${sel.length === 1 ? 'y' : 'ies'} as<input name="nm" placeholder="e.g. House type B, superstructure" ${sel.length ? '' : 'disabled'}></label><label>&nbsp;<button type="button" class="btn" id="frSave" ${sel.length ? '' : 'disabled'}>Save fragnet</button></label></div>
+    <div class="bar-row"><button type="button" class="btn" id="frOut" ${list.length ? '' : 'disabled'}>Save fragnet file</button><label class="btn" style="cursor:pointer">Load fragnet file<input type="file" id="frIn" accept=".json,application/json" hidden></label></div>`; };
+  const { m } = modal('Fragnets', `<div id="frBody">${draw()}</div>`, null, '', { wide: true });
+  const wire = () => { const b = m.querySelector('#frBody'), q = s => b.querySelector(s), redraw = () => { b.innerHTML = draw(); wire(); };
+    if (q('#frIns')) q('#frIns').onclick = () => { const fr = fragList()[+q('[name=fr]').value]; if (!fr) return; const o = { copies: +q('[name=cp]').value || 1, prefix: q('[name=px]').value, first: +q('[name=fn]').value || 1, chain: q('[name=ch]').checked, from: q('[name=lf]').checked && one ? one.id : null }; modalClose(); insertFragnet(fr, o); };
+    if (q('#frDel')) q('#frDel').onclick = () => { const l = fragList(); l.splice(+q('[name=fr]').value, 1); fragSave(l); redraw(); };
+    q('#frSave').onclick = () => { const nm = q('[name=nm]').value.trim(); if (!nm) return toast('Give the fragnet a name'); const l = fragList().filter(f => f.name !== nm).concat([fragnetOf(sel, nm)]); if (fragSave(l)) { toast(`Fragnet "${nm}" saved: ${sel.length} activities`); redraw(); } };
+    q('#frOut').onclick = () => saveBlob('fragnets.json', new Blob([JSON.stringify({ kind: 'planner-fragnets', version: 1, fragnets: fragList() })], { type: 'application/json' }));
+    q('#frIn').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const d = JSON.parse(await f.text()); const inc = (d.fragnets || []).filter(x => x && x.name && Array.isArray(x.acts)); if (!inc.length) throw 0; const names = new Set(inc.map(x => x.name)); fragSave(fragList().filter(x => !names.has(x.name)).concat(inc)); toast(`${inc.length} fragnet${inc.length === 1 ? '' : 's'} loaded`); redraw(); } catch { toast('That file holds no fragnets'); } };
+  }; wire();
+}
+
 // ---------- structural edits ----------
 function selectedActs() { return [...S.sel].map(byId).filter(Boolean); }
 function selectedRowsInOrder() { return S.rowsCache.filter(r => S.sel.has(rowKey(r))); }
@@ -2916,6 +3084,11 @@ const PAL_EXAMPLES = ['add 2 weeks to A1040', 'link A1010 -> A1020 SS+2d', 'fini
 function palActions() {
   return [
     ['New programme', 'Start', () => startFlow()],
+    ['New from template', 'Start', newFromTemplateDialog],
+    S.project && ['Save this programme as a template', 'Set-up', saveTemplateDialog],
+    S.project && ['Fragnets: save a block, insert it per plot or floor', 'Plan', fragnetDialog],
+    S.project && ['Copy picture of the chart (PNG)', 'File', pictureDialog],
+    S.project && ['Export the table as an HTML page', 'File', exportHtmlTable],
     ['All projects', 'Go to', () => go('projects')],
     S.project && ['Overview', 'Go to', () => go('overview')],
     S.project && ['Plan', 'Go to', () => go('plan')],
@@ -3131,11 +3304,11 @@ function summaryText() {
 function shareSheet() {
   if (!S.project) return;
   const file = '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/>';
-  const tiles = [['bundle', 'All three formats', 'One .zip for P6, Asta and MS Project', '<path d="M5 9h18v14H5z"/><path d="M5 9l3-5h12l3 5M12 13h4"/>'], ['xer', 'Primavera P6', '.xer file. Asta imports it too', file], ['xml', 'MS Project and Asta', 'MS Project XML (MSPDI)', file], ['json', 'Planner file', '.json to open here again', file], ['csv', 'Excel', '.csv of the activities as shown', '<path d="M5 4h18v20H5z"/><path d="M5 10h18M5 16h18M11 4v20"/>'], ['pdf', 'PDF for issue', 'Print-ready, with a title block', '<path d="M7 3h10l5 5v17H7z"/><path d="M10 14h8M10 18h8M10 10h4"/>']];
+  const tiles = [['bundle', 'All three formats', 'One .zip for P6, Asta and MS Project', '<path d="M5 9h18v14H5z"/><path d="M5 9l3-5h12l3 5M12 13h4"/>'], ['xer', 'Primavera P6', '.xer file. Asta imports it too', file], ['xml', 'MS Project and Asta', 'MS Project XML (MSPDI)', file], ['json', 'Planner file', '.json to open here again', file], ['csv', 'Excel', '.csv of the activities as shown', '<path d="M5 4h18v20H5z"/><path d="M5 10h18M5 16h18M11 4v20"/>'], ['pdf', 'PDF for issue', 'Print-ready, with a title block', '<path d="M7 3h10l5 5v17H7z"/><path d="M10 14h8M10 18h8M10 10h4"/>'], ['pic', 'Picture or web page', 'PNG of the chart, or the table as HTML', '<path d="M4 6h20v16H4z"/><path d="M4 18l6-6 5 5 3-3 6 6"/><circle cx="18.5" cy="10.5" r="1.6"/>']];
   const { m } = modal('Share and export', `<p class="hint" style="margin-top:-4px">Send the programme to the tools your client and contractors use.</p><div class="exports">${tiles.map(([f, t, s, ic], i) => `<button type="button" class="tile ${i === 0 ? 'on' : ''}" data-x="${f}"><svg viewBox="0 0 28 28" aria-hidden="true">${ic}</svg><b>${t}</b><span>${s}</span></button>`).join('')}</div>
     <h3>Status note</h3><p class="hint" style="margin:0 0 8px">A short update to paste into an email or message.</p><textarea id="shareText" rows="7" style="width:100%" readonly>${esc(summaryText())}</textarea>
     <div class="bar-row" style="margin-top:10px"><button type="button" class="btn" id="shareCopy">Copy status note</button></div>`, null, '', { wide: true });
-  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; if (x === 'csv') return exportCsv(); if (x === 'pdf') return printSheet(); if (['xer', 'xml', 'bundle'].includes(x) && window.PlannerEngine && window.PlannerEngine.fidelityReport) return exportCheck(x); exportAs(x); });
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { const x = b.dataset.x; if (x === 'csv') return exportCsv(); if (x === 'pdf') return printSheet(); if (x === 'pic') return pictureDialog(); if (['xer', 'xml', 'bundle'].includes(x) && window.PlannerEngine && window.PlannerEngine.fidelityReport) return exportCheck(x); exportAs(x); });
   m.querySelector('#shareCopy').onclick = async () => { const ta = m.querySelector('#shareText'); try { await navigator.clipboard.writeText(ta.value); toast('Status note copied'); } catch { ta.focus(); ta.select(); toast('Selected. Press Ctrl+C or ⌘C to copy.'); } };
 
 }
@@ -3221,10 +3394,11 @@ function importSummary(p, r) {
 }
 function projectsPop(trigger) {
   const pop = $('#popProjects');
-  pop.innerHTML = `<div class="pop-sec">Projects</div>${(S.list || []).map(p => `<button type="button" data-pid="${esc(p.id)}" class="${p.id === S.pid ? 'on' : ''}" role="menuitem">${esc(p.name)}</button>`).join('')}<div class="pop-sec"></div><button type="button" id="ppAll" role="menuitem">All projects</button><button type="button" id="ppNew" role="menuitem">New programme</button>`;
+  pop.innerHTML = `<div class="pop-sec">Projects</div>${(S.list || []).map(p => `<button type="button" data-pid="${esc(p.id)}" class="${p.id === S.pid ? 'on' : ''}" role="menuitem">${esc(p.name)}</button>`).join('')}<div class="pop-sec"></div><button type="button" id="ppAll" role="menuitem">All projects</button><button type="button" id="ppNew" role="menuitem">New programme</button><button type="button" id="ppTpl" role="menuitem">New from template…</button>`;
   pop.querySelectorAll('[data-pid]').forEach(b => b.onclick = () => { closePop(pop); openProject(b.dataset.pid, S.screen === 'projects' ? 'plan' : S.screen); });
   pop.querySelector('#ppAll').onclick = () => { closePop(pop); go('projects'); };
   pop.querySelector('#ppNew').onclick = () => { closePop(pop); startFlow(); };
+  pop.querySelector('#ppTpl').onclick = () => { closePop(pop); newFromTemplateDialog(); };
   pop.insertAdjacentHTML('beforeend', `<div class="pop-sec">View as</div><div style="padding:4px 8px 6px">${modeSeg('ppMode')}</div>`); wireModeSeg(pop);
   openPop(pop, trigger);
 }
@@ -3438,11 +3612,12 @@ function renderOverview() {
   el.innerHTML = `<div class="page ov ov-${mode}">
     <div class="page-head"><div style="min-width:0"><h1 class="display">${esc(p.name)}</h1><p class="lede">Data date ${fmtLong(p.data_date || p.start)} · <span class="chip ${cls}">${label}</span></p></div>
       <div class="head-actions">${modeSeg('ovMode')}<button type="button" class="btn" id="ovAsk">Ask</button>${mode === 'build' ? '<button type="button" class="btn" id="ovTry" title="Try changes safely">Try changes</button>' : ''}${primary}</div></div>
-    ${spine}${kpis}
+    ${spine}${kpis}${mode === 'site' ? '' : milestoneStripPanel(p)}
     <div class="mon-grid"><div class="mon-main">${main.join('')}</div><aside class="mon-side">${side.join('')}</aside></div></div>`;
   el.scrollTop = scroll;
   wireModeSeg(el);
   const on = (sel, fn) => { const n = el.querySelector(sel); if (n) n.onclick = fn; };
+  on('#msCopy', () => { const svg = milestoneStripSvg(p, 1400); if (svg) pictureOut({ text: cssVarsResolved(svg.text), w: svg.w, h: svg.h }, `${p.id}-key-dates.png`, 'copy'); });
   on('#ovPlan', () => go('plan')); on('#ovSite', () => siteUpdateSheet()); on('#ovPdf', printSheet); on('#ovAsk', () => { openPalette(); $('#cmdIn').placeholder = 'Ask anything about the programme'; }); on('#ovTry', tryStart);
   el.querySelectorAll('[data-stage]').forEach(btn => btn.onclick = () => { const s = stages.find(x => x.k === btn.dataset.stage); if (s) s.action[1](); });
   el.querySelectorAll('[data-help]').forEach(btn => btn.onclick = () => helpSheet(btn.dataset.help));
@@ -3517,7 +3692,7 @@ function wireToolbar() {
   $('#btnSite').onclick = () => siteUpdateSheet(); $('#btnPeriod').onclick = closePeriodDialog; $('#btnAsBuilt').onclick = exportAsBuilt;
   $('#btnLevel').onclick = () => act('/level'); $('#btnUnlevel').onclick = () => act('/unlevel');
   $('#btnSchedOpts').onclick = schedOptionsDialog; $('#btnCalendars').onclick = calendarsDialog; $('#btnResources').onclick = resourcesDialog; $('#btnCodes').onclick = codesDialog;
-  $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog; $('#btnRenumber').onclick = renumberDialog;
+  $('#btnFields').onclick = fieldsDialog; $('#btnLibrary').onclick = libraryDialog; $('#btnRenumber').onclick = renumberDialog; $('#btnTemplate').onclick = saveTemplateDialog; $('#btnFragnets').onclick = fragnetDialog;
   $$('[data-panel]').forEach(b => b.onclick = () => setPanel(b.dataset.panel));
   $('#btnRepair').onclick = () => act('/repair');
   $('#btnInspector').onclick = () => toggleInspector();
