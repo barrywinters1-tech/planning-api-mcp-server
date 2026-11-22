@@ -135,7 +135,7 @@ T1 through T6 are about twelve working days and would close, in the gap diff's t
 
 ## Status at 22 November 2026
 
-Built on branch `claude/ai-project-planning-ux-c4sxcq` and published to the test link. 43 of 52 items done, 6 part done or in progress, 3 not built.
+Built on branch `claude/ai-project-planning-ux-c4sxcq` and published to the test link. 46 of 52 items done, 3 part done, 3 not built.
 
 | # | Item | Status |
 |---|---|---|
@@ -147,7 +147,7 @@ Built on branch `claude/ai-project-planning-ux-c4sxcq` and published to the test
 | 6 | Company logo and a choice of title-block layouts, saved with the proj… | Done (logo and layout remembered per device, not yet in the project file) |
 | 7 | Change log with reasons | Done |
 | 8 | Lookahead CSV round trip for subcontractors | Done |
-| 9 | Levelling that explains itself | In progress (engine) |
+| 9 | Levelling that explains itself | Done |
 | 10 | Link display | Done |
 | 11 | Legend for colour-by code or resource on the PDF, and progress-period… | Done |
 | 12 | Filter builder that writes the existing grammar, and named filters re… | Done |
@@ -168,7 +168,7 @@ Built on branch `claude/ai-project-planning-ux-c4sxcq` and published to the test
 | 27 | Link Tasks mode | Done |
 | 28 | Insert above, bridged into the chain like insert below | Done |
 | 29 | Multi-edit panel | Done |
-| 30 | CIOB Planning Protocol 2021 check set and editable thresholds beside … | In progress (engine) |
+| 30 | CIOB Planning Protocol 2021 check set and editable thresholds beside … | Done |
 | 31 | Sub-programmes and multi-project | Part: portfolio timeline and shared-trade table. Sub-programmes and cross-programme links not built |
 | 32 | Scoped export for a subcontractor | Done |
 | 33 | Custom fields in MS Project XML (ExtendedAttribute) and P6 XML both w… | Done for MS Project XML; P6 XML reads only |
@@ -186,7 +186,7 @@ Built on branch `claude/ai-project-planning-ux-c4sxcq` and published to the test
 | 45 | Start on new day and whole-hour display | Start on new day done; whole-hour display not built |
 | 46 | Buffer (contingency) tasks whose duration flexes to a deadline, with … | Not built |
 | 47 | Near-critical threshold and definition of critical | Done |
-| 48 | Elapsed duration column and elapsed days between two activities | In progress (engine) |
+| 48 | Elapsed duration column and elapsed days between two activities | Done |
 | 49 | Currency symbol and format setting used by the cost band, columns and… | Done |
 | 50 | Effort-driven activities and quantity × rate durations | Not built |
 | 51 | Multi-level group and sort, named and saved | Group by two levels done; multi-level sort not built |
