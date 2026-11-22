@@ -2771,6 +2771,35 @@ async function renderProjects() {
     if (S.screen === 'projects') paintProjects(el, S.list || []);
   }
 }
+// ---------- portfolio: every programme on one timeline, and the trades they compete for (master view across programmes) ----------
+function portfolioData(list) {
+  const E = ENGINE(); const rows = [], demand = {}, limits = {};   // demand[resource name][week] = people per day, summed across programmes
+  list.forEach(item => { const d = S.details[item.id], p = d && d.project; if (!p || !p.finish) return;
+    const ms_ = p.activities.filter(a => a.type !== 'task' && a.type !== 'level_of_effort').map(a => ({ name: a.name, f: a.actual_finish || a.actual_start || a.early_finish || a.early_start, done: a.status === 'complete' })).filter(x => x.f);
+    const [cls, label] = statusOf(p, d.report); rows.push({ id: p.id, name: p.name, start: p.start, finish: p.finish, dd: p.data_date || p.start, deadline: p.must_finish_by || null, pct: progressOf(p).pct, cls, label, ms: ms_ });
+    if (E && E.histogram && p.assignments.length) { try { E.histogram(p).resources.forEach(r => { limits[r.name] = Math.max(limits[r.name] || 0, r.limit || 0); (r.days || []).forEach(x => { const w = new Date(x.date); w.setDate(w.getDate() - ((w.getDay() + 6) % 7)); const k = iso(w).slice(0, 10); const o = demand[r.name] = demand[r.name] || {}; (o[k] = o[k] || { total: 0, by: {} }); o[k].total += x.units / 5; o[k].by[p.name] = (o[k].by[p.name] || 0) + x.units / 5; }); }); } catch (e) { } }
+  });
+  const clash = Object.entries(demand).map(([name, weeks]) => { const lim = limits[name] || 0; const ks = Object.keys(weeks).sort(); const shared = ks.filter(k => Object.keys(weeks[k].by).length > 1); const peakK = ks.reduce((m, k) => weeks[k].total > (weeks[m] || { total: -1 }).total ? k : m, ks[0]); const over = lim ? shared.filter(k => weeks[k].total > lim + 1e-6) : [];
+    return { name, limit: lim, peak: weeks[peakK].total, peak_week: peakK, peak_by: weeks[peakK].by, shared_weeks: shared.length, over_weeks: over.length, first_over: over[0] || null }; }).filter(c => c.shared_weeks).sort((a, b) => b.over_weeks - a.over_weeks || b.peak - a.peak);
+  return { rows: rows.sort((a, b) => a.start.localeCompare(b.start)), clash };
+}
+function portfolioHtml(list) {
+  const d = portfolioData(list); if (d.rows.length < 2) return '';
+  const t0 = Math.min(...d.rows.map(r => ms(r.start))), t1 = Math.max(...d.rows.map(r => Math.max(ms(r.finish), r.deadline ? ms(r.deadline) : 0))), W = 1100, NW = 250, RH2 = 34, H = 26 + d.rows.length * RH2 + 8;
+  const X = t => NW + (t - t0) / Math.max(1, t1 - t0) * (W - NW - 16);
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Timeline of ${d.rows.length} programmes" font-family="inherit">`;
+  for (let dt = new Date(new Date(t0).getFullYear(), new Date(t0).getMonth(), 1); dt.getTime() <= t1; dt.setMonth(dt.getMonth() + 1)) { const x = X(Math.max(t0, dt.getTime())); s += `<line x1="${x}" x2="${x}" y1="18" y2="${H}" stroke="var(--line-2)"/>${dt.getMonth() % (t1 - t0 > 400 * DAY ? 3 : 1) === 0 ? `<text x="${x + 3}" y="12" font-size="10.5" fill="var(--ink-3)">${dt.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })}</text>` : ''}`; }
+  const now = Date.now(); if (now > t0 && now < t1) s += `<line x1="${X(now)}" x2="${X(now)}" y1="18" y2="${H}" stroke="var(--dd)" stroke-dasharray="4 3"/><text x="${X(now) + 3}" y="${H - 2}" font-size="10" fill="var(--dd)">today</text>`;
+  d.rows.forEach((r, i) => { const y = 26 + i * RH2, x0 = X(ms(r.start)), x1 = X(ms(r.finish)), col = r.cls === 'bad' ? 'var(--crit)' : r.cls === 'warn' ? 'var(--warn)' : 'var(--accent)';
+    s += `<g class="pf-row" data-open="${esc(r.id)}" style="cursor:pointer"><rect x="0" y="${y - 4}" width="${W}" height="${RH2}" fill="transparent"/><text x="4" y="${y + 13}" font-size="12.5" font-weight="650" fill="var(--ink)">${esc(r.name.length > 34 ? r.name.slice(0, 33) + '…' : r.name)}</text>
+      <rect x="${x0}" y="${y + 3}" width="${Math.max(3, x1 - x0)}" height="14" rx="5" fill="${col}" opacity=".28"/><rect x="${x0}" y="${y + 3}" width="${Math.max(0, (x1 - x0) * r.pct / 100)}" height="14" rx="5" fill="${col}"/>
+      ${r.ms.map(m => `<path d="M${X(ms(m.f))} ${y + 3}l6 7-6 7-6-7z" fill="${m.done ? 'var(--ink-3)' : 'var(--ink)'}" stroke="var(--surface)"><title>${esc(m.name)}: ${esc(fmtD(m.f))}</title></path>`).join('')}
+      ${r.deadline ? `<line x1="${X(ms(r.deadline))}" x2="${X(ms(r.deadline))}" y1="${y}" y2="${y + 20}" stroke="var(--crit)" stroke-width="1.6" stroke-dasharray="2 3"><title>Deadline ${esc(fmtD(r.deadline))}</title></line>` : ''}
+      <text x="${Math.min(W - 4, x1 + 8)}" y="${y + 14}" font-size="10.5" fill="var(--ink-3)" ${x1 + 150 > W ? 'text-anchor="end" dy="16"' : ''}>${esc(fmtD(r.finish))} · ${esc(r.label)}</text></g>`; });
+  s += '</svg>';
+  const tbl = d.clash.length ? `<h3 class="ov-h3">Trades shared between programmes</h3><table class="ov-table"><thead><tr><th>Resource</th><th class="n">Peak a day</th><th class="n">Crew limit</th><th>Peak week</th><th>Who needs them then</th><th>Weeks over the limit</th></tr></thead><tbody>${d.clash.slice(0, 12).map(c => `<tr><td>${esc(c.name)}</td><td class="n">${fmt1(c.peak)}</td><td class="n">${c.limit ? fmt1(c.limit) : '–'}</td><td>w/c ${esc(fmtD(c.peak_week))}</td><td>${Object.entries(c.peak_by).sort((a, b) => b[1] - a[1]).map(([n, v]) => `${esc(n)} ${fmt1(v)}`).join(', ')}</td><td>${c.over_weeks ? `<span class="chip bad">${c.over_weeks}, from ${esc(fmtD(c.first_over))}</span>` : c.limit ? '<span class="chip ok">None</span>' : '<span class="chip plain">No limit set</span>'}</td></tr>`).join('')}</tbody></table><p class="hint" style="font-size:12px;margin-top:6px">Resources are matched by name across programmes; the limit is the largest crew limit any programme sets for that name. Demand is average people per day in each week.</p>` : '<p class="hint" style="margin-top:8px">No resource is used by more than one programme in the same week.</p>';
+  return `<section class="panel pf" aria-labelledby="hPf"><div class="panel-head"><h2 id="hPf">Portfolio</h2><span class="hint">${d.rows.length} programmes on one timeline · click a row to open it</span></div><div class="pf-wrap">${s}</div>${tbl}</section>`;
+}
 function paintProjects(el, list) {
   const scroll = el.scrollTop;
   const card = item => {
@@ -2797,6 +2826,7 @@ function paintProjects(el, list) {
     ${list.length ? '' : `<div class="hero"><div><h2>Describe the job. Get a programme that explains itself.</h2><p>Six questions, or a brief in plain English, become a linked, scheduled, health-checked programme. It briefs you every week on what moved and why, answers questions from the schedule, lets you try changes before you keep them, and opens in P6, Asta Powerproject and MS Project.</p><div class="head-actions"><button type="button" class="primary" id="pNew3">Start a programme</button><button type="button" class="btn" id="pSample">Open a sample</button></div></div><div class="hero-art">${heroArt()}</div></div>`}
     <div class="cards">${list.map(card).join('')}<button type="button" class="card new" id="pNew2"><span class="plus"><svg viewBox="0 0 20 20" class="ic"><path d="M10 4v12M4 10h12"/></svg></span><b style="color:var(--ink)">New programme</b><span class="hint" style="max-width:30ch">Six questions, or a brief, to a linked, scheduled and health-checked programme.</span></button></div>
   </div>`;
+  const pf = portfolioHtml(list); if (pf) { el.querySelector('.cards').insertAdjacentHTML('afterend', pf); el.querySelectorAll('.pf-row[data-open]').forEach(g => g.onclick = () => openProject(g.dataset.open)); }
   el.scrollTop = scroll;
   ['#pNew', '#pNew2', '#pNew3'].forEach(s => { const b = el.querySelector(s); if (b) b.onclick = () => startFlow(); });
   el.querySelector('#pImport').onclick = () => $('#fileIn').click();
