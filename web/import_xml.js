@@ -1393,6 +1393,7 @@ function readMsp(root, NS, codeTypes) {
     }));
     ids.add(aid);
     const a = project.activities[project.activities.length - 1];
+    if (MSP_ELAPSED_LAG.has(text(t, 'DurationFormat', ''))) a.elapsed = true;   // an elapsed DurationFormat (8 = ed) is an elapsed-duration activity
     for (const ea of findall(t, 'ExtendedAttribute')) {
       const fid = text(ea, 'FieldID');
       let d = fieldDefs.get(fid);

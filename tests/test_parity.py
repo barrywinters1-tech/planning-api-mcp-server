@@ -17,17 +17,17 @@ import os
 import random
 import shutil
 import subprocess
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from planner.analysis import cost_curve, histogram, variance
 from planner.commands import parse_command
-from planner.cpm import schedule
+from planner.cpm import elapsed_days, schedule
 from planner.dcma import health_check
 from planner.generator import generate, parse_brief
-from planner.levelling import level, set_baseline
+from planner.levelling import level, levelling_report, set_baseline
 from planner.model import Project
 from planner.plan import UK_BANK_HOLIDAYS_2026_27, _parse_date, apply_patch, draft_to_project
 from planner.repair import plan_repairs
@@ -163,6 +163,32 @@ def oos_chains():
              _ln("A", "F"), _ln("B", "F", "FS", -4), _ln("C", "G"), _ln("D", "G", "SS", 8), _ln("E", "H"), _ln("D", "H", "FF", 4),
              _ln("F", "Z"), _ln("G", "Z"), _ln("H", "Z")]
     return _project("OOS", "2026-03-23T08:00:00", [STD, SIX, TEN], acts, links, data_date="2026-03-30T08:00:00")
+
+
+def levelling_hand():
+    """tests/test_levelling_options.py's hand project: a gang shared by A, B (after P) and C (priority 100), a crane shared by C and L."""
+    acts = [_act("A", 24, "standard"), _act("B", 8), _act("C", 16, priority=100), _act("L", 40), _act("P", 16), _act("Z", typ="finish_milestone")]
+    links = [_ln("P", "B")] + [_ln(x, "Z") for x in "ABCL"]
+    res = [{"id": "gang", "name": "Gang", "max_units_per_day": 1}, {"id": "crane", "name": "Crane", "max_units_per_day": 1}]
+    asg = [{"activity_id": "A", "resource_id": "gang", "units": 24}, {"activity_id": "B", "resource_id": "gang", "units": 8},
+           {"activity_id": "C", "resource_id": "gang", "units": 16}, {"activity_id": "C", "resource_id": "crane", "units": 16},
+           {"activity_id": "L", "resource_id": "crane", "units": 40}]
+    return _project("ORD", "2026-03-02T08:00:00", [_cal("standard", holidays=False)], acts, links, resources=res, assignments=asg)
+
+
+LEVEL_OPTIONS = {"gang": {"resources": ["gang"]}, "crane": {"resources": ["crane"]}, "priority": {"resources": ["gang"], "order": "priority"},
+                 "total_float": {"resources": ["gang"], "order": "total_float"}, "early_start": {"resources": ["gang"], "order": "early_start"},
+                 "within_float": {"resources": ["gang"], "within_float": True},
+                 "window": {"resources": ["gang"], "from": "2026-03-03", "to": "2026-03-04"}, "preserve": {"preserve_actuals": True}}
+
+
+def with_elapsed(project: dict, ids) -> dict:
+    """The project with the named activities flagged as elapsed-duration (calendar time, 24 hours a day)."""
+    p = copy.deepcopy(project)
+    for a in p["activities"]:
+        if a["id"] in ids:
+            a["elapsed"] = True
+    return p
 
 
 def lag_calendars(mode, link_modes=()):
@@ -311,6 +337,58 @@ def build_cases() -> list[tuple[str, dict]]:
     house = _generated(BRIEFS[0])
     for j, cmd in enumerate(COMMANDS):
         cases.append((f"command-{j}", {"kind": "command", "project": house, "command": cmd}))
+    # levelling options and the levelling report: the hand project with every option, generated programmes with each
+    # option (window from four to twelve weeks after the start, the first limited resource only), options stored on the project
+    cases.append(("level-hand-default", {"kind": "level", "project": levelling_hand()}))
+    for name, opts in LEVEL_OPTIONS.items():
+        cases.append((f"level-hand-{name}", {"kind": "level", "project": levelling_hand(), "options": opts}))
+    cases.append(("level-hand-stored", {"kind": "level", "project": {**levelling_hand(), "levelling": {"resources": ["gang"], "order": "total_float"}}}))
+    cases.append(("level-hand-stored-arg-wins", {"kind": "level", "project": {**levelling_hand(), "levelling": {"resources": ["gang"], "order": "total_float"}},
+                                                 "options": {"order": "priority"}}))
+    for i in (0, 1, 3, 6):
+        proj = _generated(BRIEFS[i])
+        start = datetime.fromisoformat(proj["start"])
+        limited = [r["id"] for r in proj["resources"] if r.get("max_units_per_day")]
+        for order in ("late_start", "priority", "total_float", "early_start"):
+            cases.append((f"level-options-{i}-order-{order}", {"kind": "level", "project": proj, "options": {"order": order}}))
+        cases.append((f"level-options-{i}-within_float", {"kind": "level", "project": proj, "options": {"within_float": True}}))
+        cases.append((f"level-options-{i}-window", {"kind": "level", "project": proj, "options": {
+            "from": (start + timedelta(days=28)).date().isoformat(), "to": (start + timedelta(days=84)).date().isoformat()}}))
+        cases.append((f"level-options-{i}-resources", {"kind": "level", "project": proj, "options": {"resources": limited[:1]}}))
+        cases.append((f"level-options-{i}-all", {"kind": "level", "project": {**proj, "levelling": {"within_float": True, "order": "total_float",
+                                                  "to": (start + timedelta(days=120)).date().isoformat(), "resources": limited[:2]}}}))
+    # the CIOB PP21 check set and thresholds, on the corpora and generated programmes; the DCMA set with thresholds too
+    for fn in (links_and_lags, constraints, progress, hammocks, dst_year):
+        cases.append((f"health-pp21-{fn.__name__}", {"kind": "health", "project": fn(), "check_set": "pp21"}))
+    cases.append(("health-pp21-demo_house", {"kind": "health", "project": Project.model_validate(demo).model_dump(mode="json"), "check_set": "pp21"}))
+    for i in (0, 3, 6):
+        cases.append((f"health-pp21-{i}", {"kind": "health", "project": _generated(BRIEFS[i]), "check_set": "pp21"}))
+        cases.append((f"health-pp21-{i}-thresholds", {"kind": "health", "project": _generated(BRIEFS[i]), "check_set": "pp21",
+                      "thresholds": {"max_duration_days": 10, "duration_pct": 2.5, "lag_pct": 0, "density_min": 1.5, "constraints_pct": 0, "max_working_days": 5}}))
+        cases.append((f"health-dcma-{i}-thresholds", {"kind": "health", "project": _generated(BRIEFS[i]), "check_set": "dcma",
+                      "thresholds": {"logic_pct": 0, "lags_pct": 0, "fs_pct": 95, "high_duration_days": 10, "high_float_pct": 0, "cpli_min": 1.1}}))
+    cases.append(("health-pp21-stored-thresholds", {"kind": "health", "project": {**links_and_lags(), "check_thresholds": {"lag_pct": 50, "bogus": 3}}, "check_set": "pp21"}))
+    cases.append(("health-pp21-stored-and-arg", {"kind": "health", "project": {**links_and_lags(), "check_thresholds": {"lag_pct": 50}}, "check_set": "pp21",
+                                                 "thresholds": {"lag_pct": 20, "density_max": 1}}))
+    cases.append(("health-progress-pp21-oos", {"kind": "health", "project": {**oos_chains(), "progress_logic": "retained"}, "check_set": "pp21"}))
+    cases.append(("health-unknown-set", {"kind": "health", "project": constraints(), "check_set": "pmi"}))
+    # elapsed-duration activities: calendar time whatever the calendar, across every corpus, with lags, progress, DST and levelling
+    cases.append(("elapsed-links", {"kind": "elapsed", "project": with_elapsed(links_and_lags(), {"C", "H"})}))
+    cases.append(("elapsed-constraints", {"kind": "elapsed", "project": with_elapsed(constraints(), {"D", "F", "H"})}))
+    cases.append(("elapsed-progress", {"kind": "elapsed", "project": with_elapsed(progress(), {"C", "F"})}))
+    cases.append(("elapsed-hammocks", {"kind": "elapsed", "project": with_elapsed(hammocks(), {"B", "D"})}))
+    cases.append(("elapsed-dst_year", {"kind": "elapsed", "project": with_elapsed(dst_year(), {f"E{i:02d}" for i in range(0, 52, 7)} | {"W05", "W17"})}))
+    for mode in LAG_CALENDARS:
+        cases.append((f"elapsed-lag_calendar-{mode or 'default'}", {"kind": "elapsed", "project": with_elapsed(lag_calendars(mode), {"B", "E", "I"})}))
+    for mode in PROGRESS_LOGIC:
+        cases.append((f"elapsed-oos-{mode}", {"kind": "elapsed", "project": {**with_elapsed(oos_chains(), {"B", "D", "F"}), "progress_logic": mode}}))
+    cases.append(("elapsed-all_options", {"kind": "elapsed", "project": {**with_elapsed(oos_opts, {"C", "E", "G"}), "progress_logic": "retained",
+                                           "lag_calendar": "successor", "float_paths": 4, "start_on_new_day": True, "near_critical_days": 2}}))
+    cases.append(("elapsed-level", {"kind": "level", "project": with_elapsed(levelling_hand(), {"A", "L"})}))
+    cases.append(("elapsed-level-options", {"kind": "level", "project": with_elapsed(levelling_hand(), {"A", "C"}), "options": {"within_float": True, "order": "total_float"}}))
+    cases.append(("elapsed-level-generated", {"kind": "level", "project": with_elapsed(_generated(BRIEFS[2]), {"A1040", "A1100", "A1200"})}))
+    cases.append(("elapsed-health-pp21", {"kind": "health", "project": with_elapsed(links_and_lags(), {"C", "H"}), "check_set": "pp21"}))
+    cases.append(("elapsed-repair", {"kind": "repair", "project": {**with_elapsed(lag_calendars("24h"), {"B", "H"}), "must_finish_by": "2026-04-10T16:00:00"}}))
     cases.append(("round-fixed", {"kind": "round", "values": ROUND_VALUES}))
     cases.append(("round-random", {"kind": "round", "values": _rand_rounds()}))
     cases.append(("number-formatting", {"kind": "numfmt", "values": _rand_numbers()}))
@@ -339,8 +417,15 @@ def run_py(c: dict) -> dict:
             return {"brief": b.model_dump(mode="json"), "draft": d.model_dump(mode="json"),
                     "project": p.model_dump(mode="json"), "health": health_check(p).model_dump(mode="json")}
         if k == "level":
-            p = Project.model_validate(c["project"]); level(p)
-            return {"project": p.model_dump(mode="json")}
+            p = Project.model_validate(c["project"]); level(p, c.get("options"))
+            return {"project": p.model_dump(mode="json"), "report": levelling_report(p)}
+        if k == "health":
+            p = Project.model_validate(c["project"]); schedule(p)
+            return {"health": health_check(p, c.get("check_set", "dcma"), c.get("thresholds")).model_dump(mode="json")}
+        if k == "elapsed":
+            p = Project.model_validate(c["project"]); schedule(p)
+            return {"project": p.model_dump(mode="json"), "days": {a.id: elapsed_days(p, a) for a in p.activities},
+                    "health": health_check(p).model_dump(mode="json")}
         if k == "repair":
             p = Project.model_validate(c["project"]); schedule(p)
             patch = plan_repairs(p, health_check(p)); log = apply_patch(p, patch); schedule(p)

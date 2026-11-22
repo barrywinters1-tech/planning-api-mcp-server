@@ -41,6 +41,14 @@ activity's actual start and late dates are not moved.
 
 near_critical_days - the threshold, in working days of the activity's own calendar, at or below which an open activity
 that is not on the longest path (and not a hammock) is flagged Activity.near_critical; 10 when None. No scheduling effect.
+
+Elapsed-duration activities (Activity.elapsed = True) run on calendar time whatever calendar they name: curing, drying,
+lead times, approval periods. Their duration_hours and remaining_hours are wall-clock hours and they are scheduled on
+ELAPSED_CALENDAR (24 hours a day, seven days, no exceptions, days starting at midnight), so a 72-hour cure starting
+Friday 08:00 finishes Monday 08:00. Both passes, floats, the lag measured on their calendar (as predecessor or successor)
+and resource levelling use that calendar (sched_calendar()); elapsed_days() gives the calendar days any activity spans.
+The activity keeps its own calendar_id for files and reports: XER carries the flag as the task UDF "elapsed" = Y and
+MS Project XML as <DurationFormat> 8 (elapsed days); other elapsed DurationFormat codes read back as elapsed too.
 """
 from __future__ import annotations
 
@@ -123,6 +131,24 @@ def _new_day_start(cal: Calendar, es: datetime) -> datetime:
     return cal.next_working_start(datetime.combine(es.date() + timedelta(days=1), time.min))
 
 
+# the calendar an elapsed-duration activity is scheduled on: 24 hours a day, seven days, no exceptions
+ELAPSED_CALENDAR = Calendar(id="24h", name="Elapsed (24-hour)", hours_per_day=24.0, day_start=time(0, 0),
+                            working_days=[0, 1, 2, 3, 4, 5, 6])
+
+
+def sched_calendar(project: Project, a: Activity) -> Calendar:
+    """The calendar an activity is scheduled on: ELAPSED_CALENDAR when Activity.elapsed, else its own (Project.calendar_for)."""
+    return ELAPSED_CALENDAR if a.elapsed else project.calendar_for(a)
+
+
+def elapsed_days(project: Project, a: Activity) -> Optional[float]:
+    """Calendar days between an activity's start (actual or early) and finish, to two decimals; None until scheduled."""
+    s, f = a.actual_start or a.early_start, a.actual_finish or a.early_finish
+    if s is None or f is None:
+        return None
+    return round((f - s).total_seconds() / 86400.0, 2)
+
+
 LAG_CALENDARS = ("predecessor", "successor", "project", "24h")
 
 
@@ -131,12 +157,12 @@ def _lag_calendar(project: Project, r: Relationship, pred: Activity, succ: Activ
     An unknown value falls back to the predecessor's calendar, the P6 default."""
     mode = r.lag_calendar or project.lag_calendar or "predecessor"
     if mode == "successor":
-        return project.calendar_for(succ)
+        return sched_calendar(project, succ)
     if mode == "project":
         return project.calendars[project.default_calendar_id]
     if mode == "24h":
         return None
-    return project.calendar_for(pred)
+    return sched_calendar(project, pred)
 
 
 def _add_lag(cal: Optional[Calendar], dt: datetime, hours: float) -> datetime:
@@ -168,7 +194,7 @@ def schedule(project: Project) -> Project:
 
     # ---------------- forward pass ----------------
     for a in order:
-        cal = project.calendar_for(a)
+        cal = sched_calendar(project, a)
         rem = _remaining_hours(a)
 
         if a.status == Status.COMPLETE and a.actual_start and a.actual_finish:
@@ -273,7 +299,7 @@ def schedule(project: Project) -> Project:
 
     # ---------------- backward pass ----------------
     for a in reversed(order):
-        cal = project.calendar_for(a)
+        cal = sched_calendar(project, a)
         rem = _remaining_hours(a)
         if a.status == Status.COMPLETE and a.actual_finish:
             a.late_start, a.late_finish = a.early_start, a.early_finish
@@ -365,7 +391,7 @@ def schedule(project: Project) -> Project:
     for a in project.activities:
         if a.type != ActivityType.LOE or a.status == Status.COMPLETE:
             continue
-        cal = project.calendar_for(a)
+        cal = sched_calendar(project, a)
         starts = [amap[r.predecessor_id].early_start for r in preds[a.id] if r.type == LinkType.SS and amap[r.predecessor_id].early_start]
         ends = [amap[r.predecessor_id].early_finish for r in preds[a.id] if r.type == LinkType.FF and amap[r.predecessor_id].early_finish]
         if not starts and not ends:
@@ -393,7 +419,7 @@ def schedule(project: Project) -> Project:
     for a in project.activities:
         a.near_critical = (a.status != Status.COMPLETE and a.type != ActivityType.LOE and not a.critical
                            and a.total_float_hours is not None
-                           and a.total_float_hours <= near_days * project.calendar_for(a).hours_per_day)
+                           and a.total_float_hours <= near_days * sched_calendar(project, a).hours_per_day)
 
     project.scheduled_at = datetime.now()
     return project
